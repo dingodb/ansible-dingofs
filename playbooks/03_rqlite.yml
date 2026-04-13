@@ -1,0 +1,17 @@
+---
+# Playbook: Deploy rqlite database cluster
+# Master node starts first (no join), slave nodes join the master
+- name: Deploy rqlite on master node
+  hosts: rqlite_master
+  remote_user: root
+  become: true
+  serial: 1
+  roles:
+    - rqlite
+
+- name: Deploy rqlite on slave nodes (join master)
+  hosts: rqlite_slaves
+  remote_user: root
+  become: true
+  roles:
+    - rqlite

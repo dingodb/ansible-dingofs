@@ -1,0 +1,86 @@
+---
+# ============================================================
+# DingoFS Ansible - Global Variables
+# ============================================================
+
+# --- User & Access ---
+dingofs_user: dingofs
+dingofs_password: dingofsPassword
+dingofs_home: /home/dingofs
+dingofs_pkg_dir: /home/dingofs/pkg
+dingofs_script_dir: /home/dingofs/script
+
+# --- SSH ---
+dingofs_ssh_key_type: rsa
+dingofs_ssh_key_bits: 4096
+
+# --- Package URLs (offline: set to local paths; online: set to URLs) ---
+rqlite_version: "v9.4.5"
+rqlite_tarball: "rqlite-{{ rqlite_version }}-linux-amd64.tar.gz"
+rqlite_download_url: "https://github.com/rqlite/rqlite/releases/download/{{ rqlite_version }}/{{ rqlite_tarball }}"
+
+dingo_cli_download_url: "https://www.dingodb.com/dingocli/branches/main/latest/dingo"
+
+# --- RQLite ---
+rqlite_http_port: 4001
+rqlite_raft_port: 4002
+rqlite_node_dir: ~/rqlite/node
+rqlite_master_host: "{{ hostvars[groups['rqlite_master'][0]]['ansible_host'] }}"
+
+# --- Dingo CLI ---
+dingo_cli_log_level: error
+dingo_cli_timeout: 300
+dingo_cli_auto_upgrade: false
+dingo_cli_engine: podman
+dingo_cli_ssh_retries: 3
+dingo_cli_ssh_timeout: 10
+dingo_cli_db_url: "rqlite://{{ rqlite_master_host }}:{{ rqlite_http_port }}"
+
+# --- Container Engine ---
+container_engine: podman
+
+# --- DingoFS Cluster ---
+dingofs_cluster_name: v5.1
+dingofs_cluster_id: 1
+dingofs_container_image: "harbor.zetyun.cn/dingofs/dingofs:v5.1-b484ef2"
+dingofs_store_image: "harbor.zetyun.cn/dingodb/dingo-store:90b2885"
+dingofs_executor_image: "harbor.zetyun.cn/dingodb/dingo:develop-latest"
+
+dingofs_data_dir: "/mnt/data/dingofs-dingo-main/data/${service_role}"
+dingofs_log_dir: "/mnt/data/dingofs-dingo-main/logs/${service_role}/${service_replica_sequence}"
+dingofs_raft_dir: "/mnt/data/dingofs-dingo-main/raft/${service_role}"
+dingofs_core_dir: "/mnt/data/corefiles/core-%e-%p-%t"
+dingofs_default_replica_num: 3
+
+# Coordinator service
+coordinator_server_port: 6500
+coordinator_raft_port: 7500
+
+# Store service
+store_server_port: 6600
+store_raft_port: 7600
+store_block_cache_size: 21474836480
+store_mount_volumes: "/nas/dingofs/v5.1"
+
+# MDS service
+mds_base_port: 690
+mds_replicas: 3
+mds_compact_chunk_enable: true
+
+# Executor service
+executor_port: 18765
+executor_mysql_port: 13307
+executor_java_xms: 256m
+executor_java_xmx: 1g
+executor_java_soft_max_heap: 512m
+executor_java_max_direct_memory: 256m
+
+# --- Performance Tuning ---
+tune_hugepages: 1024
+tune_swappiness: 10
+tune_max_map_count: 655360
+tune_dirty_ratio: 40
+tune_dirty_background_ratio: 10
+tune_core_pattern: "/mnt/disk1/corefiles/core-%e-%p-%t"
+tune_thp_mode: madvise
+tune_cpupower_idle_disable: 3

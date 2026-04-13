@@ -1,0 +1,16 @@
+# DingoFS sysctl tuning (managed by Ansible)
+kernel.core_pattern = {{ tune_core_pattern }}
+kernel.io_uring_disabled = 0
+vm.dirty_ratio = {{ tune_dirty_ratio }}
+vm.dirty_background_ratio = {{ tune_dirty_background_ratio }}
+vm.swappiness = {{ tune_swappiness }}
+vm.nr_hugepages = {{ tune_hugepages }}
+vm.max_map_count = {{ tune_max_map_count }}
+vm.overcommit_memory = 1
+net.ipv4.tcp_window_scaling = {{ tune_tcp_window_scaling }}
+net.ipv4.tcp_timestamps = {{ tune_tcp_timestamps }}
+net.ipv4.tcp_mem = {{ tune_tcp_mem }}
+net.ipv4.tcp_wmem = {{ tune_tcp_wmem }}
+net.ipv4.tcp_rmem = {{ tune_tcp_rmem }}
+net.core.rmem_max = {{ tune_rmem_max }}
+net.core.wmem_max = {{ tune_wmem_max }}

@@ -1,0 +1,23 @@
+---
+# Master playbook: Full DingoFS meta server deployment
+# Executes all phases in order:
+#   1. System preparation (user, hosts, SSH, packages)
+#   2. Performance tuning
+#   3. RQLite database cluster
+#   4. Podman + Dingo CLI tool
+#   5. DingoFS cluster deployment
+
+- name: "Phase 1: System preparation"
+  import_playbook: 01_prepare.yml
+
+- name: "Phase 2: Performance tuning"
+  import_playbook: 02_tune.yml
+
+- name: "Phase 3: RQLite database cluster"
+  import_playbook: 03_rqlite.yml
+
+- name: "Phase 4: Podman + Dingo CLI"
+  import_playbook: 04_dingo_cli.yml
+
+- name: "Phase 5: DingoFS cluster deployment"
+  import_playbook: 05_deploy_cluster.yml

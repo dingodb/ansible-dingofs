@@ -1,0 +1,18 @@
+[Unit]
+Description=Rqlite Database Service
+After=network.target
+
+[Service]
+User=root
+Group=root
+{% if rqlite_join_address is defined and rqlite_join_address %}
+ExecStart={{ rqlite_bin_dest }} -node-id {{ rqlite_node_id }} -http-addr {{ ansible_host }}:{{ rqlite_http_port }} -raft-addr {{ ansible_host }}:{{ rqlite_raft_port }} -join {{ rqlite_join_address }}:{{ rqlite_raft_port }} {{ rqlite_node_dir }}
+{% else %}
+ExecStart={{ rqlite_bin_dest }} -node-id {{ rqlite_node_id }} -http-addr {{ ansible_host }}:{{ rqlite_http_port }} -raft-addr {{ ansible_host }}:{{ rqlite_raft_port }} {{ rqlite_node_dir }}
+{% endif %}
+Restart=always
+RestartSec=5
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

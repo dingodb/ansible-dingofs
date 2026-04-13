@@ -1,0 +1,13 @@
+[defaults]
+log_level = {{ dingo_cli_log_level }}
+sudo_alias = "{{ dingo_cli_sudo_alias }}"
+timeout = {{ dingo_cli_timeout }}
+auto_upgrade = {{ dingo_cli_auto_upgrade | lower }}
+engine = {{ dingo_cli_engine }}
+
+[ssh_connections]
+retries = {{ dingo_cli_ssh_retries }}
+timeout = {{ dingo_cli_ssh_timeout }}
+
+[database]
+url = "{{ dingo_cli_db_url }}"

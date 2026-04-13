@@ -1,0 +1,13 @@
+---
+dingo_cli_download_url: "https://www.dingodb.com/dingocli/branches/main/latest/dingo"
+dingo_cli_pkg_path: "{{ dingofs_pkg_dir }}/dingo"
+dingo_cli_bin_dir: "{{ dingofs_home }}/.dingo/bin"
+
+dingo_cli_log_level: error
+dingo_cli_timeout: 300
+dingo_cli_auto_upgrade: false
+dingo_cli_engine: podman
+dingo_cli_ssh_retries: 3
+dingo_cli_ssh_timeout: 10
+dingo_cli_db_url: "rqlite://{{ rqlite_master_host }}:{{ rqlite_http_port }}"
+dingo_cli_sudo_alias: ""

@@ -1,0 +1,33 @@
+---
+dingofs_cluster_name: v5.1
+dingofs_cluster_id: 1
+dingofs_container_image: "harbor.zetyun.cn/dingofs/dingofs:v5.1-b484ef2"
+dingofs_store_image: "harbor.zetyun.cn/dingodb/dingo-store:90b2885"
+dingofs_executor_image: "harbor.zetyun.cn/dingodb/dingo:develop-latest"
+
+dingofs_data_dir: "/mnt/data/dingofs-dingo-main/data/${service_role}"
+dingofs_log_dir: "/mnt/data/dingofs-dingo-main/logs/${service_role}/${service_replica_sequence}"
+dingofs_raft_dir: "/mnt/data/dingofs-dingo-main/raft/${service_role}"
+dingofs_core_dir: "/mnt/data/corefiles/core-%e-%p-%t"
+dingofs_default_replica_num: 3
+dingofs_home_tmp: "/tmp/dingofs-{{ dingofs_cluster_name }}"
+
+coordinator_server_port: 6500
+coordinator_raft_port: 7500
+
+store_server_port: 6600
+store_raft_port: 7600
+store_block_cache_size: 21474836480
+store_txn_detail_log: false
+store_mount_volumes: "/nas/dingofs/{{ dingofs_cluster_name }}"
+
+mds_base_port: 690
+mds_replicas: 3
+mds_compact_chunk_enable: true
+
+executor_port: 18765
+executor_mysql_port: 13307
+executor_java_xms: 256m
+executor_java_xmx: 1g
+executor_java_soft_max_heap: 512m
+executor_java_max_direct_memory: 256m

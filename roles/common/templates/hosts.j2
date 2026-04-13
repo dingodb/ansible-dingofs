@@ -1,0 +1,4 @@
+# --- DingoFS cluster hosts (managed by Ansible) ---
+{% for host in groups['meta_servers'] %}
+{{ hostvars[host]['ansible_host'] }}    {{ host }}
+{% endfor %}

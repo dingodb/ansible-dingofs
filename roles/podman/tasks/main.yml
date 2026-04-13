@@ -1,0 +1,32 @@
+---
+# ============================================================
+# Role: podman - Install Podman container engine
+# ============================================================
+
+- name: Check if podman is already installed
+  command: podman --version
+  register: podman_check
+  changed_when: false
+  failed_when: false
+
+- name: Install podman
+  yum:
+    name: podman
+    state: present
+  when: podman_check.rc != 0
+
+- name: Enable and start podman socket (for API compatibility)
+  systemd:
+    name: podman.socket
+    enabled: true
+    state: started
+  failed_when: false
+
+- name: Verify podman installation
+  command: podman --version
+  register: podman_version
+  changed_when: false
+
+- name: Display podman version
+  debug:
+    var: podman_version.stdout

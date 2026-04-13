@@ -1,0 +1,168 @@
+---
+# ============================================================
+# Role: tune - Performance tuning for DingoFS nodes
+# Only adds or modifies config when absent or not matching.
+# ============================================================
+
+# =========================
+# CPU governor
+# =========================
+- name: Check if CPU frequency scaling is available
+  stat:
+    path: /sys/devices/system/cpu/cpu0/cpufreq
+  register: cpufreq_dir
+
+- name: Read current CPU governor
+  slurp:
+    src: /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor
+  register: cpu_governor_current
+  when: cpufreq_dir.stat.exists
+
+- name: Set CPU governor to performance (only if not already set)
+  shell: echo performance > "{{ item }}"
+  with_fileglob: /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor
+  when:
+    - cpufreq_dir.stat.exists
+    - (cpu_governor_current.content | b64decode | trim) != "performance"
+  changed_when: true
+
+# =========================
+# Ulimits (check each line, only add if absent or wrong)
+# =========================
+- name: Check current nofile soft limit
+  shell: grep -E '^\*\s+soft\s+nofile' /etc/security/limits.conf /etc/security/limits.d/*.conf 2>/dev/null | awk '{print $NF}' | tail -1
+  register: current_nofile_soft
+  changed_when: false
+  failed_when: false
+
+- name: Check current nofile hard limit
+  shell: grep -E '^\*\s+hard\s+nofile' /etc/security/limits.conf /etc/security/limits.d/*.conf 2>/dev/null | awk '{print $NF}' | tail -1
+  register: current_nofile_hard
+  changed_when: false
+  failed_when: false
+
+- name: Check current core soft limit
+  shell: grep -E '^\*\s+soft\s+core' /etc/security/limits.conf /etc/security/limits.d/*.conf 2>/dev/null | awk '{print $NF}' | tail -1
+  register: current_core_soft
+  changed_when: false
+  failed_when: false
+
+- name: Check current core hard limit
+  shell: grep -E '^\*\s+hard\s+core' /etc/security/limits.conf /etc/security/limits.d/*.conf 2>/dev/null | awk '{print $NF}' | tail -1
+  register: current_core_hard
+  changed_when: false
+  failed_when: false
+
+- name: Check current nproc soft limit
+  shell: grep -E '^\*\s+soft\s+nproc' /etc/security/limits.conf /etc/security/limits.d/*.conf 2>/dev/null | awk '{print $NF}' | tail -1
+  register: current_nproc_soft
+  changed_when: false
+  failed_when: false
+
+- name: Check current nproc hard limit
+  shell: grep -E '^\*\s+hard\s+nproc' /etc/security/limits.conf /etc/security/limits.d/*.conf 2>/dev/null | awk '{print $NF}' | tail -1
+  register: current_nproc_hard
+  changed_when: false
+  failed_when: false
+
+- name: Determine if ulimits need updating
+  set_fact:
+    ulimits_need_update: >-
+      {{
+        (current_nofile_soft.stdout | default('') | trim) != '1048576' or
+        (current_nofile_hard.stdout | default('') | trim) != '1048576' or
+        (current_core_soft.stdout | default('') | trim) != 'unlimited' or
+        (current_core_hard.stdout | default('') | trim) != 'unlimited' or
+        (current_nproc_soft.stdout | default('') | trim) != '4194304' or
+        (current_nproc_hard.stdout | default('') | trim) != '4194304'
+      }}
+
+- name: Deploy DingoFS ulimits drop-in (only if any limit is absent or wrong)
+  template:
+    src: limits-dingofs.conf.j2
+    dest: /etc/security/limits.d/99-dingofs.conf
+    mode: "0644"
+  when: ulimits_need_update | bool
+
+# =========================
+# Sysctl (check each key, only set if absent or different)
+# =========================
+- name: Read current sysctl values
+  command: sysctl -n {{ item.key }}
+  loop:
+    - { key: "kernel.core_pattern",           want: "{{ tune_core_pattern }}" }
+    - { key: "kernel.io_uring_disabled",      want: "0" }
+    - { key: "vm.dirty_ratio",                want: "{{ tune_dirty_ratio }}" }
+    - { key: "vm.dirty_background_ratio",     want: "{{ tune_dirty_background_ratio }}" }
+    - { key: "vm.swappiness",                 want: "{{ tune_swappiness }}" }
+    - { key: "vm.nr_hugepages",               want: "{{ tune_hugepages }}" }
+    - { key: "vm.max_map_count",              want: "{{ tune_max_map_count }}" }
+    - { key: "vm.overcommit_memory",          want: "1" }
+    - { key: "net.ipv4.tcp_window_scaling",   want: "{{ tune_tcp_window_scaling }}" }
+    - { key: "net.ipv4.tcp_timestamps",       want: "{{ tune_tcp_timestamps }}" }
+    - { key: "net.ipv4.tcp_mem",              want: "{{ tune_tcp_mem }}" }
+    - { key: "net.ipv4.tcp_wmem",             want: "{{ tune_tcp_wmem }}" }
+    - { key: "net.ipv4.tcp_rmem",             want: "{{ tune_tcp_rmem }}" }
+    - { key: "net.core.rmem_max",             want: "{{ tune_rmem_max }}" }
+    - { key: "net.core.wmem_max",             want: "{{ tune_wmem_max }}" }
+  register: sysctl_current
+  changed_when: false
+  failed_when: false
+
+# Simpler approach: compare each result and apply only mismatches
+- name: Apply sysctl values that are absent or different
+  sysctl:
+    name: "{{ item.item.key }}"
+    value: "{{ item.item.want }}"
+    sysctl_file: /etc/sysctl.d/99-dingofs.conf
+    reload: true
+    state: present
+  loop: "{{ sysctl_current.results }}"
+  loop_control:
+    label: "{{ item.item.key }}"
+  when: (item.stdout | default('') | trim) != (item.item.want | string | trim)
+
+# =========================
+# Transparent Huge Pages (check before setting)
+# =========================
+- name: Read current THP setting
+  slurp:
+    src: /sys/kernel/mm/transparent_hugepage/enabled
+  register: thp_current
+
+- name: Set THP to {{ tune_thp_mode }} (only if not already set)
+  shell: echo "{{ tune_thp_mode }}" > /sys/kernel/mm/transparent_hugepage/enabled
+  when: "'[' + tune_thp_mode + ']' not in (thp_current.content | b64decode)"
+  changed_when: true
+
+# =========================
+# CPU idle states (check before setting)
+# =========================
+- name: Check if cpupower is available
+  command: which cpupower
+  register: cpupower_check
+  changed_when: false
+  failed_when: false
+
+- name: Read current CPU idle state config
+  shell: cpupower idle-info 2>/dev/null | grep -c 'DISABLED'
+  register: cpuidle_disabled_count
+  changed_when: false
+  failed_when: false
+  when: cpupower_check.rc == 0
+
+- name: Configure CPU idle states (only if not already disabled)
+  command: cpupower idle-set -D {{ tune_cpupower_idle_disable }}
+  when:
+    - cpupower_check.rc == 0
+    - (cpuidle_disabled_count.stdout | default('0') | int) == 0
+  changed_when: true
+
+# =========================
+# Core dump directory
+# =========================
+- name: Ensure core dump directory exists
+  file:
+    path: "{{ tune_core_pattern | dirname }}"
+    state: directory
+    mode: "0777"

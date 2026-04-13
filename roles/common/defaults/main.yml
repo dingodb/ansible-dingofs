@@ -1,0 +1,16 @@
+---
+dingofs_user: dingofs
+dingofs_password: dingofs123
+dingofs_home: /home/dingofs
+dingofs_pkg_dir: /home/dingofs/pkg
+dingofs_script_dir: /home/dingofs/script
+
+dingofs_ssh_key_type: rsa
+dingofs_ssh_key_bits: 4096
+
+common_basic_packages:
+  - fio
+  - numactl
+  - nvme-cli
+  - gcc
+  - make

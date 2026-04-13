@@ -1,0 +1,8 @@
+---
+# Playbook: Deploy DingoFS cluster
+# Pulls images on all nodes, then runs dingo CLI commands from admin node
+- name: Deploy DingoFS cluster
+  hosts: admin
+  become: true
+  roles:
+    - dingofs_cluster

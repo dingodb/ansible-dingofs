@@ -1,0 +1,10 @@
+---
+# Playbook: System preparation for all DingoFS meta server nodes
+# Configures: /etc/hosts, dingofs user, sudo, SSH keys, basic packages
+# Must be executed as root since tasks require root privileges (create user, install packages, etc.)
+- name: Prepare DingoFS meta server nodes
+  hosts: meta_servers
+  remote_user: root
+  become: false
+  roles:
+    - common

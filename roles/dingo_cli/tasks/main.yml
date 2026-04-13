@@ -1,0 +1,86 @@
+---
+# ============================================================
+# Role: dingo_cli - Install and configure Dingo CLI tool
+# ============================================================
+
+# --- Download dingo CLI ---
+- name: Download dingo CLI binary
+  get_url:
+    url: "{{ dingo_cli_download_url }}"
+    dest: "{{ dingo_cli_pkg_path }}"
+    mode: "0755"
+  when: dingo_cli_download_url is defined
+
+- name: Set executable permission on dingo CLI
+  file:
+    path: "{{ dingo_cli_pkg_path }}"
+    mode: "0755"
+
+# --- Move dingo CLI binary to bin directory ---
+- name: Ensure .dingo directory exists
+  file:
+    path: "{{ dingofs_home }}/.dingo"
+    state: directory
+    owner: "{{ dingofs_user }}"
+    group: "{{ dingofs_user }}"
+    mode: "0755"
+
+- name: Ensure dingo CLI bin directory exists
+  file:
+    path: "{{ dingo_cli_bin_dir }}"
+    state: directory
+    owner: "{{ dingofs_user }}"
+    group: "{{ dingofs_user }}"
+    mode: "0755"
+
+- name: Move dingo CLI binary to bin directory
+  copy:
+    src: "{{ dingo_cli_pkg_path }}"
+    dest: "{{ dingo_cli_bin_dir }}/dingo"
+    owner: "{{ dingofs_user }}"
+    group: "{{ dingofs_user }}"
+    mode: "0755"
+    remote_src: true
+
+# --- Initialize dingo CLI ---
+- name: Initialize dingo CLI (creates ~/.dingo directory)
+  become: true
+  become_user: "{{ dingofs_user }}"
+  command: "{{ dingo_cli_bin_dir }}/dingo --version"
+  register: dingo_init
+  changed_when: false
+
+# --- Configure PATH ---
+- name: Add dingo CLI to PATH in bash_profile
+  become: true
+  become_user: "{{ dingofs_user }}"
+  lineinfile:
+    path: "{{ dingofs_home }}/.bash_profile"
+    line: 'export PATH=$PATH:{{ dingo_cli_bin_dir }}'
+    regexp: '.*\.dingo/bin.*'
+    state: present
+    create: true
+    mode: "0644"
+
+# --- Configure dingocli.cfg ---
+- name: Deploy dingocli.cfg configuration
+  become: true
+  become_user: "{{ dingofs_user }}"
+  template:
+    src: dingocli.cfg.j2
+    dest: "{{ dingofs_home }}/.dingo/dingocli.cfg"
+    mode: "0644"
+
+# --- Verify installation ---
+- name: Verify dingo CLI is functional
+  become: true
+  become_user: "{{ dingofs_user }}"
+  shell: "source {{ dingofs_home }}/.bash_profile && dingo --version"
+  args:
+    executable: /bin/bash
+  register: dingo_version
+  changed_when: false
+
+- name: Display dingo CLI version
+  debug:
+    var: dingo_version.stdout

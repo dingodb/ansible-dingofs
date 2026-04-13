@@ -1,0 +1,14 @@
+---
+rqlite_version: "v9.4.5"
+rqlite_tarball: "rqlite-{{ rqlite_version }}-linux-amd64.tar.gz"
+rqlite_download_url: "https://github.com/rqlite/rqlite/releases/download/{{ rqlite_version }}/{{ rqlite_tarball }}"
+
+rqlite_pkg_dir: "{{ dingofs_pkg_dir }}"
+rqlite_extract_dir: "{{ dingofs_pkg_dir }}/rqlite-data"
+rqlite_bin_dest: /usr/local/bin/rqlited
+
+rqlite_http_port: 4001
+rqlite_raft_port: 4002
+rqlite_node_dir: ~/rqlite/node
+
+rqlite_master_host: "{{ hostvars[groups['rqlite_master'][0]]['ansible_host'] }}"

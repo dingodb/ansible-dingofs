@@ -1,0 +1,41 @@
+---
+# Playbook: Check DingoFS cluster status
+- name: Check DingoFS cluster health
+  hosts: admin
+  become: true
+  become_user: "{{ dingofs_user }}"
+  tasks:
+    - name: Check rqlite cluster status
+      uri:
+        url: "http://{{ rqlite_master_host }}:{{ rqlite_http_port }}/status"
+        return_content: true
+      register: rqlite_status
+
+    - name: Display rqlite node state
+      debug:
+        msg: "RQLite leader: {{ (rqlite_status.content | from_json).store.raft.state }}"
+
+    - name: Check DingoFS cluster status
+      shell: "dingo cluster status -sv"
+      args:
+        executable: /bin/bash
+      register: cluster_status
+      changed_when: false
+
+    - name: Display cluster status
+      debug:
+        var: cluster_status.stdout_lines
+
+    - name: Check podman containers on each node
+      command: podman ps --format "{{ '{{' }}.Names{{ '}}' }} {{ '{{' }}.Status{{ '}}' }}"
+      delegate_to: "{{ item }}"
+      loop: "{{ groups['meta_servers'] }}"
+      register: containers
+      changed_when: false
+
+    - name: Display running containers per node
+      debug:
+        msg: "{{ item.item }}: {{ item.stdout_lines }}"
+      loop: "{{ containers.results }}"
+      loop_control:
+        label: "{{ item.item }}"

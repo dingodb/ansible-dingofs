@@ -1,0 +1,124 @@
+---
+# ============================================================
+# Role: common - System preparation for DingoFS nodes
+# Requires: root user (creates users, installs packages, etc.)
+# ============================================================
+
+# --- Pre-flight: verify running as root ---
+- name: Check that the current effective user is root
+  assert:
+    that:
+      - ansible_effective_user_id == 0
+    fail_msg: >-
+      This playbook must be executed as root.
+      Current user is '{{ ansible_user_id }}' (uid={{ ansible_effective_user_id }}).
+      Please re-run with 'remote_user: root' or '-u root'.
+    success_msg: "Running as root - OK"
+
+# --- /etc/hosts configuration ---
+- name: Configure /etc/hosts with cluster node mappings
+  blockinfile:
+    path: /etc/hosts
+    block: "{{ lookup('template', 'hosts.j2') }}"
+    marker: "# {mark} ANSIBLE MANAGED - DingoFS cluster hosts"
+    state: present
+
+# --- Create dingofs user ---
+- name: Create dingofs system user
+  user:
+    name: "{{ dingofs_user }}"
+    comment: dingofs
+    home: "{{ dingofs_home }}"
+    shell: /bin/bash
+    create_home: true
+    state: present
+
+- name: Set dingofs user password
+  user:
+    name: "{{ dingofs_user }}"
+    password: "{{ dingofs_password | password_hash('sha512') }}"
+    update_password: on_create
+
+# --- Sudo access ---
+- name: Configure sudoers for dingofs user
+  template:
+    src: sudoers_dingofs.j2
+    dest: /etc/sudoers.d/dingofs
+    mode: "0440"
+    validate: "visudo -cf %s"
+
+# --- Create working directories ---
+- name: Create package directory
+  file:
+    path: "{{ dingofs_pkg_dir }}"
+    state: directory
+    owner: "{{ dingofs_user }}"
+    group: "{{ dingofs_user }}"
+    mode: "0755"
+
+- name: Create script directory
+  file:
+    path: "{{ dingofs_script_dir }}"
+    state: directory
+    owner: "{{ dingofs_user }}"
+    group: "{{ dingofs_user }}"
+    mode: "0755"
+
+# --- SSH key setup ---
+- name: Ensure .ssh directory exists for dingofs user
+  file:
+    path: "{{ dingofs_home }}/.ssh"
+    state: directory
+    owner: "{{ dingofs_user }}"
+    group: "{{ dingofs_user }}"
+    mode: "0700"
+
+- name: Generate SSH key pair for dingofs user
+  become: true
+  become_user: "{{ dingofs_user }}"
+  community.crypto.openssh_keypair:
+    path: "{{ dingofs_home }}/.ssh/id_{{ dingofs_ssh_key_type }}"
+    type: "{{ dingofs_ssh_key_type }}"
+    size: "{{ dingofs_ssh_key_bits }}"
+    state: present
+  register: ssh_key
+
+- name: Collect public keys from all nodes
+  slurp:
+    src: "{{ dingofs_home }}/.ssh/id_{{ dingofs_ssh_key_type }}.pub"
+  register: ssh_pub_keys
+
+- name: Distribute authorized_keys to all nodes
+  authorized_key:
+    user: "{{ dingofs_user }}"
+    key: "{{ hostvars[item]['ssh_pub_keys']['content'] | b64decode }}"
+    state: present
+  loop: "{{ groups['meta_servers'] }}"
+
+# --- Install basic packages (CentOS/RHEL/Rocky) ---
+- name: Install kernel-tools for cpupower
+  yum:
+    name: kernel-tools
+    state: present
+
+- name: Install basic tools
+  yum:
+    name: "{{ common_basic_packages }}"
+    state: present
+
+- name: Gather installed package facts
+  package_facts:
+    manager: auto
+
+- name: Install development tools when gcc is absent
+  yum:
+    name: "@Development Tools"
+    state: present
+  when: "'gcc' not in ansible_facts.packages"
+
+# --- Create core dump directory ---
+- name: Create core dump directory
+  file:
+    path: /mnt/disk1/corefiles
+    state: directory
+    mode: "0777"

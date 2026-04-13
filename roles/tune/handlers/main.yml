@@ -1,0 +1,5 @@
+---
+# sysctl reload is handled by the sysctl module (reload: true) per key.
+# This handler is kept for any future template-based config that needs a manual reload.
+- name: reload sysctl
+  command: sysctl --system

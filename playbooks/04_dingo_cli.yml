@@ -1,0 +1,13 @@
+---
+# Playbook: Install Podman on all nodes, then Dingo CLI on admin node
+- name: Install Podman container engine on all nodes
+  hosts: meta_servers
+  become: true
+  roles:
+    - podman
+
+- name: Install and configure Dingo CLI on admin node
+  hosts: admin
+  become: true
+  roles:
+    - dingo_cli

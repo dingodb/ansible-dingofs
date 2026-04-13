@@ -1,0 +1,81 @@
+---
+# ============================================================
+# Role: rqlite - Deploy rqlite database cluster
+# ============================================================
+
+# --- Download & Extract ---
+- name: Download rqlite tarball
+  get_url:
+    url: "{{ rqlite_download_url }}"
+    dest: "{{ rqlite_pkg_dir }}/{{ rqlite_tarball }}"
+    mode: "0644"
+  when: rqlite_download_url is defined
+
+- name: Create rqlite extract directory
+  file:
+    path: "{{ rqlite_extract_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: Extract rqlite tarball
+  unarchive:
+    src: "{{ rqlite_pkg_dir }}/{{ rqlite_tarball }}"
+    dest: "{{ rqlite_extract_dir }}"
+    remote_src: true
+    extra_opts:
+      - --strip-components=1
+
+- name: Install rqlited binary
+  copy:
+    src: "{{ rqlite_extract_dir }}/rqlited"
+    dest: "{{ rqlite_bin_dest }}"
+    mode: "0755"
+    remote_src: true
+
+# --- Create data directory ---
+- name: Create rqlite node directory
+  file:
+    path: "{{ rqlite_node_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+# --- Deploy systemd service ---
+- name: Deploy rqlite systemd service (master - no join)
+  template:
+    src: rqlite.service.j2
+    dest: /etc/systemd/system/rqlite.service
+    mode: "0644"
+  vars:
+    rqlite_join_address: ""
+  when: inventory_hostname in groups['rqlite_master']
+  notify: restart rqlite
+
+- name: Deploy rqlite systemd service (slave - join master)
+  template:
+    src: rqlite.service.j2
+    dest: /etc/systemd/system/rqlite.service
+    mode: "0644"
+  vars:
+    rqlite_join_address: "{{ rqlite_master_host }}"
+  when: inventory_hostname in groups['rqlite_slaves']
+  notify: restart rqlite
+
+# --- Start service ---
+- name: Reload systemd daemon
+  systemd:
+    daemon_reload: true
+
+- name: Enable and start rqlite service
+  systemd:
+    name: rqlite
+    enabled: true
+    state: started
+
+- name: Wait for rqlite to be ready
+  wait_for:
+    port: "{{ rqlite_http_port }}"
+    host: "{{ ansible_host }}"
+    delay: 3
+    timeout: 60

@@ -1,0 +1,10 @@
+global:
+  user: {{ dingofs_user }}
+  ssh_port: 22
+  private_key_file: {{ dingofs_home }}/.ssh/id_{{ dingofs_ssh_key_type }}
+
+hosts:
+{% for host in groups['meta_servers'] %}
+  - host: {{ host }}
+    hostname: {{ hostvars[host]['ansible_host'] }}
+{% endfor %}

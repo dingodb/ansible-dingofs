@@ -1,0 +1,166 @@
+---
+# ============================================================
+# Role: dingofs_cluster - Deploy DingoFS cluster via dingo CLI
+# ============================================================
+
+# --- Ensure base directories exist on all meta_servers ---
+- name: Ensure base directories for data, log, and raft exist
+  become: true
+  file:
+    path: "{{ item.1.split('/${')[0] }}"
+    state: directory
+    owner: "{{ dingofs_user }}"
+    group: "{{ dingofs_user }}"
+    mode: "0755"
+  delegate_to: "{{ item.0 }}"
+  loop: "{{ groups['meta_servers'] | product([dingofs_data_dir, dingofs_log_dir, dingofs_raft_dir, dingofs_core_dir, store_mount_volumes]) | list }}"
+
+# --- Pull container images on ALL meta_servers ---
+- name: Ensure DingoFS container image is present for dingofs user
+  become: true
+  become_user: "{{ dingofs_user }}"
+  shell: |
+    if podman image exists {{ dingofs_container_image }}; then
+      echo present
+    else
+      podman pull {{ dingofs_container_image }}
+    fi
+  args:
+    executable: /bin/bash
+  register: pull_dingofs
+  changed_when: "'present' not in pull_dingofs.stdout"
+  delegate_to: "{{ item }}"
+  loop: "{{ groups['meta_servers'] }}"
+
+- name: Ensure Dingo Store container image is present for dingofs user
+  become: true
+  become_user: "{{ dingofs_user }}"
+  shell: |
+    if podman image exists {{ dingofs_store_image }}; then
+      echo present
+    else
+      podman pull {{ dingofs_store_image }}
+    fi
+  args:
+    executable: /bin/bash
+  register: pull_store
+  changed_when: "'present' not in pull_store.stdout"
+  delegate_to: "{{ item }}"
+  loop: "{{ groups['meta_servers'] }}"
+
+- name: Ensure Dingo Executor container image is present for dingofs user
+  become: true
+  become_user: "{{ dingofs_user }}"
+  shell: |
+    if podman image exists {{ dingofs_executor_image }}; then
+      echo present
+    else
+      podman pull {{ dingofs_executor_image }}
+    fi
+  args:
+    executable: /bin/bash
+  register: pull_executor
+  changed_when: "'present' not in pull_executor.stdout"
+  delegate_to: "{{ item }}"
+  loop: "{{ groups['meta_servers'] }}"
+
+# --- Generate config files on admin node ---
+- name: Create working directory for cluster configs
+  file:
+    path: "{{ dingofs_home }}/cluster-config"
+    state: directory
+    owner: "{{ dingofs_user }}"
+    group: "{{ dingofs_user }}"
+    mode: "0755"
+
+- name: Generate hosts.yaml for dingo CLI
+  template:
+    src: dingo-hosts.yaml.j2
+    dest: "{{ dingofs_home }}/cluster-config/hosts.yaml"
+    owner: "{{ dingofs_user }}"
+    group: "{{ dingofs_user }}"
+    mode: "0644"
+
+- name: Generate topology.yaml for cluster
+  template:
+    src: topology.yaml.j2
+    dest: "{{ dingofs_home }}/cluster-config/topology-{{ dingofs_cluster_name }}.yaml"
+    owner: "{{ dingofs_user }}"
+    group: "{{ dingofs_user }}"
+    mode: "0644"
+
+# --- Import hosts into dingo ---
+- name: Import hosts into dingo CLI
+  become: true
+  become_user: "{{ dingofs_user }}"
+  shell: >
+    dingo hosts commit -f {{ dingofs_home }}/cluster-config/hosts.yaml
+  args:
+    executable: /bin/bash
+  register: hosts_commit
+
+- name: Verify hosts imported
+  become: true
+  become_user: "{{ dingofs_user }}"
+  shell: "dingo hosts list"
+  args:
+    executable: /bin/bash
+  register: hosts_list
+  changed_when: false
+
+- name: Display imported hosts
+  debug:
+    var: hosts_list.stdout_lines
+
+# --- Deploy cluster ---
+- name: Create DingoFS cluster
+  become: true
+  become_user: "{{ dingofs_user }}"
+  shell: >
+    dingo cluster add {{ dingofs_cluster_name }}
+    -f {{ dingofs_home }}/cluster-config/topology-{{ dingofs_cluster_name }}.yaml
+  args:
+    executable: /bin/bash
+  register: cluster_add
+
+- name: Activate DingoFS cluster
+  become: true
+  become_user: "{{ dingofs_user }}"
+  shell: >
+    dingo cluster checkout {{ dingofs_cluster_name }}
+  args:
+    executable: /bin/bash
+
+- name: Commit topology configuration
+  become: true
+  become_user: "{{ dingofs_user }}"
+  shell: >
+    dingo config commit -f {{ dingofs_home }}/cluster-config/topology-{{ dingofs_cluster_name }}.yaml
+  args:
+    executable: /bin/bash
+
+- name: Deploy DingoFS cluster
+  become: true
+  become_user: "{{ dingofs_user }}"
+  shell: "dingo cluster deploy -k --local"
+  args:
+    executable: /bin/bash
+  register: deploy_result
+
+- name: Display deploy result
+  debug:
+    var: deploy_result.stdout_lines
+
+# --- Verify ---
+- name: Check cluster status
+  become: true
+  become_user: "{{ dingofs_user }}"
+  shell: "dingo cluster status -sv"
+  args:
+    executable: /bin/bash
+  register: cluster_status
+  changed_when: false
+
+- name: Display cluster status
+  debug:
+    var: cluster_status.stdout_lines
