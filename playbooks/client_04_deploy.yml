@@ -1,0 +1,8 @@
+---
+# Playbook: Deploy dingo-client (FUSE mount) service on client nodes
+- name: Deploy dingo-client service
+  hosts: client_servers
+  remote_user: root
+  become: false
+  roles:
+    - dingo_client

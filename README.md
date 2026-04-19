@@ -1,6 +1,6 @@
 # ansible-dingofs
 
-Ansible playbooks and roles for deploying and managing DingoFS (Ding Open File System) meta server clusters and Dingo Cache nodes on CentOS/RHEL/Rocky Linux (cache nodes also support Ubuntu/Debian).
+Ansible playbooks and roles for deploying and managing DingoFS (Ding Open File System) meta server clusters, Dingo Cache nodes, and Dingo Client (FUSE mount) nodes on CentOS/RHEL/Rocky Linux (cache/client nodes also support Ubuntu/Debian).
 
 ## Prerequisites
 
@@ -31,7 +31,13 @@ ansible-dingofs/
 │   ├── cache_03_tune.yml        # Cache: performance tuning
 │   ├── cache_04_jemalloc.yml    # Cache: compile & install jemalloc
 │   ├── cache_05_deploy.yml      # Cache: dingo-cache service
-│   └── cache_99_status.yml      # Cache: health check
+│   ├── cache_99_status.yml      # Cache: health check
+│   ├── client_site.yml          # Full client deployment (all phases)
+│   ├── client_01_prepare.yml    # Client: basic tools, cpupower
+│   ├── client_02_tune.yml       # Client: performance tuning
+│   ├── client_03_jemalloc.yml   # Client: compile & install jemalloc
+│   ├── client_04_deploy.yml     # Client: dingo-client FUSE service
+│   └── client_99_status.yml     # Client: health check
 └── roles/
     ├── common/                  # User, /etc/hosts, SSH keys, packages
     ├── tune/                    # CPU, ulimits, sysctl, hugepages
@@ -42,10 +48,11 @@ ansible-dingofs/
     ├── cache_prepare/           # Cache node system preparation
     ├── lvm_cache/               # NVMe LVM detection + setup
     ├── jemalloc/                # Compile jemalloc from source
-    └── dingo_cache/             # Dingo-cache service deployment
+    ├── dingo_cache/             # Dingo-cache service deployment
+    └── dingo_client/            # Dingo-client FUSE mount service
 ```
 
-## Quick Start
+## Dingo Meta Deployment
 
 ### 1. Configure inventory
 
@@ -127,7 +134,7 @@ Dingo Cache is deployed independently from the meta server cluster, on a separat
 
 - Cache nodes with unused NVMe devices (for LVM setup)
 - jemalloc source tarball on the control node (default: `/root/dingofs/pkg/jemalloc-5.3.0.tar.bz2`)
-- dingo-cache binary pre-staged on cache nodes at `dingo_cache_base_dir` (or set `dingo_cache_bin_url` to download)
+- dingo-cache binary on the control node (default: `/root/dingofs/pkg/dingo-cache`)
 
 ### 1. Configure cache inventory
 
@@ -184,6 +191,69 @@ ansible-playbook playbooks/cache_99_status.yml
 ```
 
 All cache playbooks connect with `remote_user: root`.
+
+## Dingo Client Deployment
+
+Dingo Client (FUSE mount) is deployed independently from both meta server and cache deployments, on a separate set of `client_servers` nodes.
+
+### Prerequisites
+
+- jemalloc source tarball on the control node (default: `/root/dingofs/pkg/jemalloc-5.3.0.tar.bz2`)
+- `dingo-client` binary on the control node (default: `/root/dingofs/pkg/dingo-client`)
+- `dingo` CLI binary on the control node (default: `/root/dingofs/pkg/dingo`)
+
+### 1. Configure client inventory
+
+Add your client server IPs to `inventory/hosts.yml`:
+
+```yaml
+    client_servers:
+      hosts:
+        client-node-1:
+          ansible_host: 10.0.0.20
+        client-node-2:
+          ansible_host: 10.0.0.21
+```
+
+### 2. Customize client variables
+
+Edit `inventory/group_vars/all.yml` to set:
+- `dingo_client_mds_addrs` — MDS addresses from the meta server cluster
+- `dingo_client_fsname` — filesystem name to mount
+- `dingo_client_mount_point` — where to mount the filesystem
+- `dingo_client_cache_group` — cache group name (must match `dingo_cache_group_name`)
+- FUSE/VFS tuning parameters as needed
+
+### 3. Run full client deployment
+
+```bash
+# Dry run
+ansible-playbook playbooks/client_site.yml --check
+
+# Full deployment
+ansible-playbook playbooks/client_site.yml
+```
+
+### 4. Run individual client phases
+
+```bash
+# System preparation (basic tools, cpupower)
+ansible-playbook playbooks/client_01_prepare.yml
+
+# Performance tuning
+ansible-playbook playbooks/client_02_tune.yml
+
+# Compile and install jemalloc
+ansible-playbook playbooks/client_03_jemalloc.yml
+
+# Deploy dingo-client FUSE mount service
+ansible-playbook playbooks/client_04_deploy.yml
+
+# Check client status
+ansible-playbook playbooks/client_99_status.yml
+```
+
+All client playbooks connect with `remote_user: root`.
 
 ## Meta Server Deployment Phases
 
@@ -251,6 +321,26 @@ See `inventory/group_vars/all.yml` for all configurable variables.
 | `dingo_cache_mds_addrs` | *(must set)* | Comma-separated MDS addresses |
 | `dingo_cache_ip_pattern` | `192.168.` | Network prefix for listen IP detection |
 | `jemalloc_version` | `5.3.0` | Jemalloc version to compile |
+
+## Client Deployment Phases
+
+| Phase | Playbook | Description |
+|-------|----------|-------------|
+| 1 | `client_01_prepare.yml` | Install basic packages, cpupower, development tools |
+| 2 | `client_02_tune.yml` | CPU governor, ulimits, sysctl, hugepages (reuses tune role) |
+| 3 | `client_03_jemalloc.yml` | Copy, compile, and install jemalloc with profiling support |
+| 4 | `client_04_deploy.yml` | Deploy dingo-client FUSE mount systemd service |
+
+### Client Key Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `dingo_client_fsname` | `alayanew` | Filesystem name to mount |
+| `dingo_client_mount_point` | `/dingofs/data` | FUSE mount point |
+| `dingo_client_port` | `12000` | VFS dummy server port |
+| `dingo_client_mds_addrs` | *(must set)* | Comma-separated MDS addresses |
+| `dingo_client_cache_group` | `dingofs-group` | Cache group name |
+| `dingo_client_fuse_max_threads` | `512` | FUSE max threads |
 
 ## Troubleshooting
 

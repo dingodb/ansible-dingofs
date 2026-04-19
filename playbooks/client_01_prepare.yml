@@ -1,0 +1,9 @@
+---
+# Playbook: System preparation for DingoFS client nodes
+# Installs: basic tools, cpupower, development tools
+- name: Prepare client nodes
+  hosts: client_servers
+  remote_user: root
+  become: false
+  roles:
+    - cache_prepare

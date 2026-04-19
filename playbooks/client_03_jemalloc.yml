@@ -1,0 +1,9 @@
+---
+# Playbook: Compile and install jemalloc on client nodes
+# Requires: gcc, make (installed by client_01_prepare.yml)
+- name: Build and install jemalloc on client nodes
+  hosts: client_servers
+  remote_user: root
+  become: false
+  roles:
+    - jemalloc

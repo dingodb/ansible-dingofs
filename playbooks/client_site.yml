@@ -1,0 +1,21 @@
+---
+# Master playbook: Full Dingo Client deployment
+# Independent from the DingoFS meta server deployment (meta_site.yml)
+# and the Dingo Cache deployment (cache_site.yml)
+# Executes all phases in order:
+#   1. System preparation (basic tools, cpupower, dev tools)
+#   2. Performance tuning (reuses tune role)
+#   3. Jemalloc compile and install
+#   4. Dingo-client (FUSE mount) service deployment
+
+- name: "Phase 1: System preparation"
+  import_playbook: client_01_prepare.yml
+
+- name: "Phase 2: Performance tuning"
+  import_playbook: client_02_tune.yml
+
+- name: "Phase 3: Jemalloc build & install"
+  import_playbook: client_03_jemalloc.yml
+
+- name: "Phase 4: Dingo-client deployment"
+  import_playbook: client_04_deploy.yml

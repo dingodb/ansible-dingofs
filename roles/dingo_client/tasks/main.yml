@@ -1,0 +1,90 @@
+---
+# ============================================================
+# Role: dingo_client - Deploy dingo-client (FUSE mount) service
+# ============================================================
+
+# --- Create directories ---
+- name: Create dingo-client base directory
+  file:
+    path: "{{ dingo_client_base_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: Create bin directory
+  file:
+    path: "{{ dingo_client_base_dir }}/bin"
+    state: directory
+    mode: "0755"
+
+- name: Create mount point directory
+  file:
+    path: "{{ dingo_client_mount_point }}"
+    state: directory
+    mode: "0755"
+
+- name: Create log directory
+  file:
+    path: "{{ dingo_client_log_dir }}"
+    state: directory
+    mode: "0755"
+
+# --- Copy binaries from control node ---
+- name: Copy dingo-client binary to remote host
+  copy:
+    src: "{{ dingo_client_bin_local_src }}"
+    dest: "{{ dingo_client_base_dir }}/bin/dingo-client"
+    mode: "0755"
+
+- name: Copy dingo CLI binary to remote host
+  copy:
+    src: "{{ dingo_client_dingo_bin_local_src }}"
+    dest: "{{ dingo_client_base_dir }}/bin/dingo"
+    mode: "0755"
+
+# --- Deploy mount script ---
+- name: Deploy dingofs-mount.sh
+  template:
+    src: dingofs-mount.sh.j2
+    dest: "{{ dingo_client_base_dir }}/dingofs-mount.sh"
+    mode: "0755"
+  notify: restart dingo-client
+
+# --- Deploy systemd service ---
+- name: Deploy dingo-client systemd service
+  template:
+    src: dingofs-mount.service.j2
+    dest: "/etc/systemd/system/{{ dingo_client_service_name }}.service"
+    mode: "0644"
+  notify: restart dingo-client
+
+- name: Reload systemd daemon
+  systemd:
+    daemon_reload: true
+
+- name: Enable and start dingo-client service
+  systemd:
+    name: "{{ dingo_client_service_name }}"
+    enabled: true
+    state: started
+
+# --- Verify ---
+- name: Wait for mount point to be active
+  command: mountpoint -q {{ dingo_client_mount_point }}
+  register: mount_check
+  retries: 10
+  delay: 3
+  until: mount_check.rc == 0
+
+- name: Display dingo-client service status
+  shell: systemctl is-active {{ dingo_client_service_name }}
+  register: service_status
+  changed_when: false
+
+- name: Show deployment summary
+  debug:
+    msg:
+      - "Service: {{ dingo_client_service_name }}"
+      - "Status: {{ service_status.stdout }}"
+      - "Mount: {{ dingo_client_mount_point }}"
+      - "Filesystem: {{ dingo_client_fsname }}"
+      - "MDS: {{ dingo_client_mds_addrs }}"

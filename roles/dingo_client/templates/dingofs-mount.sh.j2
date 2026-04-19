@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+set -x
+
+g_dingo="{{ dingo_client_base_dir }}/bin/dingo"
+g_fuse="{{ dingo_client_base_dir }}/bin/dingo-client"
+g_mnt="{{ dingo_client_mount_point }}"
+g_fsname="{{ dingo_client_fsname }}"
+g_mdsaddr="{{ dingo_client_mds_addrs }}"
+g_cache_group="{{ dingo_client_cache_group }}"
+g_port="{{ dingo_client_port }}"
+g_log="{{ dingo_client_log_dir }}"
+
+echo "Log path is configured to: $g_log"
+
+# Create mount point if absent
+if [ ! -d "${g_mnt}" ]; then
+    echo "Creating mount point ${g_mnt}..."
+    mkdir -p "${g_mnt}"
+fi
+
+# Unmount if already mounted
+if mountpoint -q "${g_mnt}" 2>/dev/null; then
+    umount -l "${g_mnt}"
+fi
+
+# Get mountpoint info and umount via dingo CLI
+mnt_info=$(${g_dingo} fs mountpoint --mdsaddr=${g_mdsaddr} | grep "${g_mnt}" | grep "$(hostname)")
+
+if [ -z "$mnt_info" ]; then
+    echo "No existing mountpoint on $(hostname), skip umount..."
+    umount -l "${g_mnt}" 2>/dev/null || true
+else
+    echo "Umounting existing mountpoint on $(hostname)..."
+    metric_port=$(echo "$mnt_info" | awk -F '[:]' '{print $2}')
+    echo "mountpoint ${g_mnt} metric_port is ${metric_port}"
+    ${g_dingo} fs umount "${g_mnt}"
+    if [ $? -ne 0 ]; then
+        echo "umount failed, exit..."
+        exit 1
+    fi
+fi
+
+LD_PRELOAD={{ dingo_client_ld_preload }} \
+    numactl --cpunodebind={{ dingo_client_numa_cpunode }} --membind={{ dingo_client_numa_memnode }} \
+    ${g_fuse} "mds://${g_mdsaddr}/${g_fsname}" "${g_mnt}" \
+    --log_dir=${g_log} \
+    --log_level={{ dingo_client_log_level }} \
+    --log_v={{ dingo_client_log_v }} \
+    --cache_store={{ dingo_client_cache_store }} \
+    --cache_group=${g_cache_group} \
+    --vfs_read_executor_thread={{ dingo_client_vfs_read_executor_thread }} \
+    --vfs_read_buffer_total_mb={{ dingo_client_vfs_read_buffer_total_mb }} \
+    --vfs_write_buffer_total_mb={{ dingo_client_vfs_write_buffer_total_mb }} \
+    --vfs_dummy_server_port=${g_port} \
+    --vfs_prefetch_blocks={{ dingo_client_vfs_prefetch_blocks }} \
+    --connections={{ dingo_client_connections }} \
+    --fuse_max_threads={{ dingo_client_fuse_max_threads }} \
+    --fuse_enable_readdir_cache={{ dingo_client_fuse_enable_readdir_cache }} \
+    --fuse_attr_cache_timeout_s={{ dingo_client_fuse_attr_cache_timeout_s }} \
+    --fuse_entry_cache_timeout_s={{ dingo_client_fuse_entry_cache_timeout_s }} \
+    --vfs_data_writeback_suffix={{ dingo_client_vfs_data_writeback_suffix }}

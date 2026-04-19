@@ -122,3 +122,36 @@ dingo_cache_log_dir: "/mnt/disk4/dingofs/logs/dingo-cache"
 
 # MDS addresses (host:port pairs, comma-separated)
 dingo_cache_mds_addrs: "192.168.0.44:16900,192.168.0.44:16901,192.168.0.44:16902,192.168.0.45:16900,192.168.0.45:16901,192.168.0.45:16902,192.168.0.46:16900,192.168.0.46:16901,192.168.0.46:16902"
+
+# ============================================================
+# Dingo Client
+# ============================================================
+dingo_client_fsname: alayanew
+dingo_client_base_dir: "/root/dingofs/dingo-client/{{ dingo_client_fsname }}"
+dingo_client_bin_local_src: /root/dingofs/pkg/dingo-client
+dingo_client_dingo_bin_local_src: /root/dingofs/pkg/dingo
+dingo_client_mount_point: /dingofs/data
+dingo_client_port: 12000
+dingo_client_cache_group: dingofs-group
+dingo_client_log_dir: "/mnt/disk1/dingofs/logs/{{ dingo_client_fsname }}"
+dingo_client_log_level: ERROR
+dingo_client_log_v: 0
+dingo_client_ld_preload: /usr/local/lib/libjemalloc.so.2
+dingo_client_numa_cpunode: 1
+dingo_client_numa_memnode: 1
+
+# MDS addresses (same as dingo_cache_mds_addrs typically)
+dingo_client_mds_addrs: "192.168.0.44:16900,192.168.0.44:16901,192.168.0.44:16902,192.168.0.45:16900,192.168.0.45:16901,192.168.0.45:16902,192.168.0.46:16900,192.168.0.46:16901,192.168.0.46:16902"
+
+# FUSE / VFS tuning
+dingo_client_cache_store: none
+dingo_client_vfs_read_executor_thread: 32
+dingo_client_vfs_read_buffer_total_mb: 8000
+dingo_client_vfs_write_buffer_total_mb: 8192
+dingo_client_vfs_prefetch_blocks: 0
+dingo_client_connections: 3
+dingo_client_fuse_max_threads: 512
+dingo_client_fuse_enable_readdir_cache: "false"
+dingo_client_fuse_attr_cache_timeout_s: 10
+dingo_client_fuse_entry_cache_timeout_s: 10
+dingo_client_vfs_data_writeback_suffix: "@bfloat16.data:@bfloat16.tmp"

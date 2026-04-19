@@ -1,0 +1,35 @@
+---
+# Playbook: Check dingo-client service status
+- name: Check dingo-client status
+  hosts: client_servers
+  remote_user: root
+  become: false
+  gather_facts: false
+  tasks:
+    - name: Check dingo-client service status
+      systemd:
+        name: "{{ dingo_client_service_name }}"
+      register: service_info
+
+    - name: Display service status
+      debug:
+        msg: "{{ inventory_hostname }}: {{ dingo_client_service_name }} is {{ service_info.status.ActiveState }}"
+
+    - name: Check mount point
+      command: mountpoint -q {{ dingo_client_mount_point }}
+      register: mount_check
+      changed_when: false
+      failed_when: false
+
+    - name: Display mount status
+      debug:
+        msg: "{{ inventory_hostname }}: {{ dingo_client_mount_point }} is {{ 'mounted' if mount_check.rc == 0 else 'NOT mounted' }}"
+
+    - name: Show mount details
+      shell: df -h {{ dingo_client_mount_point }} 2>/dev/null || echo 'Not mounted'
+      register: df_info
+      changed_when: false
+
+    - name: Display mount details
+      debug:
+        msg: "{{ df_info.stdout_lines }}"

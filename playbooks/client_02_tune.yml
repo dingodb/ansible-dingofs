@@ -1,0 +1,9 @@
+---
+# Playbook: Performance tuning for DingoFS client nodes
+# Reuses the existing tune role
+- name: Apply performance tuning to client nodes
+  hosts: client_servers
+  remote_user: root
+  become: true
+  roles:
+    - tune

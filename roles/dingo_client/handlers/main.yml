@@ -1,0 +1,6 @@
+---
+- name: restart dingo-client
+  systemd:
+    name: "{{ dingo_client_service_name }}"
+    state: restarted
+    daemon_reload: true
