@@ -84,3 +84,41 @@ tune_dirty_background_ratio: 10
 tune_core_pattern: "/mnt/disk1/corefiles/core-%e-%p-%t"
 tune_thp_mode: madvise
 tune_cpupower_idle_disable: 3
+
+# ============================================================
+# Dingo Cache
+# ============================================================
+
+# --- LVM ---
+lvm_skip_vg_names:
+  - csi-lvm
+lvm_vg_prefix: dingo_cache
+lvm_lv_name: lv
+lvm_fs_type: xfs
+lvm_mount_prefix: /mnt/disk
+
+# --- Jemalloc ---
+jemalloc_version: "5.3.0"
+jemalloc_local_src: "/root/dingofs/pkg/jemalloc-5.3.0.tar.bz2"
+
+# --- Dingo Cache Service ---
+dingo_cache_version: v5.1
+dingo_cache_base_dir: "/root/dingofs/dingo-cache/{{ dingo_cache_version }}"
+dingo_cache_bin_local_src: "/root/dingofs/pkg/dingo-cache"
+dingo_cache_listen_port: 11000
+dingo_cache_group_name: dingofs-group
+dingo_cache_group_weight: 100
+dingo_cache_cache_size_mb: 3145728
+dingo_cache_free_space_ratio: "0.01"
+dingo_cache_iodepth: 1024
+dingo_cache_log_level: INFO
+dingo_cache_log_v: 0
+dingo_cache_ld_preload: /usr/local/lib/libjemalloc.so.2
+dingo_cache_ip_pattern: "192.168."
+
+# Comma-separated cache directories (aligned with LVM mount points)
+dingo_cache_cache_dirs: "/mnt/disk1/dingofs/dingo-cache,/mnt/disk2/dingofs/dingo-cache,/mnt/disk3/dingofs/dingo-cache"
+dingo_cache_log_dir: "/mnt/disk4/dingofs/logs/dingo-cache"
+
+# MDS addresses (host:port pairs, comma-separated)
+dingo_cache_mds_addrs: "192.168.0.44:16900,192.168.0.44:16901,192.168.0.44:16902,192.168.0.45:16900,192.168.0.45:16901,192.168.0.45:16902,192.168.0.46:16900,192.168.0.46:16901,192.168.0.46:16902"

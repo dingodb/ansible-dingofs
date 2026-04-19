@@ -1,0 +1,24 @@
+---
+# Master playbook: Full Dingo Cache deployment
+# Independent from the DingoFS meta server deployment (site.yml)
+# Executes all phases in order:
+#   1. System preparation (basic tools, cpupower, dev tools)
+#   2. LVM setup (detect NVMe, create VGs, format, mount)
+#   3. Performance tuning (reuses tune role)
+#   4. Jemalloc compile and install
+#   5. Dingo-cache service deployment
+
+- name: "Phase 1: System preparation"
+  import_playbook: cache_01_prepare.yml
+
+- name: "Phase 2: LVM setup"
+  import_playbook: cache_02_lvm.yml
+
+- name: "Phase 3: Performance tuning"
+  import_playbook: cache_03_tune.yml
+
+- name: "Phase 4: Jemalloc build & install"
+  import_playbook: cache_04_jemalloc.yml
+
+- name: "Phase 5: Dingo-cache deployment"
+  import_playbook: cache_05_deploy.yml

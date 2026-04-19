@@ -1,0 +1,108 @@
+---
+# ============================================================
+# Role: cache_prepare - System preparation for DingoFS cache nodes
+# Requires: root user
+# ============================================================
+
+# --- Pre-flight: verify running as root ---
+- name: Check that the current effective user is root
+  assert:
+    that:
+      - ansible_effective_user_id == 0
+    fail_msg: >-
+      This playbook must be executed as root.
+      Current user is '{{ ansible_user_id }}' (uid={{ ansible_effective_user_id }}).
+      Please re-run with 'remote_user: root'.
+    success_msg: "Running as root - OK"
+
+# --- Create working directories ---
+- name: Create package directory
+  file:
+    path: "{{ cache_pkg_dir }}"
+    state: directory
+    mode: "0755"
+
+# --- Install basic packages ---
+- name: Install basic tools (RHEL/CentOS)
+  yum:
+    name: "{{ cache_basic_packages }}"
+    state: present
+  when: ansible_os_family == "RedHat"
+
+- name: Install basic tools (Debian/Ubuntu)
+  apt:
+    name: "{{ cache_basic_packages }}"
+    state: present
+    update_cache: true
+  when: ansible_os_family == "Debian"
+
+# --- Install cpupower ---
+- name: Check if cpupower is already installed
+  command: which cpupower
+  register: cpupower_check
+  changed_when: false
+  failed_when: false
+
+- name: Install cpupower via kernel-tools (RHEL/CentOS)
+  yum:
+    name: kernel-tools
+    state: present
+  when:
+    - cpupower_check.rc != 0
+    - ansible_os_family == "RedHat"
+
+- name: Install cpupower via linux-tools (Debian/Ubuntu)
+  block:
+    - name: Try kernel-matched linux-tools package
+      apt:
+        name: "linux-tools-{{ ansible_kernel }}"
+        state: present
+        update_cache: true
+      environment:
+        DEBIAN_FRONTEND: noninteractive
+        NEEDRESTART_MODE: l
+  rescue:
+    - name: Fall back to generic linux-tools
+      apt:
+        name:
+          - linux-tools-common
+          - linux-tools-generic
+        state: present
+      environment:
+        DEBIAN_FRONTEND: noninteractive
+        NEEDRESTART_MODE: l
+  when:
+    - cpupower_check.rc != 0
+    - ansible_os_family == "Debian"
+
+- name: Verify cpupower is available
+  command: which cpupower
+  changed_when: false
+
+# --- Install Development Tools ---
+- name: Gather installed package facts
+  package_facts:
+    manager: auto
+
+- name: Install Development Tools (RHEL/CentOS)
+  yum:
+    name: "@Development Tools"
+    state: present
+  when:
+    - ansible_os_family == "RedHat"
+    - "'gcc' not in ansible_facts.packages"
+
+- name: Install build-essential (Debian/Ubuntu)
+  apt:
+    name: build-essential
+    state: present
+  when:
+    - ansible_os_family == "Debian"
+    - "'gcc' not in ansible_facts.packages"
+
+# --- Create core dump directory ---
+- name: Create core dump directory
+  file:
+    path: /mnt/disk1/corefiles
+    state: directory
+    mode: "0777"

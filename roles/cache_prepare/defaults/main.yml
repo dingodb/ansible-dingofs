@@ -1,0 +1,9 @@
+---
+cache_basic_packages:
+  - fio
+  - numactl
+  - nvme-cli
+  - gcc
+  - make
+
+cache_pkg_dir: /root/dingofs/pkg

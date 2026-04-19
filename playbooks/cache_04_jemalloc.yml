@@ -1,0 +1,10 @@
+---
+# Playbook: Compile and install jemalloc on cache nodes
+# Requires: gcc, make (installed by cache_01_prepare.yml)
+# Source tarball must exist on the control node at jemalloc_local_src
+- name: Build and install jemalloc on cache nodes
+  hosts: cache_servers
+  remote_user: root
+  become: false
+  roles:
+    - jemalloc

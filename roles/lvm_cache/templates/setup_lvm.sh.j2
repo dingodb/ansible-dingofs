@@ -1,0 +1,84 @@
+#!/bin/bash
+# Ansible-managed: Detect unused NVMe devices and create LVM for DingoFS cache
+
+set -o pipefail
+
+echo "=== Detecting unused NVMe devices ==="
+
+devices=$(lsblk -lno NAME | grep '^nvme[0-9]\+n[0-9]\+$')
+
+available_devices=()
+
+for dev in $devices; do
+    path="/dev/$dev"
+
+    # Skip if mounted (device or any partition)
+    if lsblk -rno MOUNTPOINT "$path" | grep -qv '^$'; then
+        echo "Skipping $path (mounted)"
+        continue
+    fi
+
+    # Skip if in excluded volume groups
+{% for vg in lvm_skip_vg_names %}
+    if pvs --noheadings -o vg_name "$path" 2>/dev/null | grep -qw "{{ vg }}"; then
+        echo "Skipping $path (in VG {{ vg }})"
+        continue
+    fi
+{% endfor %}
+
+    # Skip if already in a dingo_cache VG
+    if pvs --noheadings -o vg_name "$path" 2>/dev/null | grep -qw "{{ lvm_vg_prefix }}"; then
+        echo "Skipping $path (already in a {{ lvm_vg_prefix }} VG)"
+        continue
+    fi
+
+    size=$(blockdev --getsize64 "$path" | numfmt --to=iec --format %.1f --suffix=B | sed 's/B//')
+    echo "Found available device: $path ($size)"
+    available_devices+=("$path")
+done
+
+if [ ${#available_devices[@]} -eq 0 ]; then
+    echo "No unused NVMe devices found. Nothing to do."
+    exit 0
+fi
+
+IFS=$'\n' sorted_devices=($(sort <<<"${available_devices[*]}"))
+unset IFS
+
+echo ""
+echo "=== Creating LVM for DingoFS cache ==="
+echo "Devices to process: ${sorted_devices[@]}"
+echo ""
+
+# Find the next available index (skip existing dingo_cache VGs)
+index=1
+while vgs "{{ lvm_vg_prefix }}_${index}" &>/dev/null; do
+    index=$((index + 1))
+done
+
+for device in "${sorted_devices[@]}"; do
+    vg_name="{{ lvm_vg_prefix }}_${index}"
+    lv_name="{{ lvm_lv_name }}"
+    mount_point="{{ lvm_mount_prefix }}${index}"
+
+    echo "Processing device: $device -> VG: $vg_name, Mount: $mount_point"
+
+    pvcreate -y -ff "$device" || { echo "Error: pvcreate failed on $device"; continue; }
+    vgcreate "$vg_name" "$device" || { echo "Error: vgcreate $vg_name failed"; continue; }
+    lvcreate -y -l 100%FREE -n "$lv_name" "$vg_name" || { echo "Error: lvcreate failed"; continue; }
+    mkfs.{{ lvm_fs_type }} "/dev/${vg_name}/${lv_name}" || { echo "Error: mkfs failed"; continue; }
+
+    mkdir -p "$mount_point"
+    mount "/dev/${vg_name}/${lv_name}" "$mount_point" || { echo "Error: mount failed"; continue; }
+
+    # Add to fstab if not already present
+    if ! grep -q "/dev/${vg_name}/${lv_name}" /etc/fstab; then
+        echo "/dev/${vg_name}/${lv_name} $mount_point {{ lvm_fs_type }} defaults 0 0" >> /etc/fstab
+    fi
+
+    echo "Successfully set up LVM: $device -> $mount_point"
+    echo ""
+    index=$((index + 1))
+done
+
+echo "=== DingoFS Cache LVM setup completed ==="

@@ -1,0 +1,54 @@
+---
+# ============================================================
+# Role: lvm_cache - Create LVM from unused NVMe devices
+# ============================================================
+
+- name: Check if any {{ lvm_vg_prefix }} volume groups already exist
+  shell: vgs --noheadings -o vg_name 2>/dev/null | grep -c '{{ lvm_vg_prefix }}' || true
+  register: existing_vg_count
+  changed_when: false
+
+- name: Display existing VG count
+  debug:
+    msg: "Found {{ existing_vg_count.stdout | trim }} existing {{ lvm_vg_prefix }} volume groups"
+
+# --- Deploy and run LVM setup script ---
+- name: Deploy LVM setup script
+  template:
+    src: setup_lvm.sh.j2
+    dest: /tmp/setup_lvm_dingo_cache.sh
+    mode: "0755"
+
+- name: Run LVM setup script
+  shell: /tmp/setup_lvm_dingo_cache.sh
+  register: lvm_setup_result
+  when: existing_vg_count.stdout | trim | int == 0
+
+- name: Display LVM setup output
+  debug:
+    msg: "{{ lvm_setup_result.stdout_lines }}"
+  when: lvm_setup_result is not skipped
+
+- name: Clean up LVM setup script
+  file:
+    path: /tmp/setup_lvm_dingo_cache.sh
+    state: absent
+
+# --- Verify mounts ---
+- name: List current {{ lvm_vg_prefix }} volume groups
+  shell: vgs --noheadings -o vg_name 2>/dev/null | grep '{{ lvm_vg_prefix }}' || true
+  register: final_vg_list
+  changed_when: false
+
+- name: Display final VG list
+  debug:
+    msg: "Active volume groups: {{ final_vg_list.stdout_lines }}"
+
+- name: Verify mount points
+  shell: mount | grep '{{ lvm_vg_prefix }}' || true
+  register: mount_check
+  changed_when: false
+
+- name: Display active mounts
+  debug:
+    msg: "{{ mount_check.stdout_lines }}"

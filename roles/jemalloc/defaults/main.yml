@@ -1,0 +1,7 @@
+---
+jemalloc_version: "5.3.0"
+jemalloc_tarball: "jemalloc-{{ jemalloc_version }}.tar.bz2"
+jemalloc_local_src: "/root/dingofs/pkg/{{ jemalloc_tarball }}"
+jemalloc_remote_dir: /root/dingofs/pkg
+jemalloc_configure_opts: "--enable-prof"
+jemalloc_lib_path: /usr/local/lib/libjemalloc.so.2

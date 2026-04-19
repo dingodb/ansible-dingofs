@@ -1,0 +1,7 @@
+---
+lvm_skip_vg_names:
+  - csi-lvm
+lvm_vg_prefix: dingo_cache
+lvm_lv_name: lv
+lvm_fs_type: xfs
+lvm_mount_prefix: /mnt/disk

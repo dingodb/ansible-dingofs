@@ -1,0 +1,9 @@
+---
+# Playbook: LVM setup for DingoFS cache nodes
+# Detects unused NVMe devices, creates LVM VGs, formats XFS, mounts
+- name: Set up LVM on cache nodes
+  hosts: cache_servers
+  remote_user: root
+  become: false
+  roles:
+    - lvm_cache

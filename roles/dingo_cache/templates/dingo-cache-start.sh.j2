@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Ansible-managed: Dingo-cache startup script
+
+CACHE_CONF_FILE="{{ dingo_cache_base_dir }}/dingo-cache.conf"
+
+if [ ! -f "$CACHE_CONF_FILE" ]; then
+    echo "Error: Config file $CACHE_CONF_FILE not found"
+    exit 1
+fi
+
+LD_PRELOAD={{ dingo_cache_ld_preload }} numactl --cpunodebind=0 --membind=0 {{ dingo_cache_base_dir }}/{{ dingo_cache_bin_name }} --flagfile "$CACHE_CONF_FILE"

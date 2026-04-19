@@ -1,0 +1,46 @@
+---
+# Playbook: Check dingo-cache service status
+- name: Check dingo-cache status
+  hosts: cache_servers
+  remote_user: root
+  become: false
+  gather_facts: false
+  tasks:
+    - name: Check dingo-cache service status
+      systemd:
+        name: dingo-cache
+      register: service_info
+
+    - name: Display service status
+      debug:
+        msg: "{{ inventory_hostname }}: dingo-cache is {{ service_info.status.ActiveState }}"
+
+    - name: Check dingo-cache listen port
+      wait_for:
+        port: "{{ dingo_cache_listen_port }}"
+        host: "{{ ansible_host }}"
+        timeout: 5
+      register: port_check
+      ignore_errors: true
+
+    - name: Display port status
+      debug:
+        msg: "{{ inventory_hostname }}: port {{ dingo_cache_listen_port }} is {{ 'open' if port_check is success else 'closed' }}"
+
+    - name: Show LVM volume groups
+      shell: vgs --noheadings -o vg_name,vg_size 2>/dev/null | grep '{{ lvm_vg_prefix }}' || echo 'No dingo_cache VGs found'
+      register: vg_info
+      changed_when: false
+
+    - name: Display VG info
+      debug:
+        msg: "{{ vg_info.stdout_lines }}"
+
+    - name: Show mount points
+      shell: df -h | grep '{{ lvm_vg_prefix }}' || echo 'No dingo_cache mounts found'
+      register: mount_info
+      changed_when: false
+
+    - name: Display mount info
+      debug:
+        msg: "{{ mount_info.stdout_lines }}"

@@ -1,0 +1,124 @@
+---
+# ============================================================
+# Role: dingo_cache - Deploy dingo-cache service
+# ============================================================
+
+# --- Determine listen IP ---
+- name: Detect listen IP from network interface
+  shell: ip route | awk '/{{ dingo_cache_ip_pattern }}/ && /src/ { for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}'
+  register: detected_ip
+  changed_when: false
+  when: dingo_cache_listen_ip is not defined
+
+- name: Set listen IP fact
+  set_fact:
+    dingo_cache_listen_ip: "{{ dingo_cache_listen_ip | default(detected_ip.stdout | default(ansible_host)) }}"
+
+- name: Validate listen IP
+  assert:
+    that:
+      - dingo_cache_listen_ip | length > 0
+    fail_msg: "Could not determine listen IP. Set dingo_cache_listen_ip or dingo_cache_ip_pattern."
+
+# --- Generate UUID for config ID ---
+- name: Check for existing config file
+  stat:
+    path: "{{ dingo_cache_base_dir }}/dingo-cache.conf"
+  register: existing_conf
+
+- name: Read existing config ID
+  shell: grep '^--id=' "{{ dingo_cache_base_dir }}/dingo-cache.conf" | sed 's/^--id=//'
+  register: existing_id
+  changed_when: false
+  when: existing_conf.stat.exists
+
+- name: Generate UUID for config ID
+  command: uuidgen
+  register: generated_uuid
+  changed_when: false
+  when: not existing_conf.stat.exists
+
+- name: Set config ID fact
+  set_fact:
+    dingo_cache_config_id: "{{ existing_id.stdout | default(generated_uuid.stdout) }}"
+
+# --- Create directories ---
+- name: Create dingo-cache base directory
+  file:
+    path: "{{ dingo_cache_base_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: Create cache directories
+  file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop: "{{ dingo_cache_cache_dirs.split(',') }}"
+
+- name: Create log directory
+  file:
+    path: "{{ dingo_cache_log_dir }}"
+    state: directory
+    mode: "0755"
+
+# --- Copy binary from control node ---
+- name: Copy dingo-cache binary to remote host
+  copy:
+    src: "{{ dingo_cache_bin_local_src }}"
+    dest: "{{ dingo_cache_base_dir }}/{{ dingo_cache_bin_name }}"
+    mode: "0755"
+
+# --- Deploy config and scripts ---
+- name: Deploy dingo-cache config file
+  template:
+    src: dingo-cache.conf.j2
+    dest: "{{ dingo_cache_base_dir }}/dingo-cache.conf"
+    mode: "0644"
+  notify: restart dingo-cache
+
+- name: Deploy dingo-cache startup script
+  template:
+    src: dingo-cache-start.sh.j2
+    dest: "{{ dingo_cache_base_dir }}/dingo-cache-start.sh"
+    mode: "0755"
+  notify: restart dingo-cache
+
+# --- Deploy systemd service ---
+- name: Deploy dingo-cache systemd service
+  template:
+    src: dingo-cache.service.j2
+    dest: "/etc/systemd/system/{{ dingo_cache_service_name }}.service"
+    mode: "0644"
+  notify: restart dingo-cache
+
+- name: Reload systemd daemon
+  systemd:
+    daemon_reload: true
+
+- name: Enable and start dingo-cache service
+  systemd:
+    name: "{{ dingo_cache_service_name }}"
+    enabled: true
+    state: started
+
+- name: Wait for dingo-cache to be ready
+  wait_for:
+    port: "{{ dingo_cache_listen_port }}"
+    host: "{{ dingo_cache_listen_ip }}"
+    delay: 3
+    timeout: 60
+
+- name: Display dingo-cache service status
+  shell: systemctl is-active {{ dingo_cache_service_name }}
+  register: service_status
+  changed_when: false
+
+- name: Show deployment summary
+  debug:
+    msg:
+      - "Service: {{ dingo_cache_service_name }}"
+      - "Status: {{ service_status.stdout }}"
+      - "Listen: {{ dingo_cache_listen_ip }}:{{ dingo_cache_listen_port }}"
+      - "Config ID: {{ dingo_cache_config_id }}"
+      - "Config: {{ dingo_cache_base_dir }}/dingo-cache.conf"

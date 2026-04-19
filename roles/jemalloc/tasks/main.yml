@@ -1,0 +1,76 @@
+---
+# ============================================================
+# Role: jemalloc - Compile and install jemalloc from source
+# Requires: gcc, make (installed by cache_prepare role)
+# ============================================================
+
+# --- Check if already installed ---
+- name: Check if jemalloc is already installed
+  stat:
+    path: "{{ jemalloc_lib_path }}"
+  register: jemalloc_installed
+
+- name: Skip message if already installed
+  debug:
+    msg: "jemalloc already installed at {{ jemalloc_lib_path }}, skipping build"
+  when: jemalloc_installed.stat.exists
+
+# --- Copy, build, and install ---
+- name: Build and install jemalloc
+  when: not jemalloc_installed.stat.exists
+  block:
+    - name: Create remote package directory
+      file:
+        path: "{{ jemalloc_remote_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Copy jemalloc tarball to remote host
+      copy:
+        src: "{{ jemalloc_local_src }}"
+        dest: "{{ jemalloc_remote_dir }}/{{ jemalloc_tarball }}"
+        mode: "0644"
+
+    - name: Extract jemalloc tarball
+      unarchive:
+        src: "{{ jemalloc_remote_dir }}/{{ jemalloc_tarball }}"
+        dest: "{{ jemalloc_remote_dir }}"
+        remote_src: true
+
+    - name: Set ownership of jemalloc source
+      file:
+        path: "{{ jemalloc_remote_dir }}/jemalloc-{{ jemalloc_version }}"
+        state: directory
+        owner: root
+        group: root
+        recurse: true
+
+    - name: Configure jemalloc
+      command: ./configure {{ jemalloc_configure_opts }}
+      args:
+        chdir: "{{ jemalloc_remote_dir }}/jemalloc-{{ jemalloc_version }}"
+
+    - name: Compile jemalloc
+      make:
+        chdir: "{{ jemalloc_remote_dir }}/jemalloc-{{ jemalloc_version }}"
+
+    - name: Install jemalloc
+      make:
+        chdir: "{{ jemalloc_remote_dir }}/jemalloc-{{ jemalloc_version }}"
+        target: install
+
+    - name: Run ldconfig to update library cache
+      command: ldconfig
+
+# --- Verify ---
+- name: Verify jemalloc library exists
+  stat:
+    path: "{{ jemalloc_lib_path }}"
+  register: jemalloc_verify
+
+- name: Assert jemalloc is installed
+  assert:
+    that:
+      - jemalloc_verify.stat.exists
+    fail_msg: "jemalloc library not found at {{ jemalloc_lib_path }} after installation"
+    success_msg: "jemalloc installed at {{ jemalloc_lib_path }}"

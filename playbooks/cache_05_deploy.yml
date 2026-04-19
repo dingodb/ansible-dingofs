@@ -1,0 +1,9 @@
+---
+# Playbook: Deploy dingo-cache service on cache nodes
+# Configures and starts the dingo-cache systemd service
+- name: Deploy dingo-cache service
+  hosts: cache_servers
+  remote_user: root
+  become: false
+  roles:
+    - dingo_cache
