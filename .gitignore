@@ -4,4 +4,8 @@ __pycache__/
 .vault_pass
 *.vault
 .env
+
+# claude
 .claude
+CLAUDE.md
+CLAUDE.original.md

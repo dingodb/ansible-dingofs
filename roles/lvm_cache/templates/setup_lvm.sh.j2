@@ -37,7 +37,7 @@ for dev in $devices; do
     available_devices+=("$path")
 done
 
-if [ ${#available_devices[@]} -eq 0 ]; then
+if [ {% raw %}${#available_devices[@]}{% endraw %} -eq 0 ]; then
     echo "No unused NVMe devices found. Nothing to do."
     exit 0
 fi
