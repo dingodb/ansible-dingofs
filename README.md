@@ -1,10 +1,10 @@
 # ansible-dingofs
 
-Ansible playbooks and roles for deploying and managing DingoFS (Ding Open File System) meta server clusters, Dingo Cache nodes, and Dingo Client (FUSE mount) nodes on CentOS/RHEL/Rocky Linux (cache/client nodes also support Ubuntu/Debian).
+Ansible playbooks and roles for deploying and managing DingoFS meta server clusters, DingoFS Cache nodes, and DingoFS Client (FUSE mount) nodes on CentOS/RHEL/Rocky and Ubuntu/Debian Linux.
 
 ## Prerequisites
 
-- **Control node**: macOS or Linux with Ansible >= 2.12 installed
+- **Control node**: Linux with Ansible >= 2.12 installed
 - **Target nodes**: CentOS/RHEL/Rocky Linux (3 nodes minimum for HA)
 - **Network**: All target nodes reachable via SSH from the control node
 - **Privileges**: Root or sudo access on target nodes
@@ -18,7 +18,7 @@ ansible-dingofs/
 │   ├── hosts.yml                # Inventory (edit with your IPs)
 │   └── group_vars/all.yml       # Global variables (edit to customize)
 ├── playbooks/
-│   ├── meta_site.yml                 # Full meta server deployment (all phases)
+│   ├── meta_site.yml            # Full meta server deployment (all phases)
 │   ├── 01_prepare.yml           # System prep: user, hosts, SSH, tools
 │   ├── 02_tune.yml              # Performance tuning
 │   ├── 03_rqlite.yml            # RQLite database cluster
@@ -52,7 +52,7 @@ ansible-dingofs/
     └── dingo_client/            # Dingo-client FUSE mount service
 ```
 
-## Dingo Meta Deployment
+## DingoFS Meta Deployment
 
 ### 1. Configure inventory
 
@@ -126,7 +126,7 @@ ansible-playbook playbooks/99_status.yml
 
 Only `01_prepare.yml` connects with `remote_user: root`. The other phase playbooks use the default `remote_user` from `ansible.cfg` (`dingofs`) together with `become: true`.
 
-## Dingo Cache Deployment
+## DingoFS Cache Deployment
 
 Dingo Cache is deployed independently from the meta server cluster, on a separate set of `cache_servers` nodes.
 
@@ -192,7 +192,7 @@ ansible-playbook playbooks/cache_99_status.yml
 
 All cache playbooks connect with `remote_user: root`.
 
-## Dingo Client Deployment
+## DingoFS Client Deployment
 
 Dingo Client (FUSE mount) is deployed independently from both meta server and cache deployments, on a separate set of `client_servers` nodes.
 
