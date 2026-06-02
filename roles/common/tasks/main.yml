@@ -95,6 +95,12 @@
     state: present
   loop: "{{ groups['meta_servers'] }}"
 
+- name: Add root's public key to dingofs authorized_keys
+  authorized_key:
+    user: "{{ dingofs_user }}"
+    key: "{{ lookup('file', '/root/.ssh/id_rsa.pub') }}"
+    state: present
+
 # --- Install basic packages (CentOS/RHEL/Rocky) ---
 - name: Install kernel-tools for cpupower
   yum:

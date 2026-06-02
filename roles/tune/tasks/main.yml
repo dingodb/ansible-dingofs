@@ -87,40 +87,53 @@
 # =========================
 # Sysctl (check each key, only set if absent or different)
 # =========================
+- name: Define desired sysctl settings
+  set_fact:
+    tune_sysctl_settings:
+      - { key: "kernel.io_uring_disabled", want: "0" }
+      - { key: "vm.dirty_ratio", want: "{{ tune_dirty_ratio }}" }
+      - { key: "vm.dirty_background_ratio", want: "{{ tune_dirty_background_ratio }}" }
+      - { key: "vm.swappiness", want: "{{ tune_swappiness }}" }
+      - { key: "vm.nr_hugepages", want: "{{ tune_hugepages }}" }
+      - { key: "vm.max_map_count", want: "{{ tune_max_map_count }}" }
+      - { key: "vm.overcommit_memory", want: "1" }
+      - { key: "net.ipv4.tcp_window_scaling", want: "{{ tune_tcp_window_scaling }}" }
+      - { key: "net.ipv4.tcp_timestamps", want: "{{ tune_tcp_timestamps }}" }
+      - { key: "net.ipv4.tcp_mem", want: "{{ tune_tcp_mem }}" }
+      - { key: "net.ipv4.tcp_wmem", want: "{{ tune_tcp_wmem }}" }
+      - { key: "net.ipv4.tcp_rmem", want: "{{ tune_tcp_rmem }}" }
+      - { key: "net.core.rmem_max", want: "{{ tune_rmem_max }}" }
+      - { key: "net.core.wmem_max", want: "{{ tune_wmem_max }}" }
+
 - name: Read current sysctl values
   command: sysctl -n {{ item.key }}
-  loop:
-    - { key: "kernel.core_pattern",           want: "{{ tune_core_pattern }}" }
-    - { key: "kernel.io_uring_disabled",      want: "0" }
-    - { key: "vm.dirty_ratio",                want: "{{ tune_dirty_ratio }}" }
-    - { key: "vm.dirty_background_ratio",     want: "{{ tune_dirty_background_ratio }}" }
-    - { key: "vm.swappiness",                 want: "{{ tune_swappiness }}" }
-    - { key: "vm.nr_hugepages",               want: "{{ tune_hugepages }}" }
-    - { key: "vm.max_map_count",              want: "{{ tune_max_map_count }}" }
-    - { key: "vm.overcommit_memory",          want: "1" }
-    - { key: "net.ipv4.tcp_window_scaling",   want: "{{ tune_tcp_window_scaling }}" }
-    - { key: "net.ipv4.tcp_timestamps",       want: "{{ tune_tcp_timestamps }}" }
-    - { key: "net.ipv4.tcp_mem",              want: "{{ tune_tcp_mem }}" }
-    - { key: "net.ipv4.tcp_wmem",             want: "{{ tune_tcp_wmem }}" }
-    - { key: "net.ipv4.tcp_rmem",             want: "{{ tune_tcp_rmem }}" }
-    - { key: "net.core.rmem_max",             want: "{{ tune_rmem_max }}" }
-    - { key: "net.core.wmem_max",             want: "{{ tune_wmem_max }}" }
+  loop: "{{ tune_sysctl_settings }}"
   register: sysctl_current
   changed_when: false
   failed_when: false
 
-# Simpler approach: compare each result and apply only mismatches
-- name: Apply sysctl values that are absent or different
+- name: Keep only supported sysctl keys in managed sysctl file
+  template:
+    src: 99-dingofs.conf.j2
+    dest: /etc/sysctl.d/99-dingofs.conf
+    mode: "0644"
+  vars:
+    supported_sysctl_settings: "{{ sysctl_current.results | selectattr('rc', 'equalto', 0) | map(attribute='item') | list }}"
+
+- name: Apply supported sysctl values that are absent or different
   sysctl:
     name: "{{ item.item.key }}"
     value: "{{ item.item.want }}"
     sysctl_file: /etc/sysctl.d/99-dingofs.conf
-    reload: true
+    sysctl_set: true
+    reload: false
     state: present
   loop: "{{ sysctl_current.results }}"
   loop_control:
     label: "{{ item.item.key }}"
-  when: (item.stdout | default('') | trim) != (item.item.want | string | trim)
+  when:
+    - item.rc == 0
+    - (item.stdout | default('') | trim) != (item.item.want | string | trim)
 
 # =========================
 # Transparent Huge Pages (check before setting)

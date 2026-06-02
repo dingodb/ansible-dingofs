@@ -61,8 +61,7 @@
     executable: /bin/bash
   register: pull_executor
   changed_when: "'present' not in pull_executor.stdout"
-  delegate_to: "{{ item }}"
-  loop: "{{ groups['meta_servers'] }}"
+  delegate_to: "{{ groups['rqlite_master'][0] }}"
 
 # --- Generate config files on admin node ---
 - name: Create working directory for cluster configs
@@ -94,7 +93,7 @@
   become: true
   become_user: "{{ dingofs_user }}"
   shell: >
-    dingo hosts commit -f {{ dingofs_home }}/cluster-config/hosts.yaml
+    {{ dingo_cli_bin_dir }}/dingo hosts commit -f {{ dingofs_home }}/cluster-config/hosts.yaml
   args:
     executable: /bin/bash
   register: hosts_commit
@@ -102,7 +101,7 @@
 - name: Verify hosts imported
   become: true
   become_user: "{{ dingofs_user }}"
-  shell: "dingo hosts list"
+  shell: "{{ dingo_cli_bin_dir }}/dingo hosts list"
   args:
     executable: /bin/bash
   register: hosts_list
@@ -117,7 +116,7 @@
   become: true
   become_user: "{{ dingofs_user }}"
   shell: >
-    dingo cluster add {{ dingofs_cluster_name }}
+    {{ dingo_cli_bin_dir }}/dingo cluster add {{ dingofs_cluster_name }}
     -f {{ dingofs_home }}/cluster-config/topology-{{ dingofs_cluster_name }}.yaml
   args:
     executable: /bin/bash
@@ -127,7 +126,7 @@
   become: true
   become_user: "{{ dingofs_user }}"
   shell: >
-    dingo cluster checkout {{ dingofs_cluster_name }}
+    {{ dingo_cli_bin_dir }}/dingo cluster checkout {{ dingofs_cluster_name }}
   args:
     executable: /bin/bash
 
@@ -135,14 +134,14 @@
   become: true
   become_user: "{{ dingofs_user }}"
   shell: >
-    dingo config commit -f {{ dingofs_home }}/cluster-config/topology-{{ dingofs_cluster_name }}.yaml
+    {{ dingo_cli_bin_dir }}/dingo config commit -f {{ dingofs_home }}/cluster-config/topology-{{ dingofs_cluster_name }}.yaml
   args:
     executable: /bin/bash
 
 - name: Deploy DingoFS cluster
   become: true
   become_user: "{{ dingofs_user }}"
-  shell: "dingo cluster deploy -k --local"
+  shell: "{{ dingo_cli_bin_dir }}/dingo cluster deploy -k --local"
   args:
     executable: /bin/bash
   register: deploy_result
@@ -155,7 +154,7 @@
 - name: Check cluster status
   become: true
   become_user: "{{ dingofs_user }}"
-  shell: "dingo cluster status -sv"
+  shell: "{{ dingo_cli_bin_dir }}/dingo cluster status -sv"
   args:
     executable: /bin/bash
   register: cluster_status
