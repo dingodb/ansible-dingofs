@@ -149,8 +149,8 @@ dingo_client_mds_addrs: "192.168.0.44:16900,192.168.0.44:16901,192.168.0.44:1690
 # FUSE / VFS tuning
 dingo_client_cache_store: none
 dingo_client_vfs_read_executor_thread: 32
-dingo_client_vfs_read_buffer_total_mb: 8000
-dingo_client_vfs_write_buffer_total_mb: 8192
+dingo_client_vfs_read_buffer_total_mb: 32000
+dingo_client_vfs_write_buffer_total_mb: 65536
 dingo_client_vfs_prefetch_blocks: 0
 dingo_client_connections: 3
 dingo_client_fuse_max_threads: 512
