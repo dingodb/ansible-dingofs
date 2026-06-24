@@ -4,12 +4,44 @@
 # ============================================================
 
 # --- Download & Extract ---
-- name: Download rqlite tarball
-  get_url:
-    url: "{{ rqlite_download_url }}"
-    dest: "{{ rqlite_pkg_dir }}/{{ rqlite_tarball }}"
-    mode: "0644"
-  when: rqlite_download_url is defined
+- name: Prepare rqlite tarball (download first, fallback to local)
+  block:
+    - name: Download rqlite tarball
+      get_url:
+        url: "{{ rqlite_download_url }}"
+        dest: "{{ rqlite_pkg_dir }}/{{ rqlite_tarball }}"
+        mode: "0644"
+      when: 
+        - rqlite_download_url is defined
+        - not (rqlite_use_local_pkg | default(false) | bool)
+
+    - name: Use local rqlite tarball explicitly (skip download)
+      copy:
+        src: "{{ rqlite_local_src }}"
+        dest: "{{ rqlite_pkg_dir }}/{{ rqlite_tarball }}"
+        mode: "0644"
+      when: rqlite_use_local_pkg | default(false) | bool
+
+  rescue:
+    - name: Fallback to local rqlite tarball
+      copy:
+        src: "{{ rqlite_local_src }}"
+        dest: "{{ rqlite_pkg_dir }}/{{ rqlite_tarball }}"
+        mode: "0644"
+
+  always:
+    - name: Ensure rqlite tarball exists after download/fallback
+      stat:
+        path: "{{ rqlite_pkg_dir }}/{{ rqlite_tarball }}"
+      register: rqlite_tarball_stat
+
+    - name: Assert rqlite tarball is available
+      assert:
+        that:
+          - rqlite_tarball_stat.stat.exists
+        fail_msg: >-
+          Failed to prepare rqlite tarball. Download URL failed and local file
+          {{ rqlite_local_src }} is not available on control node.
 
 - name: Create rqlite extract directory
   file:

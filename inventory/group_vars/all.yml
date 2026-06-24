@@ -16,9 +16,11 @@ dingofs_ssh_key_bits: 4096
 ansible_python_interpreter: /usr/bin/python3
 
 # --- Package URLs (offline: set to local paths; online: set to URLs) ---
+rqlite_use_local_pkg: false
 rqlite_version: "v9.4.5"
 rqlite_tarball: "rqlite-{{ rqlite_version }}-linux-amd64.tar.gz"
 rqlite_download_url: "https://github.com/rqlite/rqlite/releases/download/{{ rqlite_version }}/{{ rqlite_tarball }}"
+rqlite_local_src: "/root/dingofs/pkg/{{ rqlite_tarball }}"
 
 dingo_cli_download_url: "https://www.dingodb.com/dingocli/branches/main/latest/dingo"
 
@@ -47,9 +49,9 @@ dingofs_container_image: "harbor.zetyun.cn/dingofs/dingofs:v5.1-b484ef2"
 dingofs_store_image: "harbor.zetyun.cn/dingodb/dingo-store:90b2885"
 dingofs_executor_image: "harbor.zetyun.cn/dingodb/dingo:develop-latest"
 
-dingofs_data_dir: "/mnt/data/dingofs-dingo-main/data/${service_role}"
-dingofs_log_dir: "/mnt/data/dingofs-dingo-main/logs/${service_role}/${service_replica_sequence}"
-dingofs_raft_dir: "/mnt/data/dingofs-dingo-main/raft/${service_role}"
+dingofs_data_dir: "/mnt/data${service_replica_sequence}/dingofs-v5.1/data/${service_role}"
+dingofs_log_dir: "/mnt/data${service_replica_sequence}/dingofs-v5.1/logs/${service_role}"
+dingofs_raft_dir: "/mnt/data${service_replica_sequence}/dingofs-v5.1/raft/${service_role}"
 dingofs_core_dir: "/mnt/data/corefiles/core-%e-%p-%t"
 dingofs_default_replica_num: 3
 
