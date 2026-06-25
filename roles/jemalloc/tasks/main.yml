@@ -31,6 +31,11 @@
         dest: "{{ jemalloc_remote_dir }}/{{ jemalloc_tarball }}"
         mode: "0644"
 
+    - name: Ensure bzip2 is installed (required for extraction)
+      package:
+        name: bzip2
+        state: present
+
     - name: Extract jemalloc tarball
       unarchive:
         src: "{{ jemalloc_remote_dir }}/{{ jemalloc_tarball }}"
