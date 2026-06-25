@@ -1,0 +1,97 @@
+---
+# ============================================================
+# Role: dingo_client - Deploy dingo-client (FUSE mount) service
+# ============================================================
+
+# --- Create directories ---
+- name: "Create dingo-client base directory for {{ dingo_client_fsname }}"
+  file:
+    path: "{{ dingo_client_base_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: "Create bin directory for {{ dingo_client_fsname }}"
+  file:
+    path: "{{ dingo_client_base_dir }}/bin"
+    state: directory
+    mode: "0755"
+
+- name: "Create mount point directory for {{ dingo_client_fsname }}"
+  file:
+    path: "{{ dingo_client_mount_point }}"
+    state: directory
+    mode: "0755"
+
+- name: "Create log directory for {{ dingo_client_fsname }}"
+  file:
+    path: "{{ dingo_client_log_dir }}"
+    state: directory
+    mode: "0755"
+
+# --- Copy binaries from control node ---
+- name: "Copy dingo-client binary to remote host for {{ dingo_client_fsname }}"
+  copy:
+    src: "{{ dingo_client_bin_local_src }}"
+    dest: "{{ dingo_client_base_dir }}/bin/dingo-client"
+    mode: "0755"
+
+- name: "Copy dingo CLI binary to remote host for {{ dingo_client_fsname }}"
+  copy:
+    src: "{{ dingo_client_dingo_bin_local_src }}"
+    dest: "{{ dingo_client_base_dir }}/bin/dingo"
+    mode: "0755"
+
+# --- Deploy mount script ---
+- name: "Deploy dingofs-mount.sh for {{ dingo_client_fsname }}"
+  template:
+    src: dingofs-mount.sh.j2
+    dest: "{{ dingo_client_base_dir }}/dingofs-mount.sh"
+    mode: "0755"
+  register: _mount_sh
+
+# --- Deploy systemd service ---
+- name: "Deploy dingo-client systemd service for {{ dingo_client_fsname }}"
+  template:
+    src: dingofs-mount.service.j2
+    dest: "/etc/systemd/system/{{ dingo_client_service_name }}.service"
+    mode: "0644"
+  register: _mount_service
+
+- name: "Reload systemd daemon"
+  systemd:
+    daemon_reload: true
+  when: _mount_service.changed
+
+- name: "Restart dingo-client service for {{ dingo_client_fsname }}"
+  systemd:
+    name: "{{ dingo_client_service_name }}"
+    state: restarted
+  when: _mount_sh.changed or _mount_service.changed
+
+- name: "Enable and start dingo-client service for {{ dingo_client_fsname }}"
+  systemd:
+    name: "{{ dingo_client_service_name }}"
+    enabled: true
+    state: started
+
+# --- Verify ---
+- name: "Wait for mount point to be active for {{ dingo_client_fsname }}"
+  command: mountpoint -q {{ dingo_client_mount_point }}
+  register: mount_check
+  retries: 10
+  delay: 3
+  until: mount_check.rc == 0
+
+- name: "Display dingo-client service status for {{ dingo_client_fsname }}"
+  shell: systemctl is-active {{ dingo_client_service_name }}
+  register: service_status
+  changed_when: false
+
+- name: "Show deployment summary for {{ dingo_client_fsname }}"
+  debug:
+    msg:
+      - "Service: {{ dingo_client_service_name }}"
+      - "Status: {{ service_status.stdout }}"
+      - "Mount: {{ dingo_client_mount_point }}"
+      - "Filesystem: {{ dingo_client_fsname }}"
+      - "MDS: {{ dingo_client_mds_addrs }}"

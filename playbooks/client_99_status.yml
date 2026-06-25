@@ -6,30 +6,64 @@
   become: false
   gather_facts: false
   tasks:
+    - name: Set default list of dingo clients if not provided
+      set_fact:
+        dingo_clients:
+          - fsname: "{{ dingo_client_fsname }}"
+            mount_point: "{{ dingo_client_mount_point }}"
+      when: dingo_clients is not defined
+
     - name: Check dingo-client service status
       systemd:
-        name: "{{ dingo_client_service_name }}"
+        name: "dingofs-mount-{{ item.fsname }}"
       register: service_info
+      loop: "{{ dingo_clients }}"
+      loop_control:
+        label: "{{ item.fsname }}"
 
-    - name: Display service status
+    - name: Terminate if service is inactive
+      fail:
+        msg: "{{ inventory_hostname }}: dingofs-mount-{{ item.fsname }} is {{ service_info.results[my_idx].status.ActiveState | default('unknown') }}"
+      when: (service_info.results[my_idx].status.ActiveState | default('unknown')) != 'active'
+      loop: "{{ dingo_clients }}"
+      loop_control:
+        label: "{{ item.fsname }}"
+        index_var: my_idx
+
+    - name: Display active service status
       debug:
-        msg: "{{ inventory_hostname }}: {{ dingo_client_service_name }} is {{ service_info.status.ActiveState }}"
+        msg: "{{ inventory_hostname }}: dingofs-mount-{{ item.fsname }} is active"
+      loop: "{{ dingo_clients }}"
+      loop_control:
+        label: "{{ item.fsname }}"
 
     - name: Check mount point
-      command: mountpoint -q {{ dingo_client_mount_point }}
+      command: mountpoint -q {{ item.mount_point }}
       register: mount_check
       changed_when: false
       failed_when: false
+      loop: "{{ dingo_clients }}"
+      loop_control:
+        label: "{{ item.mount_point }}"
 
     - name: Display mount status
       debug:
-        msg: "{{ inventory_hostname }}: {{ dingo_client_mount_point }} is {{ 'mounted' if mount_check.rc == 0 else 'NOT mounted' }}"
+        msg: "{{ inventory_hostname }}: {{ item.item.mount_point }} is {{ 'mounted' if item.rc == 0 else 'NOT mounted' }}"
+      loop: "{{ mount_check.results }}"
+      loop_control:
+        label: "{{ item.item.mount_point }}"
 
     - name: Show mount details
-      shell: df -h {{ dingo_client_mount_point }} 2>/dev/null || echo 'Not mounted'
+      shell: df -h {{ item.mount_point }} 2>/dev/null || echo 'Not mounted'
       register: df_info
       changed_when: false
+      loop: "{{ dingo_clients }}"
+      loop_control:
+        label: "{{ item.mount_point }}"
 
     - name: Display mount details
       debug:
-        msg: "{{ df_info.stdout_lines }}"
+        msg: "{{ inventory_hostname }} [{{ item.item.fsname }}]: {{ item.stdout_lines }}"
+      loop: "{{ df_info.results }}"
+      loop_control:
+        label: "{{ item.item.mount_point }}"
