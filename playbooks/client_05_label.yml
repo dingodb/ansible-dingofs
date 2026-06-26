@@ -1,0 +1,8 @@
+---
+- name: Label client nodes in Kubernetes
+  hosts: client_servers
+  gather_facts: false
+  tasks:
+    - name: Apply label to Kubernetes node
+      delegate_to: localhost
+      command: "kubectl label node {{ inventory_hostname }} dc.com/service.dingofs=enable --overwrite"

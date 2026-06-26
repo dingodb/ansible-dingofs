@@ -19,3 +19,6 @@
 
 - name: "Phase 4: Dingo-client deployment"
   import_playbook: client_04_deploy.yml
+
+- name: "Phase 5: Label Kubernetes nodes"
+  import_playbook: client_05_label.yml
