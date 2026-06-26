@@ -11,6 +11,11 @@
 - name: "Phase 1: System preparation"
   import_playbook: client_01_prepare.yml
 
+- name: "Phase 1.5: LVM setup"
+  import_playbook: cache_02_lvm.yml
+  vars:
+    target_hosts: client_servers
+
 - name: "Phase 2: Performance tuning"
   import_playbook: client_02_tune.yml
 
