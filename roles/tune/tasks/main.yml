@@ -7,21 +7,36 @@
 # =========================
 # CPU governor
 # =========================
-- name: Check if CPU frequency scaling is available
+- name: Check if cpupower is available
+  command: which cpupower
+  register: cpupower_check
+  changed_when: false
+  failed_when: false
+
+- name: Set CPU governor to performance using cpupower
+  command: cpupower frequency-set -g performance
+  when: cpupower_check.rc == 0
+  changed_when: true
+
+- name: Check if CPU frequency scaling is available (sysfs fallback)
   stat:
     path: /sys/devices/system/cpu/cpu0/cpufreq
   register: cpufreq_dir
+  when: cpupower_check.rc != 0
 
-- name: Read current CPU governor
+- name: Read current CPU governor (sysfs fallback)
   slurp:
     src: /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor
   register: cpu_governor_current
-  when: cpufreq_dir.stat.exists
+  when: 
+    - cpupower_check.rc != 0
+    - cpufreq_dir.stat.exists
 
-- name: Set CPU governor to performance (only if not already set)
+- name: Set CPU governor to performance (sysfs fallback)
   shell: echo performance > "{{ item }}"
   with_fileglob: /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor
   when:
+    - cpupower_check.rc != 0
     - cpufreq_dir.stat.exists
     - (cpu_governor_current.content | b64decode | trim) != "performance"
   changed_when: true
@@ -90,6 +105,7 @@
 - name: Define desired sysctl settings
   set_fact:
     tune_sysctl_settings:
+      - { key: "kernel.core_pattern", want: "{{ tune_core_pattern }}" }
       - { key: "kernel.io_uring_disabled", want: "0" }
       - { key: "vm.dirty_ratio", want: "{{ tune_dirty_ratio }}" }
       - { key: "vm.dirty_background_ratio", want: "{{ tune_dirty_background_ratio }}" }
