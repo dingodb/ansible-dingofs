@@ -16,27 +16,29 @@
 - name: Set CPU governor to performance using cpupower
   command: cpupower frequency-set -g performance
   when: cpupower_check.rc == 0
-  changed_when: true
+  register: cpupower_set
+  changed_when: cpupower_set.rc == 0
+  failed_when: false
 
 - name: Check if CPU frequency scaling is available (sysfs fallback)
   stat:
     path: /sys/devices/system/cpu/cpu0/cpufreq
   register: cpufreq_dir
-  when: cpupower_check.rc != 0
+  when: cpupower_check.rc != 0 or (cpupower_set is defined and cpupower_set.rc != 0)
 
 - name: Read current CPU governor (sysfs fallback)
   slurp:
     src: /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor
   register: cpu_governor_current
   when: 
-    - cpupower_check.rc != 0
+    - cpupower_check.rc != 0 or (cpupower_set is defined and cpupower_set.rc != 0)
     - cpufreq_dir.stat.exists
 
 - name: Set CPU governor to performance (sysfs fallback)
   shell: echo performance > "{{ item }}"
   with_fileglob: /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor
   when:
-    - cpupower_check.rc != 0
+    - cpupower_check.rc != 0 or (cpupower_set is defined and cpupower_set.rc != 0)
     - cpufreq_dir.stat.exists
     - (cpu_governor_current.content | b64decode | trim) != "performance"
   changed_when: true

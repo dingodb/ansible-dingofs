@@ -167,4 +167,4 @@ dingo_client_fuse_max_threads: 512
 dingo_client_fuse_enable_readdir_cache: "false"
 dingo_client_fuse_attr_cache_timeout_s: 10
 dingo_client_fuse_entry_cache_timeout_s: 10
-dingo_client_vfs_data_writeback_suffix: "@bfloat16.data:@bfloat16.tmp"
+# dingo_client_vfs_data_writeback_suffix: "@bfloat16.data:@bfloat16.tmp"
