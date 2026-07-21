@@ -168,3 +168,26 @@ dingo_client_fuse_enable_readdir_cache: "false"
 dingo_client_fuse_attr_cache_timeout_s: 10
 dingo_client_fuse_entry_cache_timeout_s: 10
 # dingo_client_vfs_data_writeback_suffix: "@bfloat16.data:@bfloat16.tmp"
+
+# --- Dingo command environment (~/.dingo/dingo.yaml) ---
+# mdsaddr is mandatory; reuses dingo_client_mds_addrs above.
+dingo_env_mdsaddr: "{{ dingo_client_mds_addrs }}"
+dingo_env_storagetype: s3          # s3 or rados
+dingo_env_rpctimeout: 30s
+dingo_env_rpcretrytimes: 5
+
+# S3 backend (fill in for storagetype: s3)
+dingo_env_s3_ak: ""
+dingo_env_s3_sk: ""
+dingo_env_s3_endpoint: ""
+dingo_env_s3_bucketname: ""
+dingo_env_s3_blocksize: 4 mib
+dingo_env_s3_chunksize: 64 mib
+
+# Rados backend (fill in for storagetype: rados)
+dingo_env_rados_username: ""
+dingo_env_rados_key: ""
+dingo_env_rados_mon: ""
+dingo_env_rados_poolname: ""
+dingo_env_rados_blocksize: 4 mib
+dingo_env_rados_chunksize: 64 mib

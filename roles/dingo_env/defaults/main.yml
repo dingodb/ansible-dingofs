@@ -1,0 +1,40 @@
+---
+# ============================================================
+# Role: dingo_env - Configure the `dingo` command environment
+# ============================================================
+
+# Source dingo binary already present on the remote node (from pkg dir)
+dingo_env_bin_src: "{{ dingo_client_dingo_bin_local_src | default('/root/dingofs/pkg/dingo') }}"
+
+# Target home / dingo env layout (client nodes run as root)
+dingo_env_home: /root
+dingo_env_dir: "{{ dingo_env_home }}/.dingo"
+dingo_env_bin_dir: "{{ dingo_env_dir }}/bin"
+dingo_env_config: "{{ dingo_env_dir }}/dingo.yaml"
+
+# --- global section ---
+dingo_env_rpctimeout: 30s
+dingo_env_rpcretrytimes: 5
+
+# --- dingofs section ---
+# mdsaddr is mandatory; defaults to the client MDS addresses in all.yml
+dingo_env_mdsaddr: "{{ dingo_client_mds_addrs }}"
+
+# Storage backend: s3 or rados
+dingo_env_storagetype: s3
+
+# S3 backend settings
+dingo_env_s3_ak: ""
+dingo_env_s3_sk: ""
+dingo_env_s3_endpoint: ""
+dingo_env_s3_bucketname: ""
+dingo_env_s3_blocksize: 4 mib
+dingo_env_s3_chunksize: 64 mib
+
+# Rados backend settings
+dingo_env_rados_username: ""
+dingo_env_rados_key: ""
+dingo_env_rados_mon: ""
+dingo_env_rados_poolname: ""
+dingo_env_rados_blocksize: 4 mib
+dingo_env_rados_chunksize: 64 mib

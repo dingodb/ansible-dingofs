@@ -1,0 +1,85 @@
+---
+# ============================================================
+# Role: dingo_env - Configure the `dingo` command environment
+#
+# Steps:
+#   1. Detect whether the dingo env is already configured
+#      (i.e. ~/.dingo/bin/dingo exists).
+#   2. Only when NOT configured: copy the dingo binary into
+#      ~/.dingo/bin/, then run `dingo --version` to init ~/.dingo.
+#      (copy-before-init avoids running a missing binary.)
+#      When already configured, this block is skipped.
+#   3. Add ~/.dingo/bin to PATH in ~/.bashrc (idempotent).
+#   4. Write ~/.dingo/dingo.yaml (mdsaddr is mandatory; always
+#      (re)deployed so config changes take effect on re-runs).
+#   5. Verify config with `dingo --version`.
+# ============================================================
+
+- name: Fail early if mdsaddr is not configured
+  assert:
+    that:
+      - dingo_env_mdsaddr is defined
+      - dingo_env_mdsaddr | length > 0
+    fail_msg: "dingo_env_mdsaddr is mandatory (defaults to dingo_client_mds_addrs)"
+
+# --- Step 1: detect whether dingo env is already configured ---
+- name: Check whether dingo env binary is already installed
+  stat:
+    path: "{{ dingo_env_bin_dir }}/dingo"
+  register: dingo_env_bin
+
+# --- Step 2: install binary + init env only when not configured ---
+- name: Install dingo binary and initialize env
+  when: not dingo_env_bin.stat.exists
+  block:
+    - name: Ensure ~/.dingo/bin directory exists
+      file:
+        path: "{{ dingo_env_bin_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Copy dingo binary into ~/.dingo/bin/
+      copy:
+        src: "{{ dingo_env_bin_src }}"
+        dest: "{{ dingo_env_bin_dir }}/dingo"
+        mode: "0755"
+
+    - name: Initialize ~/.dingo env dir via `dingo --version`
+      command: "{{ dingo_env_bin_dir }}/dingo --version"
+      register: dingo_init
+      changed_when: false
+
+- name: Report dingo env already configured (skipping install + init)
+  debug:
+    msg: "dingo env already configured at {{ dingo_env_dir }}; skipping binary install and init"
+  when: dingo_env_bin.stat.exists
+
+# --- Step 3: add ~/.dingo/bin to PATH in ~/.bashrc ---
+- name: Add ~/.dingo/bin to PATH in ~/.bashrc
+  lineinfile:
+    path: "{{ dingo_env_home }}/.bashrc"
+    line: 'export PATH=$PATH:{{ dingo_env_bin_dir }}'
+    regexp: '^export PATH=\$PATH:.*\.dingo/bin$'
+    state: present
+    create: true
+    mode: "0644"
+
+# --- Step 4: write dingo.yaml (mdsaddr mandatory) ---
+- name: Deploy dingo.yaml configuration
+  template:
+    src: dingo.yaml.j2
+    dest: "{{ dingo_env_config }}"
+    mode: "0644"
+
+# --- Step 5: verify config is usable ---
+# Use absolute path — .bashrc has an early-exit guard for non-interactive
+# shells (case $- in *i*) ;; *) return;; esac) so `source .bashrc && dingo`
+# fails in Ansible but works fine in interactive SSH sessions.
+- name: Verify dingo command works with config
+  command: "{{ dingo_env_bin_dir }}/dingo --version"
+  register: dingo_version
+  changed_when: false
+
+- name: Show dingo command version
+  debug:
+    var: dingo_version.stdout_lines

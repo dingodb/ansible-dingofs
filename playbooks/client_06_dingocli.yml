@@ -1,0 +1,12 @@
+---
+# Playbook: Configure the `dingo` command environment on remote nodes
+# Independent task: initializes ~/.dingo, installs the dingo binary into
+# ~/.dingo/bin, adds it to PATH, and writes ~/.dingo/dingo.yaml (mdsaddr
+# sourced from dingo_client_mds_addrs). Run standalone or as part of
+# client_site.yml.
+- name: Configure dingo command environment
+  hosts: "{{ target_hosts | default('client_servers') }}"
+  remote_user: root
+  become: false
+  roles:
+    - dingo_env

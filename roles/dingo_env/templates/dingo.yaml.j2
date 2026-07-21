@@ -1,0 +1,24 @@
+global:
+  rpctimeout: {{ dingo_env_rpctimeout }}
+  rpcretrytimes: {{ dingo_env_rpcretrytimes }}
+
+dingofs:
+  mdsaddr: {{ dingo_env_mdsaddr }}
+  storagetype: {{ dingo_env_storagetype }}
+{% if dingo_env_storagetype == 's3' %}
+  s3:
+    ak: {{ dingo_env_s3_ak }}
+    sk: {{ dingo_env_s3_sk }}
+    endpoint: {{ dingo_env_s3_endpoint }}
+    bucketname: {{ dingo_env_s3_bucketname }}
+    blocksize: {{ dingo_env_s3_blocksize }}
+    chunksize: {{ dingo_env_s3_chunksize }}
+{% elif dingo_env_storagetype == 'rados' %}
+  rados:
+    username: {{ dingo_env_rados_username }}
+    key: {{ dingo_env_rados_key }}
+    mon: {{ dingo_env_rados_mon }}
+    poolname: {{ dingo_env_rados_poolname }}
+    blocksize: {{ dingo_env_rados_blocksize }}
+    chunksize: {{ dingo_env_rados_chunksize }}
+{% endif %}

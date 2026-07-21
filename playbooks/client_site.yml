@@ -27,3 +27,6 @@
 
 - name: "Phase 5: Label Kubernetes nodes"
   import_playbook: client_05_label.yml
+
+- name: "Phase 6: Configure dingo command environment"
+  import_playbook: client_06_dingocli.yml
