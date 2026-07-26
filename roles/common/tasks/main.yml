@@ -32,12 +32,14 @@
     shell: /bin/bash
     create_home: true
     state: present
+  when: dingofs_user != "root"
 
 - name: Set dingofs user password
   user:
     name: "{{ dingofs_user }}"
     password: "{{ dingofs_password | password_hash('sha512') }}"
     update_password: on_create
+  when: dingofs_user != "root"
 
 # --- Sudo access ---
 - name: Configure sudoers for dingofs user
@@ -46,6 +48,7 @@
     dest: /etc/sudoers.d/dingofs
     mode: "0440"
     validate: "visudo -cf %s"
+  when: dingofs_user != "root"
 
 # --- Create working directories ---
 - name: Create package directory
