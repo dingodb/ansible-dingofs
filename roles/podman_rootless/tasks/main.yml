@@ -1,0 +1,141 @@
+---
+# ============================================================
+# Role: podman_rootless - Rootless Podman installation & config
+# Steps:
+#   1. Install podman (yum or apt)
+#   2. Configure rootless storage (storage.conf)
+#   3. Set directory permissions for non-root user
+#   4. Enable linger for the user
+#   5. Configure XDG_RUNTIME_DIR in ~/.bashrc
+#   6. Verify podman works rootlessly
+# ============================================================
+
+# --- Step 1: Install podman ---
+- name: Check if podman is already installed
+  command: podman --version
+  register: podman_check
+  changed_when: false
+  failed_when: false
+
+- name: Install podman via yum (RHEL/CentOS)
+  yum:
+    name: podman
+    state: present
+  when:
+    - podman_check.rc != 0
+    - ansible_os_family == "RedHat"
+
+- name: Install podman via apt (Debian/Ubuntu)
+  apt:
+    name: podman
+    state: present
+    update_cache: true
+  when:
+    - podman_check.rc != 0
+    - ansible_os_family == "Debian"
+
+- name: Display podman version
+  command: podman --version
+  register: podman_version
+  changed_when: false
+
+- name: Show podman version
+  debug:
+    var: podman_version.stdout
+
+# --- Step 2: Configure storage ---
+# Root podman reads /etc/containers/storage.conf (system-wide).
+# Non-root podman reads ~/.config/containers/storage.conf (user-level).
+
+- name: Ensure containers config directory exists (non-root user)
+  become: true
+  become_user: "{{ podman_rootless_user }}"
+  file:
+    path: "{{ podman_rootless_home }}/.config/containers"
+    state: directory
+    mode: "0755"
+  when: podman_rootless_user != "root"
+
+- name: Ensure /etc/containers directory exists (root user)
+  file:
+    path: /etc/containers
+    state: directory
+    mode: "0755"
+  when: podman_rootless_user == "root"
+
+- name: Deploy storage.conf for podman ({{ podman_rootless_storage_conf }})
+  template:
+    src: storage.conf.j2
+    dest: "{{ podman_rootless_storage_conf }}"
+    mode: "0644"
+  become: "{{ podman_rootless_user != 'root' }}"
+  become_user: "{{ podman_rootless_user if podman_rootless_user != 'root' else omit }}"
+
+# --- Step 3: Set storage directory permissions (non-root user only) ---
+- name: Ensure podman storage parent directories exist
+  file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - "{{ podman_rootless_graphroot | dirname }}"
+    - "{{ podman_rootless_runroot | dirname }}"
+
+- name: Set ownership on podman storage directories (non-root user)
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ podman_rootless_user }}"
+    group: "{{ podman_rootless_group }}"
+    mode: "0755"
+  loop:
+    - "{{ podman_rootless_storage_base }}/podman-{{ podman_rootless_user }}"
+    - "{{ podman_rootless_graphroot }}"
+    - "{{ podman_rootless_runroot }}"
+  when: podman_rootless_user != "root"
+
+# --- Step 4: Enable linger for the user ---
+- name: Enable linger for {{ podman_rootless_user }}
+  command: "loginctl enable-linger {{ podman_rootless_user }}"
+  register: linger_result
+  changed_when: "'already' not in (linger_result.stderr | default(''))"
+  failed_when: false
+
+# --- Step 5: Configure XDG_RUNTIME_DIR ---
+- name: Add XDG_RUNTIME_DIR to ~/.bashrc for {{ podman_rootless_user }}
+  become: true
+  become_user: "{{ podman_rootless_user }}"
+  lineinfile:
+    path: "{{ podman_rootless_home }}/.bashrc"
+    line: "export XDG_RUNTIME_DIR={{ podman_rootless_xdg_runtime_dir }}"
+    regexp: "^export XDG_RUNTIME_DIR="
+    state: present
+    create: true
+    mode: "0644"
+
+# --- Step 6: Verify ---
+- name: Verify podman storage config (root user)
+  command: "podman info --format '{{ '{{' }}.Store.GraphRoot{{ '}}' }}'"
+  register: podman_info
+  changed_when: false
+  failed_when: false
+  when: podman_rootless_user == "root"
+
+- name: Verify podman storage config (non-root user)
+  become: true
+  become_user: "{{ podman_rootless_user }}"
+  shell: "export XDG_RUNTIME_DIR={{ podman_rootless_xdg_runtime_dir }} && podman info --format '{{ '{{' }}.Store.GraphRoot{{ '}}' }}'"
+  args:
+    executable: /bin/bash
+  register: podman_info
+  changed_when: false
+  failed_when: false
+  when: podman_rootless_user != "root"
+
+- name: Show podman storage configuration
+  debug:
+    msg:
+      - "User: {{ podman_rootless_user }}"
+      - "GraphRoot: {{ podman_rootless_graphroot }}"
+      - "RunRoot: {{ podman_rootless_runroot }}"
+      - "Podman reports: {{ podman_info.stdout | default('N/A') }}"

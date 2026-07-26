@@ -1,0 +1,12 @@
+---
+# Playbook: Configure rootless Podman on remote nodes
+# Independent task: installs podman, configures storage.conf,
+# enables linger, and sets XDG_RUNTIME_DIR.
+# Run standalone or as part of client_site.yml.
+- name: Configure rootless Podman
+  hosts: "{{ target_hosts | default('client_servers') }}"
+  remote_user: root
+  become: false
+  gather_facts: true
+  roles:
+    - podman_rootless

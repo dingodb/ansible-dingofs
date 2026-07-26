@@ -89,6 +89,19 @@ tune_thp_mode: madvise
 tune_cpupower_idle_disable: 3
 
 # ============================================================
+# Rootless Podman
+# ============================================================
+podman_rootless_user: "{{ dingofs_user }}"
+podman_rootless_group: "{{ podman_rootless_user }}"
+podman_rootless_home: "{{ '/root' if podman_rootless_user == 'root' else '/home/' ~ podman_rootless_user }}"
+podman_rootless_storage_driver: overlay
+podman_rootless_storage_base: /mnt/disk1
+podman_rootless_graphroot: "{{ podman_rootless_storage_base }}/podman-{{ podman_rootless_user }}/data"
+podman_rootless_runroot: "{{ podman_rootless_storage_base }}/podman-{{ podman_rootless_user }}/run"
+podman_rootless_storage_conf: "{{ '/etc/containers/storage.conf' if podman_rootless_user == 'root' else podman_rootless_home ~ '/.config/containers/storage.conf' }}"
+podman_rootless_xdg_runtime_dir: "/run/user/${UID}"
+
+# ============================================================
 # Dingo Cache
 # ============================================================
 

@@ -1,0 +1,6 @@
+# Rootless Podman storage configuration
+# Managed by Ansible - do not edit manually
+[storage]
+driver = "{{ podman_rootless_storage_driver }}"
+graphroot = "{{ podman_rootless_graphroot }}"
+runroot = "{{ podman_rootless_runroot }}"
