@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+#
+# dingofs_restart_check.sh
+# Managed by Ansible - do not edit manually
+#
+# For each DingoFS mountpoint, check whether any process is currently
+# using it (via `fuser -m`). If the mountpoint is idle, restart the
+# corresponding systemd service. If it's busy, skip it and log why.
+#
+# Requires: psmisc (fuser), systemd (systemctl)
+
+set -euo pipefail
+
+# --- Configuration: mountpoint -> systemd service mapping -----------------
+declare -A MOUNTS=(
+{% for client in dingo_clients %}
+  ["{{ client.mount_point }}"]="dingofs-mount-{{ client.fsname }}.service"
+{% endfor %}
+)
+
+DRY_RUN=false
+if [[ "${1:-}" == "--dry-run" ]]; then
+  DRY_RUN=true
+fi
+
+log() {
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
+}
+
+if [[ $EUID -ne 0 ]]; then
+  log "ERROR: this script must be run as root (fuser/systemctl need privileges). Try: sudo $0"
+  exit 1
+fi
+
+if ! command -v fuser >/dev/null 2>&1; then
+  log "ERROR: fuser not found. Install it with: sudo apt update && sudo apt install -y psmisc"
+  exit 1
+fi
+
+any_skipped=false
+
+for mountpoint in "${!MOUNTS[@]}"; do
+  service="${MOUNTS[$mountpoint]}"
+
+  log "----------------------------------------"
+  log "Checking mountpoint: $mountpoint  (service: $service)"
+
+  if [[ ! -d "$mountpoint" ]]; then
+    log "  WARN: mountpoint path does not exist, skipping."
+    continue
+  fi
+
+  if ! mountpoint -q "$mountpoint"; then
+    log "  WARN: $mountpoint is not currently mounted, skipping."
+    continue
+  fi
+
+  # fuser -m: exit code 0 = processes found using this filesystem, 1 = none found
+  if fuser -m "$mountpoint" >/dev/null 2>&1; then
+    log "  IN USE: processes are accessing $mountpoint, skipping restart of $service."
+    log "  Details: $(fuser -vm "$mountpoint" 2>&1 | tr '\n' ' ')"
+    any_skipped=true
+    continue
+  fi
+
+  log "  IDLE: no processes found on $mountpoint."
+
+  if $DRY_RUN; then
+    log "  DRY-RUN: would restart $service now."
+  else
+    log "  Restarting $service ..."
+    if systemctl restart "$service"; then
+      log "  OK: $service restarted successfully."
+    else
+      log "  ERROR: failed to restart $service."
+    fi
+  fi
+done
+
+log "----------------------------------------"
+if $any_skipped; then
+  log "Done. One or more mountpoints were busy and skipped."
+else
+  log "Done. All mountpoints processed."
+fi

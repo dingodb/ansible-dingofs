@@ -1,0 +1,78 @@
+---
+# Playbook: Upgrade dingo-cache service binary
+# Standalone operational playbook — NOT included in cache_site.yml.
+# Steps:
+#   1. Backup current binary: dingo-cache -> dingo-cache.bak
+#   2. Copy new binary from control node (dingo_cache_bin_local_src)
+#   3. Restart dingo-cache service and verify
+#
+# Usage:
+#   ansible-playbook playbooks/cache_06_upgrade.yml
+#   ansible-playbook playbooks/cache_06_upgrade.yml -e target_hosts=cache_servers
+#   ansible-playbook playbooks/cache_06_upgrade.yml -e dingo_cache_bin_local_src=/path/to/new-dingo-cache
+- name: Upgrade dingo-cache service
+  hosts: "{{ target_hosts | default('cache_servers') }}"
+  remote_user: root
+  become: false
+  gather_facts: false
+  tasks:
+    # --- Pre-flight: ensure dingo-cache is deployed ---
+    - name: Check current dingo-cache binary exists
+      stat:
+        path: "{{ dingo_cache_base_dir }}/{{ dingo_cache_bin_name }}"
+      register: current_bin
+
+    - name: Fail if dingo-cache is not deployed yet
+      assert:
+        that:
+          - current_bin.stat.exists
+        fail_msg: >-
+          {{ dingo_cache_base_dir }}/{{ dingo_cache_bin_name }} not found.
+          Run the full deployment (cache_site.yml) first.
+
+    # --- Step 1: backup current binary ---
+    - name: Backup current dingo-cache binary
+      command: >-
+        mv {{ dingo_cache_base_dir }}/{{ dingo_cache_bin_name }}
+        {{ dingo_cache_base_dir }}/{{ dingo_cache_bin_name }}.bak
+
+    # --- Step 2: copy new binary from control node ---
+    - name: Copy new dingo-cache binary to remote host
+      copy:
+        src: "{{ dingo_cache_bin_local_src }}"
+        dest: "{{ dingo_cache_base_dir }}/{{ dingo_cache_bin_name }}"
+        mode: "0755"
+
+    # --- Step 3: restart service ---
+    - name: Restart dingo-cache service
+      systemd:
+        name: "{{ dingo_cache_service_name }}"
+        state: restarted
+
+    # --- Verify ---
+    - name: Read listen IP from dingo-cache config
+      shell: "grep '^--listen_ip=' {{ dingo_cache_base_dir }}/dingo-cache.conf | cut -d= -f2"
+      register: dingo_cache_listen_ip_conf
+      changed_when: false
+
+    - name: Wait for dingo-cache listen port
+      wait_for:
+        host: "{{ dingo_cache_listen_ip_conf.stdout }}"
+        port: "{{ dingo_cache_listen_port }}"
+        delay: 3
+        timeout: 60
+
+    - name: Check dingo-cache service status
+      shell: systemctl is-active {{ dingo_cache_service_name }}
+      register: service_status
+      changed_when: false
+      failed_when: service_status.stdout != 'active'
+
+    - name: Show upgrade summary
+      debug:
+        msg:
+          - "Service: {{ dingo_cache_service_name }}"
+          - "Status: {{ service_status.stdout }}"
+          - "Binary: {{ dingo_cache_base_dir }}/{{ dingo_cache_bin_name }}"
+          - "Backup: {{ dingo_cache_base_dir }}/{{ dingo_cache_bin_name }}.bak"
+          - "Port: {{ dingo_cache_listen_port }} (listening)"

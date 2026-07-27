@@ -1,0 +1,36 @@
+---
+# ============================================================
+# Role: dingo_client_upgrade - Upgrade dingo-client binaries
+# Steps per client instance:
+#   1. Backup current binary (.bak)
+#   2. Copy new binary from control node
+#   3. Deploy restart-check script (checks fuser before restart)
+#   4. Execute script (restarts only idle mountpoints)
+# ============================================================
+
+# --- Ensure psmisc (fuser) is installed ---
+- name: Ensure psmisc is installed (provides fuser)
+  package:
+    name: psmisc
+    state: present
+  when: ansible_os_family == "RedHat"
+
+- name: Ensure psmisc is installed (provides fuser)
+  apt:
+    name: psmisc
+    state: present
+  when: ansible_os_family == "Debian"
+
+# --- Deploy the restart-check script ---
+- name: Deploy dingofs restart check script
+  template:
+    src: dingofs_restart_check.sh.j2
+    dest: "{{ dingo_client_upgrade_script_path }}"
+    mode: "0755"
+
+# --- Upgrade each client instance ---
+- name: Upgrade each dingo-client instance
+  include_tasks: upgrade_instance.yml
+  loop: "{{ dingo_clients }}"
+  loop_control:
+    loop_var: client_instance

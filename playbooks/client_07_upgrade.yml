@@ -1,0 +1,14 @@
+---
+# Playbook: Upgrade dingo-client binaries with safe restart
+# Steps per client instance:
+#   1. Backup current binary (.bak)
+#   2. Copy new binary from control node
+#   3. Check mountpoint usage via fuser
+#   4. Restart only idle services (skip busy mountpoints)
+- name: Upgrade dingo-client services
+  hosts: client_servers
+  remote_user: root
+  become: false
+  gather_facts: true
+  roles:
+    - dingo_client_upgrade

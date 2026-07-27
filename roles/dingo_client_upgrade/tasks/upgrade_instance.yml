@@ -1,0 +1,36 @@
+---
+# Upgrade a single dingo-client instance
+
+- name: "Set facts for {{ client_instance.fsname }}"
+  set_fact:
+    _base_dir: "{{ client_instance.base_dir | default('/root/dingofs/dingo-client/' ~ client_instance.fsname) }}"
+    _bin_path: "{{ (client_instance.base_dir | default('/root/dingofs/dingo-client/' ~ client_instance.fsname)) }}/bin/dingo-client"
+    _bak_path: "{{ (client_instance.base_dir | default('/root/dingofs/dingo-client/' ~ client_instance.fsname)) }}/bin/dingo-client.bak"
+
+# --- Step 1: Backup current binary ---
+- name: "Check if current binary exists for {{ client_instance.fsname }}"
+  stat:
+    path: "{{ _bin_path }}"
+  register: _bin_stat
+
+- name: "Backup current binary for {{ client_instance.fsname }}"
+  command: "mv {{ _bin_path }} {{ _bak_path }}"
+  when: _bin_stat.stat.exists
+  changed_when: true
+
+# --- Step 2: Copy new binary ---
+- name: "Copy new dingo-client binary for {{ client_instance.fsname }}"
+  copy:
+    src: "{{ dingo_client_upgrade_bin_src }}"
+    dest: "{{ _bin_path }}"
+    mode: "0755"
+
+# --- Step 3: Execute restart-check script ---
+- name: "Run restart check script (dry-run={{ dingo_client_upgrade_dry_run }})"
+  command: "{{ dingo_client_upgrade_script_path }} {{ '--dry-run' if dingo_client_upgrade_dry_run else '' }}"
+  register: _restart_result
+  changed_when: "'restarted successfully' in _restart_result.stdout"
+
+- name: "Show restart check output"
+  debug:
+    var: _restart_result.stdout_lines

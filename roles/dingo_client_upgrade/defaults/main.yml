@@ -1,0 +1,11 @@
+---
+# ============================================================
+# Role: dingo_client_upgrade - Upgrade dingo-client binaries
+# ============================================================
+
+# Binary source (from control node)
+dingo_client_upgrade_bin_src: "{{ dingo_client_bin_local_src }}"
+
+# Script settings
+dingo_client_upgrade_dry_run: false
+dingo_client_upgrade_script_path: /tmp/dingofs_restart_check.sh
