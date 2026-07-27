@@ -1,0 +1,26 @@
+---
+# ============================================================
+# Role: cron_cleanup - Deploy log cleanup script and cron job
+# ============================================================
+
+# Script location
+cron_cleanup_script_path: /root/dingofs/script/cron/cleanup_and_compression.sh
+
+# Directories to clean (override in inventory or host_vars as needed).
+# Defaults to the cache log dir. Add client log dirs per your deployment.
+cron_cleanup_directories:
+  - "{{ dingo_cache_log_dir }}"
+
+# Retention settings
+cron_cleanup_delete_days: 3
+cron_cleanup_compress_days: 2
+
+# Protected files (never delete or compress)
+cron_cleanup_protected_files: []
+
+# Cron schedule (default: daily at midnight)
+cron_cleanup_cron_minute: "0"
+cron_cleanup_cron_hour: "0"
+cron_cleanup_cron_day: "*"
+cron_cleanup_cron_month: "*"
+cron_cleanup_cron_weekday: "*"

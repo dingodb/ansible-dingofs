@@ -1,0 +1,48 @@
+---
+# ============================================================
+# Role: cron_cleanup - Deploy log cleanup script and cron job
+# Steps:
+#   1. Create script directory
+#   2. Deploy cleanup script (templated with protected files)
+#   3. Setup cron job to run daily
+# ============================================================
+
+# --- Step 1: Ensure script directory exists ---
+- name: Ensure cron script directory exists
+  file:
+    path: "{{ cron_cleanup_script_path | dirname }}"
+    state: directory
+    mode: "0755"
+
+# --- Step 2: Deploy cleanup script ---
+- name: Deploy cleanup_and_compression.sh script
+  template:
+    src: cleanup_and_compression.sh.j2
+    dest: "{{ cron_cleanup_script_path }}"
+    mode: "0755"
+
+# --- Step 3: Setup cron job ---
+- name: Build directory arguments for cron command
+  set_fact:
+    _cron_dir_args: "{{ cron_cleanup_directories | join(' ') }}"
+
+- name: Setup cron job for log cleanup
+  cron:
+    name: "DingoFS log cleanup"
+    minute: "{{ cron_cleanup_cron_minute }}"
+    hour: "{{ cron_cleanup_cron_hour }}"
+    day: "{{ cron_cleanup_cron_day }}"
+    month: "{{ cron_cleanup_cron_month }}"
+    weekday: "{{ cron_cleanup_cron_weekday }}"
+    user: root
+    job: "bash {{ cron_cleanup_script_path }} {{ _cron_dir_args }} {{ cron_cleanup_delete_days }}"
+    state: present
+
+- name: Show cron job configuration
+  debug:
+    msg:
+      - "Script: {{ cron_cleanup_script_path }}"
+      - "Directories: {{ cron_cleanup_directories | join(', ') }}"
+      - "Delete files older than: {{ cron_cleanup_delete_days }} days"
+      - "Compress files older than: {{ cron_cleanup_compress_days }} days"
+      - "Schedule: {{ cron_cleanup_cron_minute }} {{ cron_cleanup_cron_hour }} * * {{ cron_cleanup_cron_month }} {{ cron_cleanup_cron_weekday }}"

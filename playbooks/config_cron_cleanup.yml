@@ -1,0 +1,16 @@
+---
+# Playbook: Deploy log cleanup cron job (independent)
+# Deploys cleanup_and_compression.sh and schedules daily cleanup of:
+#   - dingo_cache_log_dir (cache service logs)
+#   - dingo_client_log_dir (client service logs, if defined)
+#
+# Usage:
+#   ansible-playbook playbooks/config_cron_cleanup.yml
+#   ansible-playbook playbooks/config_cron_cleanup.yml -e target_hosts=cache_servers
+- name: Deploy log cleanup cron job
+  hosts: "{{ target_hosts | default('all') }}"
+  remote_user: root
+  become: false
+  gather_facts: false
+  roles:
+    - cron_cleanup

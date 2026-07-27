@@ -102,6 +102,18 @@ podman_rootless_storage_conf: "{{ '/etc/containers/storage.conf' if podman_rootl
 podman_rootless_xdg_runtime_dir: "/run/user/${UID}"
 
 # ============================================================
+# Cron Log Cleanup
+# ============================================================
+cron_cleanup_script_path: /root/dingofs/script/cron/cleanup_and_compression.sh
+cron_cleanup_delete_days: 3
+cron_cleanup_compress_days: 2
+cron_cleanup_protected_files: []
+cron_cleanup_directories:
+  - "{{ dingo_cache_log_dir }}"
+  - /mnt/disk1/dingofs/logs/alayanew
+  - /mnt/disk1/dingofs/logs/manila
+
+# ============================================================
 # Dingo Cache
 # ============================================================
 

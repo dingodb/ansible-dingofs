@@ -1,0 +1,155 @@
+#!/usr/bin/env bash
+# Managed by Ansible - do not edit manually
+
+# Check if minimum number of arguments is provided
+if [ "$#" -lt 2 ]; then
+    echo "Usage: $0 [directory1] [directory2] ... <delete_days>"
+    exit 1
+fi
+
+# ================= CONFIGURATION =================
+# Define protected filenames (files to never delete or compress)
+PROTECTED_FILES=({% for f in cron_cleanup_protected_files %}"{{ f }}" {% endfor %})
+
+# Configure compression: files older than this many days will be compressed
+# Set to a number (e.g., 7). To disable compression, set to 0.
+COMPRESS_DAYS={{ cron_cleanup_compress_days }}
+# =================================================
+
+# Extract days (last argument) and directories (all but last)
+DAYS="${@: -1}"
+DIRECTORIES=("${@:1:$#-1}")
+
+# Validate that DAYS is a number
+if ! [[ "$DAYS" =~ ^[0-9]+$ ]]; then
+    echo "Error: Last argument (days) must be a number."
+    exit 1
+fi
+
+echo "Configured to delete files older than $DAYS days."
+if [ "$COMPRESS_DAYS" -gt 0 ]; then
+    echo "Configured to compress files older than $COMPRESS_DAYS days into grouped .tar.gz archives."
+fi
+
+# Function to clean a single directory
+clean_directory() {
+    local TARGET_DIR="$1"
+
+    # Validate directory
+    if [ ! -d "$TARGET_DIR" ]; then
+        echo "Warning: Directory $TARGET_DIR does not exist. Skipping."
+        return
+    fi
+
+    echo "----------------------------------------"
+    echo "Processing directory: $TARGET_DIR"
+
+    # Use pushd to enter the directory so tar doesn't store absolute paths
+    # (prevents "Removing leading '/' from member names" warnings)
+    pushd "$TARGET_DIR" > /dev/null || return
+
+    # Collect targets of all symlinks
+    local symlink_targets=()
+    while IFS= read -r -d '' link; do
+        target=$(readlink -f "$link")
+        symlink_targets+=("$target")
+    done < <(find . -type l -print0)
+
+    # 1. DELETE EXPIRED FILES (including old archives)
+    local deleted_count=0
+    while IFS= read -r -d '' file; do
+        file_path=$(readlink -f "$file")
+        filename=$(basename "$file")
+
+        # Skip if file is a symlink target
+        local skip=false
+        for target in "${symlink_targets[@]}"; do
+            if [[ "$file_path" == "$target" ]]; then
+                echo "Skipping symlink target from deletion: $filename"
+                skip=true; break
+            fi
+        done
+        [[ "$skip" == true ]] && continue
+
+        # Skip if filename is in protected list
+        for protected in "${PROTECTED_FILES[@]}"; do
+            if [[ "$filename" == "$protected" ]]; then
+                echo "Skipping protected file from deletion: $filename"
+                skip=true; break
+            fi
+        done
+        [[ "$skip" == true ]] && continue
+
+        echo "Removing: $file"
+        rm -f "$file"
+        ((deleted_count++))
+    done < <(find . -type f -mtime +"$DAYS" -print0)
+
+    echo "Total Deleted: $deleted_count files older than $DAYS days in $TARGET_DIR"
+
+    # 2. COMPRESS OLD FILES INTO A SINGLE ARCHIVE
+    if [ "$COMPRESS_DAYS" -gt 0 ]; then
+        local compress_list
+        compress_list=$(mktemp)
+        local compressed_count=0
+
+        # Find files older than COMPRESS_DAYS, excluding already compressed files
+        while IFS= read -r -d '' file; do
+            file_path=$(readlink -f "$file")
+            filename=$(basename "$file")
+
+            # Skip symlink targets
+            local skip=false
+            for target in "${symlink_targets[@]}"; do
+                if [[ "$file_path" == "$target" ]]; then
+                    skip=true; break
+                fi
+            done
+            [[ "$skip" == true ]] && continue
+
+            # Skip protected files
+            for protected in "${PROTECTED_FILES[@]}"; do
+                if [[ "$filename" == "$protected" ]]; then
+                    skip=true; break
+                fi
+            done
+            [[ "$skip" == true ]] && continue
+
+            # If safe, add the null-terminated filename to our temporary list
+            printf "%s\0" "$file" >> "$compress_list"
+            ((compressed_count++))
+        done < <(find . -type f -mtime +"$COMPRESS_DAYS" ! -name "*.tar.gz" ! -name "*.gz" -print0)
+
+        # If we found files to compress, run tar using the list
+        if [ "$compressed_count" -gt 0 ]; then
+            # Format: archive_YYYYMMDD_HHMMSS.tar.gz
+            local archive_name="archive_$(date +%Y%m%d_%H%M%S).tar.gz"
+            echo "Compressing $compressed_count files into $archive_name..."
+
+            # Use --null and -T to read the exact filenames safely from the temp file
+            if tar -czf "$archive_name" --null -T "$compress_list"; then
+                echo "Compression successful. Removing original files..."
+                # Only delete the original files if tar succeeded
+                xargs -0 rm -f < "$compress_list"
+            else
+                echo "Error: Failed to create archive $archive_name."
+            fi
+        else
+            echo "No files needed compression."
+        fi
+
+        # Cleanup the temp file
+        rm -f "$compress_list"
+    fi
+
+    # Return to the original directory
+    popd > /dev/null
+}
+
+# Process each directory
+for dir in "${DIRECTORIES[@]}"; do
+    clean_directory "$dir"
+done
+
+echo "----------------------------------------"
+echo "Cleanup and compression completed for all directories."
