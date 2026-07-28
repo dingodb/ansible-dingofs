@@ -32,9 +32,10 @@ for dev in $devices; do
         continue
     fi
 
-    size=$(blockdev --getsize64 "$path" | numfmt --to=iec --format %.1f --suffix=B | sed 's/B//')
+    size_bytes=$(blockdev --getsize64 "$path")
+    size=$(numfmt --to=iec --format %.1f --suffix=B "$size_bytes" | sed 's/B//')
     echo "Found available device: $path ($size)"
-    available_devices+=("$path")
+    available_devices+=("$size_bytes $path")
 done
 
 if [ {% raw %}${#available_devices[@]}{% endraw %} -eq 0 ]; then
@@ -42,8 +43,13 @@ if [ {% raw %}${#available_devices[@]}{% endraw %} -eq 0 ]; then
     exit 0
 fi
 
-IFS=$'\n' sorted_devices=($(sort <<<"${available_devices[*]}"))
+IFS=$'\n' sorted_device_records=($(printf '%s\n' "${available_devices[@]}" | sort -n -k1,1))
 unset IFS
+
+sorted_devices=()
+for record in "${sorted_device_records[@]}"; do
+    sorted_devices+=("${record#* }")
+done
 
 echo ""
 echo "=== Creating LVM for DingoFS cache ==="
