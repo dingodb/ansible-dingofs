@@ -8,12 +8,12 @@
   tasks:
     - name: Check dingo-cache service status
       systemd:
-        name: dingo-cache
+        name: "{{ dingo_cache_service_name }}"
       register: service_info
 
     - name: Display service status
       debug:
-        msg: "{{ inventory_hostname }}: dingo-cache is {{ service_info.status.ActiveState }}"
+        msg: "{{ inventory_hostname }}: {{ dingo_cache_service_name }} is {{ service_info.status.ActiveState }}"
 
     - name: Check dingo-cache listen port
       wait_for:
