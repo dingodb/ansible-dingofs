@@ -74,6 +74,16 @@
   set_fact:
     _discovered_cache_dirs: "{{ discovered_mounts.stdout_lines | map('regex_replace', '^(.+)$', '\\1/dingofs/dingo-cache') | join(',') }}"
 
+- name: Validate at least one mount point is available
+  assert:
+    that:
+      - discovered_mounts.stdout_lines | length > 0
+    fail_msg: >-
+      No mounted dingo_cache LVM volumes found on this host.
+      dingo-cache requires dedicated NVMe mount points created by lvm_cache role.
+      Run cache_02_lvm.yml first, or check that this machine actually has free NVMe disks.
+      Failing fast here prevents dingo-cache from silently falling back to writing on the system disk.
+
 - name: Compute per-disk cache allocation (total capacity × disk_usage_ratio)
   shell: |
     ratio={{ dingo_cache_disk_usage_ratio }}
@@ -109,15 +119,6 @@
   set_fact:
     dingo_cache_cache_size_mb: "{{ computed_cache_size.stdout | default('0') | int }}"
   when: discovered_mounts.stdout_lines | length > 0 and computed_cache_size.stdout | default('0') | int > 0
-
-- name: Validate cache_dirs is not empty
-  assert:
-    that:
-      - dingo_cache_cache_dirs.split(',') | length > 0
-    fail_msg: >-
-      No cache directories configured and no dingo_cache LVM mounts found.
-      Run lvm_cache role first (cache_02_lvm.yml) to create /mnt/diskN mount points,
-      or set dingo_cache_cache_dirs explicitly in inventory.
 
 - name: Log effective cache_dirs
   debug:
