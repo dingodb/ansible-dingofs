@@ -42,6 +42,102 @@
   set_fact:
     dingo_cache_config_id: "{{ existing_id.stdout | default(generated_uuid.stdout) }}"
 
+# --- NUMA detection (for numactl) ---
+- name: Detect NUMA node count
+  shell: "numactl --hardware 2>/dev/null | grep -oP 'available: \\d+' | awk '{print $2}'"
+  register: numa_node_count_raw
+  changed_when: false
+  failed_when: false
+
+- name: Set effective NUMA configuration
+  set_fact:
+    dingo_cache_numa_node_count: "{{ numa_node_count_raw.stdout | default('1') | int }}"
+    # Only enable numactl on multi-NUMA machines (makes no sense on single-node and breaks on VMs)
+    dingo_cache_numa_enabled: "{{ (numa_node_count_raw.stdout | default('1') | int) > 1 }}"
+
+- name: Log NUMA config
+  debug:
+    msg: >-
+      NUMA nodes: {{ dingo_cache_numa_node_count }},
+      numactl: {{ 'enabled (bind to node ' + (dingo_cache_numa_node | default(0) | string) + ')' if dingo_cache_numa_enabled else 'skipped (single NUMA or numactl unavailable)' }}
+
+# --- Detect actual cache mount points (dynamic, per-host) ---
+# Always run: auto-discovered mounts take precedence over statically configured values.
+# If no mounts found (lvm_cache not yet run), fall back to group_vars / role defaults.
+- name: Discover mounted dingo_cache LVM volumes
+  shell: mount | grep '{{ lvm_vg_prefix }}_' | awk '{print $3}' | sort -V
+  register: discovered_mounts
+  changed_when: false
+  failed_when: false
+
+- name: Build cache_dirs from discovered mounts (take precedence)
+  set_fact:
+    _discovered_cache_dirs: "{{ discovered_mounts.stdout_lines | map('regex_replace', '^(.+)$', '\\1/dingofs/dingo-cache') | join(',') }}"
+
+- name: Compute per-disk cache allocation (total capacity × disk_usage_ratio)
+  shell: |
+    ratio={{ dingo_cache_disk_usage_ratio }}
+    echo "=== Per-disk cache capacity (disk_usage_ratio=${ratio}) ==="
+    total=0
+    idx=0
+    for mp in {{ discovered_mounts.stdout_lines | join(' ') }}; do
+        # df -BM: Filesystem 1M-blocks Used Available Use% Mounted on
+        total_mb=$(df -BM "$mp" 2>/dev/null | awk 'NR==2 {gsub("M","",$2); print $2}')
+        disk_cache=$(awk "BEGIN { printf \"%.0f\", ${total_mb} * ${ratio} }")
+        echo "  disk[$idx]: $mp  total=${total_mb}MB  cache_alloc=${disk_cache}MB"
+        total=$((total + disk_cache))
+        idx=$((idx + 1))
+    done
+    echo "TOTAL_CACHE_MB=$total"
+  register: cache_compute
+  changed_when: false
+  when: discovered_mounts.stdout_lines | length > 0
+
+# Override static config with auto-discovered values (when mounts exist)
+- name: Use auto-discovered cache_dirs (overrides static config)
+  set_fact:
+    dingo_cache_cache_dirs: "{{ _discovered_cache_dirs }}"
+  when: _discovered_cache_dirs | length > 0
+
+- name: Extract total cache_size_mb from per-disk compute output
+  shell: echo "{{ cache_compute.stdout_lines | select('match', '^TOTAL_CACHE_MB=') | first | regex_replace('^TOTAL_CACHE_MB=', '') }}"
+  register: computed_cache_size
+  changed_when: false
+  when: cache_compute is succeeded and discovered_mounts.stdout_lines | length > 0
+
+- name: Use auto-computed cache_size_mb (per-disk total × disk_usage_ratio)
+  set_fact:
+    dingo_cache_cache_size_mb: "{{ computed_cache_size.stdout | default('0') | int }}"
+  when: discovered_mounts.stdout_lines | length > 0 and computed_cache_size.stdout | default('0') | int > 0
+
+- name: Validate cache_dirs is not empty
+  assert:
+    that:
+      - dingo_cache_cache_dirs.split(',') | length > 0
+    fail_msg: >-
+      No cache directories configured and no dingo_cache LVM mounts found.
+      Run lvm_cache role first (cache_02_lvm.yml) to create /mnt/diskN mount points,
+      or set dingo_cache_cache_dirs explicitly in inventory.
+
+- name: Log effective cache_dirs
+  debug:
+    msg: >-
+      Effective cache_dirs ({{ dingo_cache_cache_dirs.split(',') | length }} paths):
+      {{ dingo_cache_cache_dirs }}
+      (source: {{ 'auto-discovered LVM mounts' if _discovered_cache_dirs | length > 0 else 'static inventory config' }})
+
+- name: Log per-disk capacity allocation
+  debug:
+    msg: "{{ cache_compute.stdout_lines }}"
+  when: cache_compute is succeeded
+
+- name: Log effective cache_size_mb
+  debug:
+    msg: >-
+      Effective cache_size_mb: {{ dingo_cache_cache_size_mb }} MB
+      (disk_usage_ratio: {{ dingo_cache_disk_usage_ratio }},
+       source: {{ 'auto-computed from disk totals × ratio' if _discovered_cache_dirs | length > 0 else 'static inventory config' }})
+
 # --- Create directories ---
 - name: Create dingo-cache base directory
   file:

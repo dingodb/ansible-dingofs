@@ -41,8 +41,8 @@ else
 fi
 
 LD_PRELOAD={{ dingo_client_ld_preload }} \
-    numactl --cpunodebind={{ dingo_client_numa_cpunode }} --membind={{ dingo_client_numa_memnode }} \
-    ${g_fuse} "mds://${g_mdsaddr}/${g_fsname}" "${g_mnt}" \
+{% if dingo_client_numa_enabled | default(false) %}    numactl --cpunodebind={{ dingo_client_numa_cpunode | default(0) }} --membind={{ dingo_client_numa_memnode | default(0) }} \
+{% endif %}    ${g_fuse} "mds://${g_mdsaddr}/${g_fsname}" "${g_mnt}" \
     --log_dir=${g_log} \
     --log_level={{ dingo_client_log_level }} \
     --log_v={{ dingo_client_log_v }} \

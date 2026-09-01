@@ -41,6 +41,25 @@
     dest: "{{ dingo_client_base_dir }}/bin/dingo"
     mode: "0755"
 
+# --- NUMA detection (for numactl) ---
+- name: Detect NUMA node count
+  shell: numactl --hardware 2>/dev/null | grep -oP 'available: \d+' | awk '{print $2}'
+  register: numa_node_count_raw
+  changed_when: false
+  failed_when: false
+
+- name: Set effective NUMA configuration
+  set_fact:
+    dingo_client_numa_node_count: "{{ numa_node_count_raw.stdout | default('1') | int }}"
+    # Only enable numactl on multi-NUMA machines (makes no sense on single-node and breaks on VMs)
+    dingo_client_numa_enabled: "{{ (numa_node_count_raw.stdout | default('1') | int) > 1 }}"
+
+- name: "Log NUMA config for {{ dingo_client_fsname }}"
+  debug:
+    msg: >-
+      NUMA nodes: {{ dingo_client_numa_node_count }},
+      numactl: {{ 'enabled (bind to node ' + (dingo_client_numa_cpunode | string) + ')' if dingo_client_numa_enabled else 'skipped (single NUMA or numactl unavailable)' }}
+
 # --- Deploy mount script ---
 - name: "Deploy dingofs-mount.sh for {{ dingo_client_fsname }}"
   template:

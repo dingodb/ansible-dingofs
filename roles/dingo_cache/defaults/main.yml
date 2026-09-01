@@ -7,13 +7,23 @@ dingo_cache_bin_local_src: "/root/dingofs/pkg/dingo-cache"
 dingo_cache_listen_port: 11000
 dingo_cache_group_name: openclaw-group
 dingo_cache_group_weight: 100
-dingo_cache_cache_size_mb: 3145728
+# Fraction of each disk's TOTAL capacity to use as cache (0.0 - 1.0).
+# Auto-computed per disk: cache_size_mb = sum(disk_total_mb * ratio) across all cache_dirs.
+# Example: ratio=0.85 uses 85% of each NVMe's total capacity.
+# When lvm_cache has NOT been run yet (no mounts discovered), falls back to the static
+# dingo_cache_cache_size_mb value below (define in group_vars/all.yml to override).
+dingo_cache_disk_usage_ratio: 0.80
+dingo_cache_cache_size_mb: 3145728   # FALLBACK only — auto-discovery overrides when LVM mounts exist
 dingo_cache_free_space_ratio: "0.01"
 dingo_cache_iodepth: 1024
 dingo_cache_log_level: INFO
 dingo_cache_log_v: 0
 dingo_cache_ld_preload: /usr/local/lib/libjemalloc.so.2
 dingo_cache_ip_pattern: "192.168."
+
+# NUMA binding: which NUMA node to bind dingo-cache to.
+# NOTE: Only effective on multi-NUMA machines. Single-NUMA VMs/small hosts skip numactl automatically.
+dingo_cache_numa_node: 0
 
 dingo_cache_cache_dirs: "/mnt/disk1/dingofs/dingo-cache,/mnt/disk2/dingofs/dingo-cache,/mnt/disk3/dingofs/dingo-cache"
 dingo_cache_log_dir: "/mnt/disk4/dingofs/logs/dingo-cache"

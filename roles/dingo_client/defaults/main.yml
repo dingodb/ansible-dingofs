@@ -12,6 +12,9 @@ dingo_client_log_dir: "/mnt/disk1/dingofs/logs/{{ dingo_client_fsname }}"
 dingo_client_log_level: ERROR
 dingo_client_log_v: 0
 dingo_client_ld_preload: /usr/local/lib/libjemalloc.so.2
+# NUMA binding: which NUMA node to bind dingo-client to.
+# NOTE: Only effective on multi-NUMA machines. Single-NUMA VMs/small hosts automatically skip numactl,
+# so binding to node 1 is safe as a default (it won't be used on single-NUMA machines).
 dingo_client_numa_cpunode: 1
 dingo_client_numa_memnode: 1
 

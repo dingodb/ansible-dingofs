@@ -8,4 +8,4 @@ if [ ! -f "$CACHE_CONF_FILE" ]; then
     exit 1
 fi
 
-LD_PRELOAD={{ dingo_cache_ld_preload }} numactl --cpunodebind=0 --membind=0 {{ dingo_cache_base_dir }}/{{ dingo_cache_bin_name }} --flagfile "$CACHE_CONF_FILE"
+LD_PRELOAD={{ dingo_cache_ld_preload }}{% if dingo_cache_numa_enabled | default(false) %} numactl --cpunodebind={{ dingo_cache_numa_node | default(0) }} --membind={{ dingo_cache_numa_node | default(0) }}{% endif %} {{ dingo_cache_base_dir }}/{{ dingo_cache_bin_name }} --flagfile "$CACHE_CONF_FILE"
