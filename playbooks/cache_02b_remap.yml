@@ -1,0 +1,108 @@
+---
+# Playbook: Normalize dingo-cache mount layout (smallest disk -> /mnt/disk1)
+#
+# Fixes legacy mounts where disks were attached out of size order, e.g. an
+# 894G disk hanging off /mnt/disk3 while 3.5T disks took disk1/disk2.
+# The remap script sorts /dev/dingo_cache_N/lv (and /dev/mapper/dingo_cache_N-lv)
+# fstab entries by size ascending and maps them to /mnt/disk1 ... /mnt/diskN.
+#
+# Default (no extra var): CHECK ONLY — dry run, reports which hosts need remap.
+#   ansible-playbook -i <env>/<region>/hosts.yml playbooks/cache_02b_remap.yml
+#
+# Apply:
+#   ansible-playbook -i <env>/<region>/hosts.yml playbooks/cache_02b_remap.yml \
+#     -e remap_apply=true [--limit <host>]
+#
+# The script is safe by design: idempotent (exit 0 when layout is correct),
+# backs up /etc/fstab, refuses when processes use the mounts, and rolls back
+# on failure. Run BEFORE cache_05_deploy (or redeploy afterwards so conf paths
+# match the remapped layout). Hosts not yet running dingo-cache need no
+# service stop.
+- name: Remap dingo-cache mounts by disk size
+  hosts: cache_servers
+  gather_facts: false
+  tasks:
+    - name: Copy remap script to remote host
+      copy:
+        src: ../roles/lvm_cache/files/remap-dingo-mounts-by-size.sh
+        dest: /tmp/remap-dingo-mounts-by-size.sh
+        mode: "0755"
+
+    # rc: 0 = layout OK, 2 = remap needed, 1 = script died. A die with
+    # 'No matching' means the host has no dingo_cache fstab entries at all
+    # (no cache disks provisioned) — not an error, just nothing to remap.
+    - name: Check current mount layout (dry run; exit 2 means remap needed)
+      shell: bash /tmp/remap-dingo-mounts-by-size.sh
+      register: remap_check
+      changed_when: false
+      failed_when: >-
+        remap_check.rc not in [0, 2] and
+        'No matching' not in (remap_check.stderr | default(''))
+
+    - name: Report layout check
+      debug:
+        msg: >-
+          {{ inventory_hostname }}:
+          {{ 'layout OK, no change needed' if remap_check.rc == 0 else
+             ('no dingo_cache mounts on this host, nothing to remap' if remap_check.rc == 1 else
+              'NEEDS REMAP (see dry-run output above)') }}
+
+    - name: Show dry-run details when layout needs changes
+      debug:
+        var: remap_check.stdout_lines
+      when: remap_check.rc == 2
+
+    # Remap needs ALL users of the cache disks stopped: dingo-cache, plus
+    # dingo-client mount services (their logs default to /mnt/disk1/... and
+    # hold file handles that would block the unmount). Stopped services are
+    # recorded and restarted after a successful remap.
+    - name: Stop dingo services touching cache disks (recorded for restart)
+      shell: |
+        # NOTE: do not use bash array-length expansions like "${svcs[@]#...}"
+        # here: the brace-hash sequence is parsed by ansible as a jinja2
+        # comment opener and breaks argument splitting. Count manually.
+        mapfile -t svcs < <(systemctl list-units --type=service --state=running --no-legend 2>/dev/null | awk '{print $1}' | grep -E '^(dingofs-mount-|dingo-cache-)' || true)
+        : > /tmp/remap-stopped-services
+        stopped_count=0
+        for s in "${svcs[@]}"; do
+          systemctl stop "$s"
+          echo "$s" >> /tmp/remap-stopped-services
+          echo "stopped $s"
+          stopped_count=$((stopped_count + 1))
+        done
+        echo "total stopped: $stopped_count"
+      args:
+        executable: /bin/bash
+      register: service_stop
+      changed_when: "'stopped ' in service_stop.stdout"
+      when: remap_apply | default(false) | bool and remap_check.rc == 2
+
+    - name: Apply mount remap (fstab rewrite + remount)
+      shell: bash /tmp/remap-dingo-mounts-by-size.sh --apply --yes
+      register: remap_apply_result
+      when: remap_apply | default(false) | bool and remap_check.rc == 2
+
+    - name: Show remap result
+      debug:
+        var: remap_apply_result.stdout_lines
+      when: remap_apply_result is defined and remap_apply_result.changed
+
+    - name: Restart services stopped before the remap
+      shell: |
+        started=0
+        for s in $(cat /tmp/remap-stopped-services 2>/dev/null); do
+          systemctl start "$s" && echo "restarted $s" && started=$((started+1))
+        done
+        echo "total restarted: $started"
+      register: service_restart
+      changed_when: "'restarted ' in service_restart.stdout"
+      when: remap_apply_result is defined and remap_apply_result.changed
+
+    - name: Remind about conf sync after remap
+      debug:
+        msg: >-
+          Layout remapped. If dingo-cache was already deployed on this host,
+          rerun cache_05_deploy so conf cache_dir/log_dir match the remapped
+          layout (cache data is preserved: it lives inside the LV, which moved
+          with the remount, and the stable --id keeps the data reusable).
+      when: remap_apply_result is defined and remap_apply_result.changed
