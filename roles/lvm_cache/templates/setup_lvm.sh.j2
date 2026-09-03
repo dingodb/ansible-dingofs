@@ -69,13 +69,15 @@ for device in "${sorted_devices[@]}"; do
 
     echo "Processing device: $device -> VG: $vg_name, Mount: $mount_point"
 
-    pvcreate -y -ff "$device" || { echo "Error: pvcreate failed on $device"; continue; }
-    vgcreate "$vg_name" "$device" || { echo "Error: vgcreate $vg_name failed"; continue; }
-    lvcreate -y -l 100%FREE -n "$lv_name" "$vg_name" || { echo "Error: lvcreate failed"; continue; }
-    mkfs.{{ lvm_fs_type }} "/dev/${vg_name}/${lv_name}" || { echo "Error: mkfs failed"; continue; }
+    # Any failure aborts with a non-zero exit code so ansible reports FAILED
+    # instead of masking errors with a final 'completed' message.
+    pvcreate -y -ff "$device" || { echo "Error: pvcreate failed on $device"; exit 1; }
+    vgcreate "$vg_name" "$device" || { echo "Error: vgcreate $vg_name failed"; exit 1; }
+    lvcreate -y -l 100%FREE -n "$lv_name" "$vg_name" || { echo "Error: lvcreate failed"; exit 1; }
+    mkfs.{{ lvm_fs_type }} "/dev/${vg_name}/${lv_name}" || { echo "Error: mkfs failed"; exit 1; }
 
     mkdir -p "$mount_point"
-    mount "/dev/${vg_name}/${lv_name}" "$mount_point" || { echo "Error: mount failed"; continue; }
+    mount "/dev/${vg_name}/${lv_name}" "$mount_point" || { echo "Error: mount failed"; exit 1; }
 
     # Add to fstab if not already present
     if ! grep -q "/dev/${vg_name}/${lv_name}" /etc/fstab; then
