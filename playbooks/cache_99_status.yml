@@ -15,9 +15,9 @@
       debug:
         msg: "{{ inventory_hostname }}: {{ dingo_cache_service_name }} is {{ service_info.status.ActiveState }}"
 
-    # Listen IP lives in the deployed conf (e.g. 192.168.x on the IB/storage
-    # NIC), which is NOT the ansible_host (172.31.91.x management NIC). Probe
-    # the address the service actually bound to.
+    # Listen IP lives in the deployed conf (e.g. a storage/IB NIC address),
+    # which is NOT necessarily the ansible_host management NIC. Probe the
+    # address the service actually bound to.
     - name: Read listen IP from dingo-cache conf
       shell: >-
         grep '^--listen_ip=' {{ dingo_cache_base_dir }}/dingo-cache.conf 2>/dev/null
