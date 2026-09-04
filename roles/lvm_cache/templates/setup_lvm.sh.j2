@@ -1,13 +1,25 @@
 #!/bin/bash
 # Ansible-managed: Detect unused NVMe devices and create LVM for DingoFS cache
+#
+# Layout policy:
+#   - Devices >= lvm_min_cache_disk_gb (decimal GB) become cache disks: one VG
+#     per device ({{ lvm_vg_prefix }}_N) mounted at {{ lvm_mount_prefix }}N.
+#   - Smaller devices are aux disks: all combined into a single VG
+#     ({{ lvm_aux_vg_name }}) mounted at {{ lvm_aux_mount }}, reserved for
+#     logs, corefiles and other auxiliary data (NOT used as cache).
+#   - If every device is cache-sized, no aux VG/mount is created.
 
 set -o pipefail
+
+# Disks below this size (decimal GB) are treated as aux disks.
+MIN_CACHE_BYTES={{ lvm_min_cache_disk_gb | int * 1000000000 }}
 
 echo "=== Detecting unused NVMe devices ==="
 
 devices=$(lsblk -lno NAME | grep '^nvme[0-9]\+n[0-9]\+$')
 
-available_devices=()
+cache_records=()
+aux_records=()
 
 for dev in $devices; do
     path="/dev/$dev"
@@ -34,27 +46,74 @@ for dev in $devices; do
 
     size_bytes=$(blockdev --getsize64 "$path")
     size=$(numfmt --to=iec --format %.1f --suffix=B "$size_bytes" | sed 's/B//')
-    echo "Found available device: $path ($size)"
-    available_devices+=("$size_bytes $path")
+    if [ "$size_bytes" -lt "$MIN_CACHE_BYTES" ]; then
+        echo "Found aux device: $path ($size, below {{ lvm_min_cache_disk_gb }}GB) -> {{ lvm_aux_mount }}"
+        aux_records+=("$size_bytes $path")
+    else
+        echo "Found cache device: $path ($size)"
+        cache_records+=("$size_bytes $path")
+    fi
 done
 
-if [ {% raw %}${#available_devices[@]}{% endraw %} -eq 0 ]; then
+if [ {% raw %}${#cache_records[@]}{% endraw %} -eq 0 ] && [ {% raw %}${#aux_records[@]}{% endraw %} -eq 0 ]; then
     echo "No unused NVMe devices found. Nothing to do."
     exit 0
 fi
 
-IFS=$'\n' sorted_device_records=($(printf '%s\n' "${available_devices[@]}" | sort -n -k1,1))
+# Sort each class by size ascending (smallest gets the lowest mount index)
+sort_records() {
+    printf '%s\n' "$@" | sort -n -k1,1
+}
+
+IFS=$'\n'
+if [ {% raw %}${#cache_records[@]}{% endraw %} -gt 0 ]; then
+    sorted_cache_records=($(sort_records "${cache_records[@]}"))
+fi
+if [ {% raw %}${#aux_records[@]}{% endraw %} -gt 0 ]; then
+    sorted_aux_records=($(sort_records "${aux_records[@]}"))
+fi
 unset IFS
 
-sorted_devices=()
-for record in "${sorted_device_records[@]}"; do
-    sorted_devices+=("${record#* }")
-done
+# --- Aux VG: all small disks combined, mounted once at {{ lvm_aux_mount }} ---
+if [ {% raw %}${#sorted_aux_records[@]}{% endraw %} -gt 0 ]; then
+    echo ""
+    echo "=== Creating aux volume group {{ lvm_aux_vg_name }} -> {{ lvm_aux_mount }} ==="
+
+    first_aux=1
+    for record in "${sorted_aux_records[@]}"; do
+        device="${record#* }"
+        pvcreate -y -ff "$device" || { echo "Error: pvcreate failed on $device"; exit 1; }
+        if [ "$first_aux" -eq 1 ]; then
+            vgcreate "{{ lvm_aux_vg_name }}" "$device" || { echo "Error: vgcreate {{ lvm_aux_vg_name }} failed"; exit 1; }
+            first_aux=0
+        else
+            vgextend "{{ lvm_aux_vg_name }}" "$device" || { echo "Error: vgextend {{ lvm_aux_vg_name }} failed"; exit 1; }
+        fi
+    done
+
+    lvcreate -y -l 100%FREE -n {{ lvm_lv_name }} "{{ lvm_aux_vg_name }}" || { echo "Error: lvcreate in {{ lvm_aux_vg_name }} failed"; exit 1; }
+    mkfs.{{ lvm_fs_type }} "/dev/{{ lvm_aux_vg_name }}/{{ lvm_lv_name }}" || { echo "Error: mkfs failed on {{ lvm_aux_vg_name }}"; exit 1; }
+
+    mkdir -p "{{ lvm_aux_mount }}"
+    mount "/dev/{{ lvm_aux_vg_name }}/{{ lvm_lv_name }}" "{{ lvm_aux_mount }}" || { echo "Error: mount {{ lvm_aux_mount }} failed"; exit 1; }
+
+    if ! grep -q "/dev/{{ lvm_aux_vg_name }}/{{ lvm_lv_name }}" /etc/fstab; then
+        echo "/dev/{{ lvm_aux_vg_name }}/{{ lvm_lv_name }} {{ lvm_aux_mount }} {{ lvm_fs_type }} defaults 0 0" >> /etc/fstab
+    fi
+
+    echo "Aux disk(s) set up -> {{ lvm_aux_mount }} (reserved for logs/corefiles, not used as cache)"
+fi
+
+# --- Cache VGs: one per qualifying device, mounted at {{ lvm_mount_prefix }}N ---
+if [ {% raw %}${#sorted_cache_records[@]}{% endraw %} -eq 0 ]; then
+    echo ""
+    echo "No cache-sized devices (>= {{ lvm_min_cache_disk_gb }}GB) found. Only aux mount created."
+    echo "=== DingoFS Cache LVM setup completed ==="
+    exit 0
+fi
 
 echo ""
 echo "=== Creating LVM for DingoFS cache ==="
-echo "Devices to process: ${sorted_devices[@]}"
-echo ""
 
 # Find the next available index (skip existing dingo_cache VGs)
 index=1
@@ -62,7 +121,8 @@ while vgs "{{ lvm_vg_prefix }}_${index}" &>/dev/null; do
     index=$((index + 1))
 done
 
-for device in "${sorted_devices[@]}"; do
+for record in "${sorted_cache_records[@]}"; do
+    device="${record#* }"
     vg_name="{{ lvm_vg_prefix }}_${index}"
     lv_name="{{ lvm_lv_name }}"
     mount_point="{{ lvm_mount_prefix }}${index}"

@@ -5,3 +5,12 @@ lvm_vg_prefix: dingo_cache
 lvm_lv_name: lv
 lvm_fs_type: xfs
 lvm_mount_prefix: /mnt/disk
+
+# Devices smaller than lvm_min_cache_disk_gb (decimal GB) are aux disks:
+# they are combined into the single lvm_aux_vg_name VG and mounted once at
+# lvm_aux_mount, reserved for logs/corefiles — never used as cache.
+# Matches dingo_cache_min_disk_gb semantics (1 GB = 10^9 bytes), so a 960GB
+# disk goes to aux while a 1TB disk stays a cache disk.
+lvm_min_cache_disk_gb: 1000
+lvm_aux_vg_name: dingo_cache_aux
+lvm_aux_mount: /mnt/aux

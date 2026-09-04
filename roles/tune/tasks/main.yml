@@ -100,6 +100,18 @@
 # =========================
 # Sysctl (check each key, only set if absent or different)
 # =========================
+# When the lvm_cache aux mount exists on this host, core dumps go there
+# (small disk reserved for logs/corefiles) instead of a cache disk.
+- name: Check for aux mount (lvm_cache small-disk layout)
+  stat:
+    path: "{{ lvm_aux_mount | default('/mnt/aux') }}"
+  register: tune_aux_mount_stat
+
+- name: Redirect core dumps to aux mount when present
+  set_fact:
+    tune_core_pattern: "{{ lvm_aux_mount | default('/mnt/aux') }}/corefiles/core-%e-%p-%t"
+  when: tune_aux_mount_stat.stat.exists | default(false)
+
 - name: Define desired sysctl settings
   set_fact:
     tune_sysctl_settings:

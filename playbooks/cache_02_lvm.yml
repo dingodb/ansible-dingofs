@@ -1,6 +1,8 @@
 ---
 # Playbook: LVM setup for DingoFS cache nodes
-# Detects unused NVMe devices, creates LVM VGs, formats XFS, mounts
+# Detects unused NVMe devices, creates LVM VGs, formats XFS, mounts.
+# Layout: disks >= lvm_min_cache_disk_gb -> /mnt/diskN (cache); smaller disks
+# are combined into one aux VG -> /mnt/aux (logs/corefiles, not cache).
 - name: Set up LVM on cache nodes
   hosts: "{{ target_hosts | default('cache_servers') }}"
   remote_user: root
