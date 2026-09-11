@@ -1,0 +1,81 @@
+name: lint
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  yaml:
+    name: YAML & playbook syntax
+    runs-on: ubuntu-latest
+    env:
+      # ansible.cfg selects community.general.yaml as the stdout callback,
+      # which upstream has deprecated. CI only checks syntax, so use the
+      # built-in callback and skip the extra collection dependency.
+      ANSIBLE_STDOUT_CALLBACK: ansible.builtin.default
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install ansible-core
+        run: pip install ansible-core
+
+      - name: Install required collections
+        run: ansible-galaxy collection install -r requirements.yml
+
+      # Plain YAML parsing first: its errors are more direct than ansible's.
+      # This is what catches a plain (unquoted) scalar containing ": " --
+      # the mistake that made every client playbook fail at parse time via
+      # roles/dingo_client/tasks/instance.yml.
+      - name: Parse every YAML file
+        run: |
+          python3 - <<'PY'
+          import pathlib
+          import sys
+          import yaml
+
+          class Loader(yaml.SafeLoader):
+              """Tolerate unknown tags (e.g. !vault); only validate syntax."""
+
+          Loader.add_multi_constructor("", lambda loader, suffix, node: None)
+
+          files = sorted(
+              p for p in pathlib.Path(".").rglob("*")
+              if p.suffix in (".yml", ".yaml") and ".git" not in p.parts
+          )
+
+          bad = []
+          for f in files:
+              try:
+                  list(yaml.load_all(f.read_text(), Loader=Loader))
+              except yaml.YAMLError as e:
+                  bad.append((f, e))
+
+          print(f"checked {len(files)} YAML files, {len(bad)} failed")
+          for f, e in bad:
+              first_line = str(e).splitlines()[0]
+              print(f"::error file={f}::{first_line}")
+
+          sys.exit(1 if bad else 0)
+          PY
+
+      # Then let ansible parse everything itself, which also covers role
+      # references, variables and module usage.
+      - name: ansible-playbook --syntax-check
+        run: |
+          fail=0
+          for pb in playbooks/*.yml; do
+            if ansible-playbook --syntax-check -i inventory/hosts.yml "$pb" >/dev/null 2>&1; then
+              echo "OK   $pb"
+            else
+              echo "FAIL $pb"
+              ansible-playbook --syntax-check -i inventory/hosts.yml "$pb" 2>&1 | tail -20
+              echo "::error file=$pb::syntax-check failed"
+              fail=1
+            fi
+          done
+          exit $fail
