@@ -1,0 +1,15 @@
+---
+# Ansible collections required by the playbooks and roles in this repo.
+#
+#   ansible-galaxy collection install -r requirements.yml
+#
+# Modules used from these:
+#   community.general          -> make            (roles/jemalloc)
+#   ansible.posix              -> sysctl          (roles/tune)
+#   community.crypto           -> openssh_keypair (roles/common)
+#
+# Everything else comes from ansible-core itself.
+collections:
+  - name: community.general
+  - name: ansible.posix
+  - name: community.crypto
