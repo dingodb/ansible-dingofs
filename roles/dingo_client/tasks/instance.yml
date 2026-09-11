@@ -43,7 +43,10 @@
 
 # --- NUMA detection (for numactl) ---
 - name: Detect NUMA node count
-  shell: numactl --hardware 2>/dev/null | grep -oP 'available: \d+' | awk '{print $2}'
+  # Folded scalar: a plain (unquoted) YAML scalar cannot contain ": ",
+  # otherwise parsing fails with "mapping values are not allowed here".
+  shell: >-
+    numactl --hardware 2>/dev/null | grep -oP 'available: \d+' | awk '{print $2}'
   register: numa_node_count_raw
   changed_when: false
   failed_when: false
