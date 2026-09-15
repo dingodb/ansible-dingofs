@@ -101,6 +101,33 @@
   changed_when: "'already' not in (linger_result.stderr | default(''))"
   failed_when: false
 
+# --- Step 4b: Make containers come back after a reboot ---
+#
+# A rootless container with restart=always is NOT restarted on boot by itself.
+# podman-restart.service in the user's systemd session is what walks those
+# containers and starts them; it ships disabled, and nothing else here enables
+# it. Without this, restart=always has no effect across a reboot and the
+# cluster stays down until someone starts it by hand.
+#
+# Requires linger (step 4) to be on already -- there is no user systemd to
+# enable anything in until the user session persists.
+- name: Look up the UID of {{ podman_rootless_user }}
+  command: "id -u {{ podman_rootless_user }}"
+  register: podman_rootless_uid
+  changed_when: false
+  when: podman_rootless_user != "root"
+
+- name: Enable podman-restart.service in the user's systemd session
+  become: true
+  become_user: "{{ podman_rootless_user }}"
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ podman_rootless_uid.stdout | trim }}"
+  systemd:
+    name: podman-restart.service
+    enabled: true
+    scope: user
+  when: podman_rootless_user != "root"
+
 # --- Step 5: Configure XDG_RUNTIME_DIR ---
 - name: Add XDG_RUNTIME_DIR to ~/.bashrc for {{ podman_rootless_user }}
   become: true
