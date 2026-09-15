@@ -73,14 +73,14 @@ ansible-dingofs/
 
 Some playbooks are deliberately **not** part of any `*_site.yml` and must be run
 explicitly. The ones that matter for a working meta deployment:
-`01b_lvm_data.yml`, `config_podman_rootless.yml`, `client_06_dingocli.yml` --
-see the Meta Deployment section below.
+`01b_lvm_data.yml` and `client_06_dingocli.yml` -- see the Meta Deployment
+section below.
 
-`config_podman_rootless.yml` and `client_06_dingocli.yml` default to
-`target_hosts: client_servers`, so against a meta-only inventory they match
-**zero hosts and silently do nothing**. Pass
-`-e target_hosts=meta_servers` (or `-e target_hosts=admin`) when running them for
-a meta deployment.
+`client_06_dingocli.yml` defaults to `target_hosts: client_servers`, so against
+a meta-only inventory it matches **zero hosts and silently does nothing**. Pass
+`-e target_hosts=admin` when running it for a meta deployment. (The same trap
+applied to `config_podman_rootless.yml`; it no longer matters for meta, because
+`04_dingo_cli.yml` now runs the role directly.)
 
 ## DingoFS Meta Deployment
 
@@ -124,8 +124,8 @@ Edit `inventory/group_vars/all.yml` to adjust:
 
 ### 3. Run full deployment
 
-`meta_site.yml` runs phases 01-05 only. **It is not sufficient on its own** -- three
-steps live outside it and have to be run around it, in this order:
+`meta_site.yml` runs phases 01-05. Two steps live outside it and have to be run
+around it, in this order:
 
 ```bash
 INV=inventory/hosts.yml            # or -i <region>/hosts.yml
@@ -135,23 +135,18 @@ INV=inventory/hosts.yml            # or -i <region>/hosts.yml
 #     onto the system disk instead.
 ansible-playbook -i $INV playbooks/01b_lvm_data.yml
 
-# (b) Main deployment
+# (b) Main deployment. This now also configures rootless podman for the service
+#     user (04_dingo_cli.yml runs the podman_rootless role), so no separate
+#     step is needed for the containers to start.
 ansible-playbook -i $INV playbooks/meta_site.yml
 
-# (c) Rootless podman: gives the service user a systemd user session (linger).
-#     Without it containers cannot start:
-#         crun: sd-bus call: Permission denied
-#     Default target is client_servers, which is empty in a meta-only inventory,
-#     so target_hosts MUST be overridden or this silently does nothing.
-ansible-playbook -i $INV playbooks/config_podman_rootless.yml -e target_hosts=meta_servers
-
-# (d) Write ~/.dingo/dingo.yaml, which carries the MDS address used by every
+# (c) Write ~/.dingo/dingo.yaml, which carries the MDS address used by every
 #     `dingo fs ...` command. Without it the CLI falls back to 127.0.0.1:7400 and
 #     each command dies with
 #         Error-Code: 660000 / rpc request to mds cluster failed / context deadline exceeded
 ansible-playbook -i $INV playbooks/client_06_dingocli.yml -e target_hosts=admin
 
-# (e) Verify
+# (d) Verify
 ansible-playbook -i $INV playbooks/99_status.yml
 ```
 
@@ -164,7 +159,7 @@ Notes:
   shell script, which check mode skips. Its closing mount assertion still runs
   (deliberately) and fails with "not mounted" -- that is the expected result, not
   a broken playbook.
-- Steps (c) and (d) are idempotent; re-run them freely.
+- Step (c) is idempotent; re-run it freely.
 
 ### 4. Run individual phases
 
@@ -418,7 +413,7 @@ Not referenced by any `*_site.yml`; they only run when invoked explicitly.
 
 | Playbook | Default target | Purpose |
 |---|---|---|
-| `config_podman_rootless.yml` | `client_servers` | Rootless podman: enables systemd linger for the service user, writes `storage.conf`, sets `XDG_RUNTIME_DIR`. Needed on any node that runs containers as a non-root user -- including meta nodes. |
+| `config_podman_rootless.yml` | `client_servers` | Standalone entry point for the `podman_rootless` role: enables systemd linger for the service user, writes `storage.conf`, sets `XDG_RUNTIME_DIR`. The meta path does not need it -- `04_dingo_cli.yml` runs the same role for `meta_servers`. |
 | `config_cron_cleanup.yml` | `all` | Deploys `cleanup_and_compression.sh` plus a daily cron job. Defaults to cleaning `dingo_cache_log_dir`; override `cron_cleanup_directories` for other layouts. The script requires at least one directory argument, so an empty list will not work. |
 | `cache_02b_remap.yml` | `cache_servers` | Renumbers cache mounts by disk size (smallest -> `/mnt/disk1`). Check-only unless `-e remap_apply=true`. |
 | `cache_06_upgrade.yml` | `cache_servers` | Replaces cache binaries and restarts the service. |
@@ -445,8 +440,11 @@ ansible admin -m uri -a "url=http://{{ rqlite_master_host }}:4001/status"
 Failures that are easy to misread:
 
 - **`crun: sd-bus call: Permission denied` while a container starts.** Rootless
-  podman has no systemd user session. Run `config_podman_rootless.yml`, which
-  calls `loginctl enable-linger`.
+  podman has no systemd user session. `04_dingo_cli.yml` runs the
+  `podman_rootless` role, which calls `loginctl enable-linger`; if this appears,
+  check it actually ran (it is skipped when `podman_rootless_user` resolves to
+  the wrong user). To fix an existing host without a full re-run, use
+  `config_podman_rootless.yml -e target_hosts=<group>`.
 - **`dingo fs ...` hangs for ~30s, then `Error-Code: 660000 / context deadline exceeded`.**
   `~/.dingo/dingo.yaml` is missing, so the CLI fell back to the default
   `mdsaddr=127.0.0.1:7400`. Run `client_06_dingocli.yml` against the admin node.
