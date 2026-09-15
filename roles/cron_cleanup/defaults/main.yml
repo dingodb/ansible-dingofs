@@ -8,8 +8,17 @@ cron_cleanup_script_path: /root/dingofs/script/cron/cleanup_and_compression.sh
 
 # Directories to clean (override in inventory or host_vars as needed).
 # Defaults to the cache log dir. Add client log dirs per your deployment.
+#
+# The default() guard is required: dingo_cache_log_dir is defined by the cache
+# and client roles, so a meta-only deployment (which loads neither) hit
+# "dingo_cache_log_dir is undefined" and the play aborted. The fallback matches
+# the path the per-region group_vars use.
+#
+# Note the cleanup script requires at least one directory plus the days
+# argument, so leaving this empty is not an option -- override it with real
+# paths for meta-only deployments, or skip this playbook there.
 cron_cleanup_directories:
-  - "{{ dingo_cache_log_dir }}"
+  - "{{ dingo_cache_log_dir | default('/mnt/disk1/dingofs/logs/dingo-cache') }}"
 
 # Retention settings
 cron_cleanup_delete_days: 3
