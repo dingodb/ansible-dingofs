@@ -4,6 +4,22 @@
 # ============================================================
 
 # --- Ensure base directories exist on all meta_servers ---
+#
+# The path is the part before the first "${" placeholder, which only yields a
+# usable base directory when the placeholders sit at the end:
+#     /mnt/data/dingofs-dingo-main/data/${service_role}
+#         -> /mnt/data/dingofs-dingo-main/data
+#
+# When a placeholder is part of the mount name there is no single base
+# directory to create -- the path expands per replica -- and the split leaves
+# the placeholder in place, so this task would create a literal directory named
+# "/mnt/disk${service_replica_sequence}/dingofs-vX.Y/data" on the system disk:
+#     /mnt/disk${service_replica_sequence}/dingofs-vX.Y/data/${service_role}
+#         -> /mnt/disk${service_replica_sequence}/dingofs-vX.Y/data
+#
+# Those layouts are covered by lvm_data's lvm_data_subdir, which creates
+# <mount>/dingofs-vX.Y for every mount index and chowns it to the service user.
+# Skip them here rather than littering the system disk.
 - name: Ensure base directories for data, log, and raft exist
   become: true
   file:
@@ -14,6 +30,7 @@
     mode: "0755"
   delegate_to: "{{ item.0 }}"
   loop: "{{ groups['meta_servers'] | product([dingofs_data_dir, dingofs_log_dir, dingofs_raft_dir, dingofs_core_dir, store_mount_volumes]) | list }}"
+  when: "'${' not in item.1.split('/${')[0]"
 
 # --- Pull container images on ALL meta_servers ---
 - name: Ensure DingoFS container image is present for dingofs user
