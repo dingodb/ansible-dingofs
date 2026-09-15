@@ -18,39 +18,69 @@ ansible-dingofs/
 │   ├── hosts.yml                # Inventory (edit with your IPs)
 │   └── group_vars/all.yml       # Global variables (edit to customize)
 ├── playbooks/
-│   ├── meta_site.yml            # Full meta server deployment (all phases)
-│   ├── 01_prepare.yml           # System prep: user, hosts, SSH, tools
+│   │                            # --- meta server ---
+│   ├── meta_site.yml            # Full meta deployment (01 -> 05, NOT self-contained:
+│   │                            #   see the Meta Deployment section for the two
+│   │                            #   steps it leaves out)
+│   ├── 01_prepare.yml           # System prep: user, /etc/hosts, SSH, tools
+│   ├── 01b_lvm_data.yml         # NVMe LVM data disks at /mnt/diskN
 │   ├── 02_tune.yml              # Performance tuning
 │   ├── 03_rqlite.yml            # RQLite database cluster
-│   ├── 04_dingo_cli.yml         # Podman + Dingo CLI installation
+│   ├── 04_dingo_cli.yml         # Podman + dingo CLI installation
 │   ├── 05_deploy_cluster.yml    # DingoFS cluster deployment
 │   ├── 99_status.yml            # Cluster health check
-│   ├── cache_site.yml           # Full cache deployment (all phases)
+│   │                            # --- cache ---
+│   ├── cache_site.yml           # Full cache deployment (cache_01 -> 05)
 │   ├── cache_01_prepare.yml     # Cache: basic tools, cpupower
 │   ├── cache_02_lvm.yml         # Cache: NVMe LVM setup
+│   ├── cache_02b_remap.yml      # Cache: normalize mount layout by disk size
 │   ├── cache_03_tune.yml        # Cache: performance tuning
 │   ├── cache_04_jemalloc.yml    # Cache: compile & install jemalloc
 │   ├── cache_05_deploy.yml      # Cache: dingo-cache service
+│   ├── cache_06_upgrade.yml     # Cache: upgrade binaries
 │   ├── cache_99_status.yml      # Cache: health check
-│   ├── client_site.yml          # Full client deployment (all phases)
+│   │                            # --- client ---
+│   ├── client_site.yml          # Full client deployment (client_01 -> 06)
 │   ├── client_01_prepare.yml    # Client: basic tools, cpupower
 │   ├── client_02_tune.yml       # Client: performance tuning
 │   ├── client_03_jemalloc.yml   # Client: compile & install jemalloc
 │   ├── client_04_deploy.yml     # Client: dingo-client FUSE service
-│   └── client_99_status.yml     # Client: health check
+│   ├── client_05_label.yml      # Client: node labels
+│   ├── client_06_dingocli.yml   # Client: ~/.dingo/dingo.yaml + dingo binary
+│   ├── client_07_upgrade.yml    # Client: upgrade binaries, restart mounts
+│   ├── client_99_status.yml     # Client: health check
+│   │                            # --- cross-cutting / standalone ---
+│   ├── config_podman_rootless.yml  # Rootless podman + systemd linger
+│   └── config_cron_cleanup.yml     # Log cleanup script + daily cron job
 └── roles/
     ├── common/                  # User, /etc/hosts, SSH keys, packages
     ├── tune/                    # CPU, ulimits, sysctl, hugepages
     ├── rqlite/                  # RQLite install + systemd cluster
-    ├── dingo_cli/               # Dingo CLI binary + config
-    ├── podman/                  # Podman container engine
+    ├── dingo_cli/               # dingo CLI binary + config
+    ├── podman/                  # Podman container engine (rootful)
+    ├── podman_rootless/         # Rootless podman: linger, storage.conf, XDG
     ├── dingofs_cluster/         # Topology, image pull, cluster deploy
+    ├── lvm_data/                # Meta: NVMe LVM data disks (/mnt/diskN)
+    ├── dingo_env/               # ~/.dingo/dingo.yaml (mdsaddr and friends)
     ├── cache_prepare/           # Cache node system preparation
-    ├── lvm_cache/               # NVMe LVM detection + setup
+    ├── lvm_cache/               # Cache: NVMe LVM detection + setup
     ├── jemalloc/                # Compile jemalloc from source
     ├── dingo_cache/             # Dingo-cache service deployment
-    └── dingo_client/            # Dingo-client FUSE mount service
+    ├── dingo_client/            # Dingo-client FUSE mount service
+    ├── dingo_client_upgrade/    # Dingo-client upgrade
+    └── cron_cleanup/            # Log cleanup script + cron job
 ```
+
+Some playbooks are deliberately **not** part of any `*_site.yml` and must be run
+explicitly. The ones that matter for a working meta deployment:
+`01b_lvm_data.yml`, `config_podman_rootless.yml`, `client_06_dingocli.yml` --
+see the Meta Deployment section below.
+
+`config_podman_rootless.yml` and `client_06_dingocli.yml` default to
+`target_hosts: client_servers`, so against a meta-only inventory they match
+**zero hosts and silently do nothing**. Pass
+`-e target_hosts=meta_servers` (or `-e target_hosts=admin`) when running them for
+a meta deployment.
 
 ## DingoFS Meta Deployment
 
@@ -94,17 +124,54 @@ Edit `inventory/group_vars/all.yml` to adjust:
 
 ### 3. Run full deployment
 
-```bash
-# Dry run (check mode)
-ansible-playbook playbooks/meta_site.yml --check
+`meta_site.yml` runs phases 01-05 only. **It is not sufficient on its own** -- three
+steps live outside it and have to be run around it, in this order:
 
-# Full deployment
-ansible-playbook playbooks/meta_site.yml
+```bash
+INV=inventory/hosts.yml            # or -i <region>/hosts.yml
+
+# (a) Data disks FIRST -- meta_site.yml does not create them, and
+#     dingofs_cluster does not fail when they are missing: it writes the data
+#     onto the system disk instead.
+ansible-playbook -i $INV playbooks/01b_lvm_data.yml
+
+# (b) Main deployment
+ansible-playbook -i $INV playbooks/meta_site.yml
+
+# (c) Rootless podman: gives the service user a systemd user session (linger).
+#     Without it containers cannot start:
+#         crun: sd-bus call: Permission denied
+#     Default target is client_servers, which is empty in a meta-only inventory,
+#     so target_hosts MUST be overridden or this silently does nothing.
+ansible-playbook -i $INV playbooks/config_podman_rootless.yml -e target_hosts=meta_servers
+
+# (d) Write ~/.dingo/dingo.yaml, which carries the MDS address used by every
+#     `dingo fs ...` command. Without it the CLI falls back to 127.0.0.1:7400 and
+#     each command dies with
+#         Error-Code: 660000 / rpc request to mds cluster failed / context deadline exceeded
+ansible-playbook -i $INV playbooks/client_06_dingocli.yml -e target_hosts=admin
+
+# (e) Verify
+ansible-playbook -i $INV playbooks/99_status.yml
 ```
+
+Notes:
+
+- Run `01b_lvm_data.yml` **before** `meta_site.yml`. The `common` role creates
+  `/mnt/disk1/corefiles`; doing that before the disks are mounted leaves the
+  directory on the system disk, where it is then hidden by the mount.
+- `01b_lvm_data.yml` cannot be previewed with `--check`: the work is done by a
+  shell script, which check mode skips. Its closing mount assertion still runs
+  (deliberately) and fails with "not mounted" -- that is the expected result, not
+  a broken playbook.
+- Steps (c) and (d) are idempotent; re-run them freely.
 
 ### 4. Run individual phases
 
 ```bash
+# Data disks (must precede 01_prepare)
+ansible-playbook playbooks/01b_lvm_data.yml
+
 # System preparation only
 ansible-playbook playbooks/01_prepare.yml
 
@@ -124,7 +191,10 @@ ansible-playbook playbooks/05_deploy_cluster.yml
 ansible-playbook playbooks/99_status.yml
 ```
 
-Only `01_prepare.yml` connects with `remote_user: root`. The other phase playbooks use the default `remote_user` from `ansible.cfg` (`dingofs`) together with `become: true`.
+Twenty of the playbooks set `remote_user: root` explicitly. The rest inherit
+`remote_user` from `ansible.cfg` (which defaults to `dingofs`, with `become: true`),
+and most region inventories override that with `ansible_user: root` in
+`group_vars/all.yml` anyway -- so in practice everything runs as root.
 
 ## DingoFS Cache Deployment
 
@@ -342,15 +412,54 @@ See `inventory/group_vars/all.yml` for all configurable variables.
 | `dingo_client_cache_group` | `dingofs-group` | Cache group name |
 | `dingo_client_fuse_max_threads` | `512` | FUSE max threads |
 
+## Standalone Playbooks
+
+Not referenced by any `*_site.yml`; they only run when invoked explicitly.
+
+| Playbook | Default target | Purpose |
+|---|---|---|
+| `config_podman_rootless.yml` | `client_servers` | Rootless podman: enables systemd linger for the service user, writes `storage.conf`, sets `XDG_RUNTIME_DIR`. Needed on any node that runs containers as a non-root user -- including meta nodes. |
+| `config_cron_cleanup.yml` | `all` | Deploys `cleanup_and_compression.sh` plus a daily cron job. Defaults to cleaning `dingo_cache_log_dir`; override `cron_cleanup_directories` for other layouts. The script requires at least one directory argument, so an empty list will not work. |
+| `cache_02b_remap.yml` | `cache_servers` | Renumbers cache mounts by disk size (smallest -> `/mnt/disk1`). Check-only unless `-e remap_apply=true`. |
+| `cache_06_upgrade.yml` | `cache_servers` | Replaces cache binaries and restarts the service. |
+| `client_05_label.yml` | `client_servers` | Applies node labels. |
+| `client_06_dingocli.yml` | `client_servers` | Installs the dingo binary into `~/.dingo/bin` and writes `~/.dingo/dingo.yaml`. Also needed on the meta admin node. |
+| `client_07_upgrade.yml` | `client_servers` | Replaces client binaries and restarts mounts. Does not create missing mounts -- that is `client_04_deploy.yml`. |
+
+Override the target with `-e target_hosts=<group>`.
+
 ## Troubleshooting
 
 ```bash
 # Test connectivity
 ansible meta_servers -m ping
 
-# Check specific node
-ansible node-1 -m shell -a "dingo cluster status" --become-user dingofs
+# Check a specific node. Use the absolute path: ~/.dingo/bin is only on PATH for
+# login shells, and `become` runs a non-login shell.
+ansible node-1 -m shell -a "/home/dingofs/.dingo/bin/dingo cluster status" --become-user dingofs
 
-# View rqlite cluster health
-ansible admin -m uri -a "url=http://localhost:4001/status"
+# Rqlite health (rqlite binds to ansible_host, not localhost)
+ansible admin -m uri -a "url=http://{{ rqlite_master_host }}:4001/status"
 ```
+
+Failures that are easy to misread:
+
+- **`crun: sd-bus call: Permission denied` while a container starts.** Rootless
+  podman has no systemd user session. Run `config_podman_rootless.yml`, which
+  calls `loginctl enable-linger`.
+- **`dingo fs ...` hangs for ~30s, then `Error-Code: 660000 / context deadline exceeded`.**
+  `~/.dingo/dingo.yaml` is missing, so the CLI fell back to the default
+  `mdsaddr=127.0.0.1:7400`. Run `client_06_dingocli.yml` against the admin node.
+- **`Error-Code: 620002 / mkdir ... Permission denied` for `/mnt/diskN/dingofs-vX.Y`.**
+  The version directory does not exist, or is not owned by the service user -- a
+  freshly created XFS mount is `root:root 0755`. Set `lvm_data_subdir` so
+  `01b_lvm_data.yml` creates and chowns it.
+- **Data ends up on the system disk.** `/mnt/diskN` was never mounted;
+  `dingofs_cluster` does not check.
+- **`Error-Code: 410009 / cluster already exist`.** A previous run left the cluster
+  registered. Re-running is safe -- the role treats this as success.
+- **`Error-Code: 100000 / init SQLite database failed`.** `~/.dingo/dingocli.cfg`
+  still points at an old rqlite address. The role writes the config before
+  invoking the CLI, so re-running `04_dingo_cli.yml` fixes it.
+- **Output full of `…` and `[1A[J`.** The dingo CLI draws a progress spinner even
+  when stdout is not a TTY. The deploy and status tasks strip it.
