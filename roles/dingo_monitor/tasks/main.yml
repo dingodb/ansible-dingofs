@@ -1,0 +1,75 @@
+---
+# ============================================================
+# Role: dingo_monitor - Deploy the dingo monitor stack
+# ============================================================
+
+- name: Generate monitor.yaml
+  template:
+    src: monitor.yaml.j2
+    dest: "{{ dingo_monitor_config_file }}"
+    owner: "{{ dingofs_user }}"
+    group: "{{ dingofs_user }}"
+    mode: "0644"
+
+# `dingo monitor deploy` only works once.
+#
+# Its grafana sync step curls http://localhost:<port>/api/datasources with
+# hardcoded admin:admin credentials (dingocli,
+# internal/task/task/monitor/sync_config.go). The first run finds grafana on its
+# default password, learns the datasource UID and applies the configured
+# password; every run after that gets a 401 and eventually dies with
+#
+#     failed to fetch prometheus info     (exit code 1)
+#
+# even though the stack is up and `dingo monitor status` is happy. So check
+# first and only deploy when there is nothing there -- otherwise this role, and
+# anything that includes it, is not re-runnable.
+- name: Check whether the monitor stack is already deployed
+  become: true
+  become_user: "{{ dingofs_user }}"
+  shell: >
+    {{ dingo_cli_bin_dir }}/dingo monitor status 2>/dev/null
+    | grep -cE '^ *[0-9a-f]{6,} +(node_exporter|prometheus|grafana|monitor_sync)'
+  args:
+    executable: /bin/bash
+  register: monitor_existing
+  changed_when: false
+  failed_when: false
+
+- name: Deploy the monitor stack
+  become: true
+  become_user: "{{ dingofs_user }}"
+  shell: |
+    set -o pipefail
+    {{ dingo_cli_bin_dir }}/dingo monitor deploy -c {{ dingo_monitor_config_file }} \
+      | sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' -e '/^[^ -~]*$/d'
+  args:
+    executable: /bin/bash
+  register: monitor_deploy
+  when: monitor_existing.stdout | default('0') | trim == '0'
+
+- name: Report monitor deployment
+  debug:
+    msg: >-
+      {{ 'monitor stack deployed'
+         if monitor_deploy.changed | default(false)
+         else 'monitor stack already present (' ~ (monitor_existing.stdout | default('0') | trim)
+              ~ ' services) - left alone; run `dingo monitor deploy` by hand if you changed the config' }}
+
+# status is read-only and works on every run, unlike deploy, so it is the
+# better thing to report.
+- name: Check monitor status
+  become: true
+  become_user: "{{ dingofs_user }}"
+  shell: |
+    set -o pipefail
+    {{ dingo_cli_bin_dir }}/dingo monitor status \
+      | sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' -e '/^[^ -~]*$/d'
+  args:
+    executable: /bin/bash
+  register: monitor_status
+  changed_when: false
+
+- name: Display monitor status
+  debug:
+    var: monitor_status.stdout_lines

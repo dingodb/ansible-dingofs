@@ -2,11 +2,17 @@
 # Master playbook: Full Dingo Cache deployment
 # Independent from the DingoFS meta server deployment (site.yml)
 # Executes all phases in order:
+#   0. SELinux -> permissive (see roles/selinux/defaults/main.yml)
 #   1. System preparation (basic tools, cpupower, dev tools)
 #   2. LVM setup (detect NVMe, create VGs, format, mount)
 #   3. Performance tuning (reuses tune role)
 #   4. Jemalloc compile and install
 #   5. Dingo-cache service deployment
+
+- name: "Phase 0: SELinux"
+  import_playbook: config_selinux.yml
+  vars:
+    target_hosts: cache_servers
 
 - name: "Phase 1: System preparation"
   import_playbook: cache_01_prepare.yml

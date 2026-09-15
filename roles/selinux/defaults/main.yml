@@ -1,0 +1,33 @@
+---
+# ============================================================
+# Role: selinux - Put SELinux into the mode the DingoFS services need
+#
+# Why this exists
+# ---------------
+# These services run as systemd units whose executables live under a home
+# directory: dingo_cache_base_dir defaults to
+# /root/dingofs/dingo-cache/<version>/dingo-cache-start.sh. Under SELinux
+# Enforcing, systemd (init_t) cannot exec a file labelled admin_home_t or
+# user_home_dir_t, and the unit dies with
+#
+#     Failed to locate executable <path>: Permission denied
+#     Main process exited, code=exited, status=203/EXEC
+#
+# Notably no AVC denial is logged for this, so it does not look like an
+# SELinux problem from the journal -- and moving the files to /home/dingofs
+# does not help either (user_home_dir_t is blocked too; /opt works, since it
+# is usr_t).
+#
+# Every host that currently runs these services has SELinux off (hd02:
+# Disabled, bj09: Permissive), which is why the repo's /root-based defaults
+# work there. This role makes that state explicit and reproducible instead of
+# relying on it having been switched off by hand.
+#
+# Why permissive rather than disabled
+# -----------------------------------
+# permissive still logs AVC denials, so anything that would have been blocked
+# stays visible; disabled would silently hide them. It also avoids the
+# filesystem relabel that switching to and from disabled can require.
+# ============================================================
+
+selinux_mode: permissive

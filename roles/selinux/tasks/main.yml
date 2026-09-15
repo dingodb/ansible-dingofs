@@ -1,0 +1,44 @@
+---
+# ============================================================
+# Role: selinux - see defaults/main.yml for why this exists
+# ============================================================
+
+- name: Read current SELinux mode
+  command: getenforce
+  register: selinux_status
+  changed_when: false
+  # Absent on hosts without SELinux (Ubuntu usually), which is a valid state,
+  # not a failure.
+  failed_when: false
+
+- name: Configure SELinux
+  # rc != 0: getenforce is not installed, nothing to do.
+  # "Disabled": SELinux is off at kernel level; setenforce cannot change that
+  # and /etc/selinux/config is irrelevant until a relabel + reboot.
+  when:
+    - selinux_status.rc == 0
+    - selinux_status.stdout | trim != 'Disabled'
+  block:
+    # Persistent half: without this, setenforce below is undone by the next
+    # reboot and the services fail to start again.
+    - name: Persist the SELinux mode in /etc/selinux/config
+      lineinfile:
+        path: /etc/selinux/config
+        regexp: '^SELINUX='
+        line: "SELINUX={{ selinux_mode }}"
+      when: ansible_os_family == "RedHat"
+
+    # Runtime half: takes effect immediately, no reboot needed.
+    - name: Apply the SELinux mode now
+      command: "setenforce {{ 0 if selinux_mode == 'permissive' else 1 }}"
+      changed_when: true
+      when: selinux_status.stdout | trim != (selinux_mode | capitalize)
+
+- name: Report SELinux state
+  debug:
+    msg: >-
+      SELinux: {{ 'not installed' if selinux_status.rc != 0
+                  else (selinux_status.stdout | trim) }}
+      {{ '-> ' ~ selinux_mode ~ ' (persisted in /etc/selinux/config)'
+         if selinux_status.rc == 0 and selinux_status.stdout | trim != 'Disabled'
+         else '(left alone)' }}

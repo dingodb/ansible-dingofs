@@ -1,0 +1,15 @@
+---
+# Playbook: Deploy the dingo monitor stack
+#
+# node_exporter on every meta server; prometheus, grafana and monitor_sync on
+# the first one. Run after 05_deploy_cluster.yml -- the monitor attaches to the
+# current cluster, so one has to exist first.
+#
+# Safe to re-run: the role checks whether the stack is already up and skips the
+# deploy, which unlike `status` only works once. See
+# roles/dingo_monitor/tasks/main.yml.
+- name: Deploy DingoFS monitor stack
+  hosts: admin
+  become: true
+  roles:
+    - dingo_monitor

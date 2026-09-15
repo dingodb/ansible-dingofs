@@ -1,0 +1,17 @@
+---
+# Playbook: Put SELinux into the mode the DingoFS services need
+#
+# Sets SELinux to permissive, both at runtime (setenforce, no reboot needed)
+# and persistently (/etc/selinux/config, so a reboot does not undo it).
+# See roles/selinux/defaults/main.yml for why.
+#
+# Standalone entry point; the *_site.yml playbooks run it as their first
+# phase. Targets everything by default, since the affected units can be on
+# any node type.
+- name: Configure SELinux
+  hosts: "{{ target_hosts | default('all') }}"
+  remote_user: root
+  become: false
+  gather_facts: true
+  roles:
+    - selinux

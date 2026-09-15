@@ -1,11 +1,18 @@
 ---
 # Master playbook: Full DingoFS meta server deployment
 # Executes all phases in order:
+#   0. SELinux -> permissive (see roles/selinux/defaults/main.yml)
 #   1. System preparation (user, hosts, SSH, packages)
 #   2. Performance tuning
 #   3. RQLite database cluster
 #   4. Podman + Dingo CLI tool
 #   5. DingoFS cluster deployment
+#   6. Monitor stack (node_exporter, prometheus, grafana, monitor_sync)
+
+- name: "Phase 0: SELinux"
+  import_playbook: config_selinux.yml
+  vars:
+    target_hosts: meta_servers
 
 - name: "Phase 1: System preparation"
   import_playbook: 01_prepare.yml
@@ -21,3 +28,6 @@
 
 - name: "Phase 5: DingoFS cluster deployment"
   import_playbook: 05_deploy_cluster.yml
+
+- name: "Phase 6: Monitor stack"
+  import_playbook: 06_deploy_monitor.yml
