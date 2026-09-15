@@ -1,0 +1,56 @@
+---
+# ============================================================
+# Role: dingo_monitor - Deploy the dingo monitor stack
+#
+# Renders monitor.yaml and runs `dingo monitor deploy`, which brings up
+# node_exporter on every listed host plus prometheus, grafana and monitor_sync
+# on the first one.
+#
+# Monitor config layout is NOT the topology layout: no `kind`, no `global`,
+# no `_services` suffix. It is four top-level services, each with `config` and
+# `deploy`. See dingocli/internal/configure/monitor.go.
+#
+# Two things dingo CLI requires, worth knowing before changing this:
+#
+#   - monitor_sync.config.data_dir is mandatory. The CLI type-asserts on it
+#     (syncMonitorPath := config.MonitroSync.Config[KEY_DATA_DIR].(string))
+#     and panics if it is absent.
+#   - Only node_exporter's `deploy` list is read. getHost() builds the host
+#     list from NodeExporter.Deploy for every role, and each central service
+#     then picks host[0] -- so prometheus, grafana and monitor_sync all land on
+#     the FIRST host listed there. Their own `deploy` blocks are not used to
+#     choose a host, though prometheus' presence there is what wires grafana to
+#     it, so keep them.
+# ============================================================
+
+dingo_monitor_config_dir: "{{ dingofs_home }}/cluster-config"
+dingo_monitor_config_file: "{{ dingo_monitor_config_dir }}/monitor.yaml"
+
+# Lives in the dingo_cli and dingofs_cluster role defaults; declared here too so
+# this role does not depend on group_vars happening to define it.
+dingo_cli_bin_dir: "{{ dingofs_home }}/.dingo/bin"
+
+# node_exporter runs on all of these; the central services go to the first.
+dingo_monitor_hosts: "{{ groups['meta_servers'] }}"
+dingo_monitor_central_host: "{{ dingo_monitor_hosts | first }}"
+
+# monitor_sync's data directory (mandatory, see above). It also becomes the
+# root for the prometheus/grafana config and data directories.
+dingo_monitor_data_dir: "/mnt/disk3/dingofs-monitor-{{ dingofs_cluster_name }}"
+
+# Defaults follow dingocli/configs/fs/monitor/monitor.yaml, so an inventory that
+# says nothing gets the upstream images. Regions with their own registry
+# override these.
+dingo_monitor_node_exporter_image: "prom/node-exporter:latest"
+dingo_monitor_node_exporter_port: 9100
+
+dingo_monitor_prometheus_image: "prom/prometheus:latest"
+dingo_monitor_prometheus_port: 9090
+dingo_monitor_prometheus_retention_time: 7d
+dingo_monitor_prometheus_retention_size: 256GB
+
+dingo_monitor_grafana_image: "grafana/grafana:latest"
+dingo_monitor_grafana_port: 3000
+
+# monitor_sync ships inside the dingofs server image.
+dingo_monitor_sync_image: "{{ dingofs_container_image }}"

@@ -1,0 +1,38 @@
+# Rendered by ansible - do not edit on the host.
+#
+# Four top-level services, each with config (and deploy). Only node_exporter's
+# deploy list is read: the central services take its first entry as their host.
+# See roles/dingo_monitor/defaults/main.yml.
+
+# monitor_sync carries the dashboards and pushes them to grafana. data_dir is
+# mandatory and doubles as the root for the prometheus/grafana config and data
+# directories.
+monitor_sync:
+  config:
+    container_image: {{ dingo_monitor_sync_image }}
+    data_dir: {{ dingo_monitor_data_dir }}
+
+node_exporter:
+  config:
+    container_image: {{ dingo_monitor_node_exporter_image }}
+    listen_port: {{ dingo_monitor_node_exporter_port }}
+  deploy:
+{% for host in dingo_monitor_hosts %}
+    - host: {{ host }}
+{% endfor %}
+
+prometheus:
+  config:
+    container_image: {{ dingo_monitor_prometheus_image }}
+    listen_port: {{ dingo_monitor_prometheus_port }}
+    retention.time: {{ dingo_monitor_prometheus_retention_time }}
+    retention.size: {{ dingo_monitor_prometheus_retention_size }}
+  deploy:
+    - host: {{ dingo_monitor_central_host }}
+
+grafana:
+  config:
+    container_image: {{ dingo_monitor_grafana_image }}
+    listen_port: {{ dingo_monitor_grafana_port }}
+  deploy:
+    - host: {{ dingo_monitor_central_host }}

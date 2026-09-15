@@ -7,6 +7,7 @@
 #   3. RQLite database cluster
 #   4. Podman + Dingo CLI tool
 #   5. DingoFS cluster deployment
+#   6. Monitor stack (node_exporter, prometheus, grafana, monitor_sync)
 
 - name: "Phase 0: SELinux"
   import_playbook: config_selinux.yml
@@ -27,3 +28,6 @@
 
 - name: "Phase 5: DingoFS cluster deployment"
   import_playbook: 05_deploy_cluster.yml
+
+- name: "Phase 6: Monitor stack"
+  import_playbook: 06_deploy_monitor.yml
