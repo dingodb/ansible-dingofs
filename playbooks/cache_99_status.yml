@@ -37,20 +37,23 @@
       debug:
         msg: "{{ inventory_hostname }}: port {{ dingo_cache_listen_port }} is {{ 'open' if port_check is success else 'closed' }}"
 
-    - name: Show LVM volume groups
-      shell: vgs --noheadings -o vg_name,vg_size 2>/dev/null | grep '{{ lvm_vg_prefix }}' || echo 'No dingo_cache VGs found'
-      register: vg_info
+    # Which disks hold cache data depends on how they were discovered: a
+    # dingo_cache_* LVM volume group, or mounts under dingo_cache_mount_prefix
+    # on hosts that share their disks with another role. Report whichever
+    # applies. The previous version only looked for the VGs and printed "not
+    # found" for the prefix case, which reads like a problem when it is the
+    # expected layout.
+    - name: Show cache disks
+      shell: |
+        {% if dingo_cache_mount_prefix | default('') | length > 0 %}
+        df -hT {{ dingo_cache_mount_prefix }}* 2>/dev/null || echo 'No mounts under {{ dingo_cache_mount_prefix }}'
+        {% else %}
+        vgs --noheadings -o vg_name,vg_size 2>/dev/null | grep '{{ lvm_vg_prefix }}' || echo 'No dingo_cache VGs found'
+        df -h | grep '{{ lvm_vg_prefix }}' || true
+        {% endif %}
+      register: cache_disks
       changed_when: false
 
-    - name: Display VG info
+    - name: Display cache disks
       debug:
-        msg: "{{ vg_info.stdout_lines }}"
-
-    - name: Show mount points
-      shell: df -h | grep '{{ lvm_vg_prefix }}' || echo 'No dingo_cache mounts found'
-      register: mount_info
-      changed_when: false
-
-    - name: Display mount info
-      debug:
-        msg: "{{ mount_info.stdout_lines }}"
+        msg: "{{ cache_disks.stdout_lines }}"
