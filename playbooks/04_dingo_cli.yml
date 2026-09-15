@@ -5,6 +5,19 @@
   become: true
   roles:
     - podman
+    # The dingofs services run as rootless containers under the dingofs user,
+    # which needs more than the podman package: a storage.conf for that user
+    # and, critically, a systemd user session (loginctl enable-linger).
+    # Without linger the containers never start --
+    #     crun: sd-bus call: Permission denied: OCI permission denied
+    # -- and `dingo cluster deploy` then sits waiting for a coordinator that is
+    # not coming, until it hits its 300s timeout.
+    #
+    # This used to be a separate manual step (config_podman_rootless.yml), which
+    # is easy to miss because it defaults to target_hosts: client_servers: on a
+    # meta-only inventory that group is empty, so it matches zero hosts and
+    # reports success without doing anything.
+    - podman_rootless
 
 - name: Install and configure Dingo CLI on admin node
   hosts: admin

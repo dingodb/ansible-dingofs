@@ -2,7 +2,14 @@
 # Playbook: Configure rootless Podman on remote nodes
 # Independent task: installs podman, configures storage.conf,
 # enables linger, and sets XDG_RUNTIME_DIR.
-# Run standalone or as part of client_site.yml.
+#
+# Standalone entry point for the podman_rootless role. The meta path does not
+# need it -- 04_dingo_cli.yml runs the same role for meta_servers, so
+# meta_site.yml covers it.
+#
+# NOTE the default target is client_servers. Against an inventory without that
+# group this matches zero hosts and reports success without doing anything, so
+# pass -e target_hosts=<group> explicitly.
 - name: Configure rootless Podman
   hosts: "{{ target_hosts | default('client_servers') }}"
   remote_user: root
