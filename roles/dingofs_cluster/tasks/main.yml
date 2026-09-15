@@ -162,6 +162,36 @@
   args:
     executable: /bin/bash
 
+# `dingo cluster deploy` only works once.
+#
+# It runs createalltable inside the mds-client container, and that fails once
+# the tables exist:
+#
+#     ✗ createalltable failed: failed to create all metadata tables
+#     Error-Code: 650000     (exit code 1)
+#
+# Unlike `cluster add`, which returns a recognisable "already exist", this is a
+# bare exit code with no way to tell "already deployed" from a real failure --
+# so it cannot be accepted as success without also swallowing genuine errors.
+# Check first instead, and only deploy when there is nothing there.
+#
+# Counting the service rows, not just grepping for a role name: the header
+# ("Role") and the "mds addr :" / "coordinator addr :" summary lines all
+# contain role names. Anchoring on the Instances column (n/m) takes only real
+# rows -- coordinator x3, store x3, mds x3 (one row per host, 3/3 instances
+# each), executor x1.
+- name: Check whether the cluster is already deployed
+  become: true
+  become_user: "{{ dingofs_user }}"
+  shell: >
+    {{ dingo_cli_bin_dir }}/dingo cluster status 2>/dev/null
+    | grep -cE '^ *[^ ]+ +(coordinator|store|mds|executor) +[^ ]+ +[0-9]+/[0-9]+'
+  args:
+    executable: /bin/bash
+  register: cluster_existing
+  changed_when: false
+  failed_when: false
+
 # The CLI draws an interactive progress spinner even when stdout is not a TTY,
 # writing lines of "…" wrapped in ANSI erase codes. Strip them so the recorded
 # output is readable. Two sed programs:
@@ -179,10 +209,20 @@
   args:
     executable: /bin/bash
   register: deploy_result
+  when: cluster_existing.stdout | default('0') | trim == '0'
 
-- name: Display deploy result
+- name: Report deploy result
+  debug:
+    msg: >-
+      {{ 'cluster deployed' if deploy_result.changed | default(false)
+         else 'cluster already deployed (' ~ (cluster_existing.stdout | default('0') | trim)
+              ~ ' services) - skipped; `dingo cluster deploy` cannot run twice, so a '
+              ~ 'topology change needs the cluster torn down and redeployed' }}
+
+- name: Display deploy output
   debug:
     var: deploy_result.stdout_lines
+  when: deploy_result.changed | default(false)
 
 # --- Verify ---
 # Same spinner noise as the deploy step; see the comment there.
