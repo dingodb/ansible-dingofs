@@ -15,8 +15,17 @@
       debug:
         msg: "RQLite leader: {{ (rqlite_status.content | from_json).store.raft.state }}"
 
+    # Use the absolute path rather than relying on PATH. The dingo binary lives
+    # in ~/.dingo/bin, which is only added to login-shell profiles
+    # (.bash_profile/.bashrc); Ansible's become runs a non-login shell, and some
+    # .bashrc files bail out early for non-interactive shells, so `source` is not
+    # a reliable way to pick it up either. Referencing dingo_cli_bin_dir from the
+    # role defaults is not an option here -- this playbook uses no role.
     - name: Check DingoFS cluster status
-      shell: "dingo cluster status -sv"
+      shell: |
+        set -o pipefail
+        {{ dingofs_home }}/.dingo/bin/dingo cluster status -sv \
+          | sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' -e '/^[^ -~]*$/d'
       args:
         executable: /bin/bash
       register: cluster_status
