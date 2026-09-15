@@ -1,0 +1,172 @@
+#!/bin/bash
+# ============================================================
+# Ansible-managed: create LVM data disks on DingoFS meta server nodes
+#
+# Policy:
+#   - Pick the {{ lvm_data_mount_count }} largest unused NVMe devices. One VG per
+#     device ({{ lvm_data_vg_prefix }}0 .. {{ lvm_data_vg_prefix }}N-1), one
+#     {{ lvm_data_lv_name }} LV per VG, formatted {{ lvm_data_fs_type }}, mounted at
+#     {{ lvm_data_mount_prefix }}0 .. {{ lvm_data_mount_prefix }}N-1.
+#   - Index starts at 0 to match ${service_replica_sequence} in dingofs_data_dir.
+#   - Remaining disks are left untouched.
+#   - Idempotent: already-mounted indices are skipped, only missing ones are created.
+#
+# Do not use bash array-length syntax (dollar-brace-hash) anywhere in this file:
+# the hash is parsed by ansible as a jinja2 comment opener and breaks rendering.
+# Counters are used instead. lvm_cache hit the same issue.
+# ============================================================
+
+set -o pipefail
+
+MOUNT_COUNT={{ lvm_data_mount_count | int }}
+MIN_BYTES={{ lvm_data_min_disk_gb | int * 1000000000 }}
+PREFIX="{{ lvm_data_mount_prefix }}"
+
+# --- 1. Which mount indices still need creating ---
+echo "=== Checking existing mounts ==="
+pending_indices=()
+i=0
+while [ "$i" -lt "$MOUNT_COUNT" ]; do
+    target="${PREFIX}${i}"
+    if findmnt -rno SOURCE "$target" >/dev/null 2>&1; then
+        echo "  ${target} already mounted ($(findmnt -rno SOURCE "$target")), skipping"
+    else
+        echo "  ${target} not mounted, will create"
+        pending_indices+=("$i")
+    fi
+    i=$((i + 1))
+done
+
+pending_count=0
+for _ in "${pending_indices[@]}"; do
+    pending_count=$((pending_count + 1))
+done
+
+if [ "$pending_count" -eq 0 ]; then
+    echo "==> All $MOUNT_COUNT data mounts are present, nothing to do"
+    exit 0
+fi
+
+# --- 2. Detect unused NVMe devices ---
+echo ""
+echo "=== Detecting unused NVMe devices ==="
+devices=$(lsblk -lno NAME | grep '^nvme[0-9]\+n[0-9]\+$')
+
+records=()
+candidate_count=0
+
+for dev in $devices; do
+    path="/dev/$dev"
+
+    # skip if mounted (device or any partition)
+    if lsblk -rno MOUNTPOINT "$path" | grep -qv '^$'; then
+        echo "  Skipping $path (mounted)"
+        continue
+    fi
+
+    # skip if already in a {{ lvm_data_vg_prefix }} VG
+    if pvs --noheadings -o vg_name "$path" 2>/dev/null | grep -q '{{ lvm_data_vg_prefix }}'; then
+        echo "  Skipping $path (already in a {{ lvm_data_vg_prefix }} VG)"
+        continue
+    fi
+
+{% for vg in lvm_data_skip_vg_names %}
+    if pvs --noheadings -o vg_name "$path" 2>/dev/null | grep -qw "{{ vg }}"; then
+        echo "  Skipping $path (in VG {{ vg }})"
+        continue
+    fi
+{% endfor %}
+
+    # Safety gate: never format a device that already has a filesystem
+    # signature or partitions. Set lvm_data_force=true to override.
+    if [ "{{ lvm_data_force | bool | lower }}" != "true" ]; then
+        if blkid "$path" >/dev/null 2>&1; then
+            echo "  Skipping $path (has fs signature: $(blkid -o value -s TYPE "$path" 2>/dev/null); set lvm_data_force=true to wipe)"
+            continue
+        fi
+        if [ -n "$(lsblk -rno NAME "$path" | tail -n +2)" ]; then
+            echo "  Skipping $path (has a partition table; set lvm_data_force=true to wipe)"
+            continue
+        fi
+    fi
+
+    size_bytes=$(blockdev --getsize64 "$path") || { echo "Error: cannot read size of $path"; exit 1; }
+    if [ "$size_bytes" -lt "$MIN_BYTES" ]; then
+        echo "  Skipping $path ($((size_bytes / 1000000000))GB < {{ lvm_data_min_disk_gb }}GB)"
+        continue
+    fi
+
+    size=$(numfmt --to=iec --format %.1f "$size_bytes")
+    echo "  Usable data disk $path ($size)"
+    records+=("$size_bytes $path")
+    candidate_count=$((candidate_count + 1))
+done
+
+if [ "$candidate_count" -lt "$pending_count" ]; then
+    echo "Error: need $pending_count more disks but only found $candidate_count unused NVMe devices" >&2
+    exit 1
+fi
+
+# --- 3. Sort by size descending, take the first pending_count ---
+IFS=$'\n'
+sorted_records=($(printf '%s\n' "${records[@]}" | sort -k1,1nr -k2,2))
+unset IFS
+
+# --- 4. Create VG/LV and mount ---
+echo ""
+echo "=== Creating data disk LVM ==="
+idx=0
+for record in "${sorted_records[@]}"; do
+    if [ "$idx" -ge "$pending_count" ]; then
+        break
+    fi
+
+    device="${record#* }"
+    index="${pending_indices[$idx]}"
+    vg_name="{{ lvm_data_vg_prefix }}${index}"
+    mount_point="${PREFIX}${index}"
+
+    echo "Processing: $device -> VG $vg_name -> $mount_point"
+
+    # Any failure exits non-zero so ansible reports FAILED rather than
+    # masking it behind a final "completed" message.
+    pvcreate -y -ff "$device"                    || { echo "Error: pvcreate $device failed" >&2; exit 1; }
+    vgcreate "$vg_name" "$device"                || { echo "Error: vgcreate $vg_name failed" >&2; exit 1; }
+    lvcreate -y -l 100%FREE -n {{ lvm_data_lv_name }} "$vg_name" \
+                                                 || { echo "Error: lvcreate $vg_name failed" >&2; exit 1; }
+    mkfs.{{ lvm_data_fs_type }} "/dev/${vg_name}/{{ lvm_data_lv_name }}" \
+                                                 || { echo "Error: mkfs $vg_name failed" >&2; exit 1; }
+
+    mkdir -p "$mount_point"
+    mount "/dev/${vg_name}/{{ lvm_data_lv_name }}" "$mount_point" \
+                                                 || { echo "Error: mount $mount_point failed" >&2; exit 1; }
+
+    # Mount by UUID so device renames cannot shift the layout.
+    uuid=$(blkid -o value -s UUID "/dev/${vg_name}/{{ lvm_data_lv_name }}")
+    if [ -z "$uuid" ]; then
+        echo "Error: cannot read UUID of $vg_name" >&2; exit 1
+    fi
+    sed -i "\#${mount_point} #d" /etc/fstab
+    printf 'UUID=%s %s {{ lvm_data_fs_type }} defaults,noatime 0 0\n' "$uuid" "$mount_point" >> /etc/fstab
+
+    echo "  Done: $device -> $mount_point"
+    echo ""
+    idx=$((idx + 1))
+done
+
+# --- 5. Summary ---
+echo "=== Final layout ==="
+i=0
+while [ "$i" -lt "$MOUNT_COUNT" ]; do
+    target="${PREFIX}${i}"
+    if findmnt -rno SOURCE "$target" >/dev/null 2>&1; then
+        avail=$(df -h --output=avail "$target" 2>/dev/null | tail -1 | tr -d ' ')
+        printf '  %-16s <- %-28s avail %s\n' "$target" "$(findmnt -rno SOURCE "$target")" "$avail"
+    else
+        printf '  %-16s <- not mounted\n' "$target"
+    fi
+    i=$((i + 1))
+done
+
+echo ""
+echo "=== DingoFS meta data disk LVM setup completed ==="

@@ -1,0 +1,128 @@
+---
+# ============================================================
+# Role: lvm_data - LVM data disks for DingoFS meta server nodes
+# Creates vg_diskN/lv on unused NVMe devices, mounted at /mnt/disk0..N-1.
+# Requires: root
+# ============================================================
+
+- name: Check that the current effective user is root
+  assert:
+    that:
+      - ansible_effective_user_id == 0
+    fail_msg: >-
+      This playbook must be executed as root.
+      Current user is '{{ ansible_user_id }}' (uid={{ ansible_effective_user_id }}).
+      Please re-run with 'remote_user: root' or '-u root'.
+    success_msg: "Running as root - OK"
+
+# Nothing else in this repo installs lvm2/xfsprogs. lvm_cache gets away with it
+# because Rocky/RHEL ship them by default; a minimal install would fail with
+# "pvcreate: command not found".
+- name: Ensure LVM and XFS tools are installed (RHEL/CentOS)
+  yum:
+    name:
+      - lvm2
+      - xfsprogs
+      - util-linux
+    state: present
+  when: ansible_os_family == "RedHat"
+
+- name: Ensure LVM and XFS tools are installed (Debian/Ubuntu)
+  apt:
+    name:
+      - lvm2
+      - xfsprogs
+      - util-linux
+    state: present
+    update_cache: true
+  when: ansible_os_family == "Debian"
+
+# --- Deploy and run the LVM setup script ---
+- name: Deploy data-disk LVM setup script
+  template:
+    src: setup_lvm_data.sh.j2
+    dest: /tmp/setup_lvm_dingo_data.sh
+    mode: "0755"
+
+- name: Run data-disk LVM setup script
+  shell: /tmp/setup_lvm_dingo_data.sh
+  register: lvm_data_setup_result
+  changed_when: "'Done:' in lvm_data_setup_result.stdout"
+
+- name: Display LVM setup output
+  debug:
+    msg: "{{ lvm_data_setup_result.stdout_lines }}"
+
+- name: Clean up LVM setup script
+  file:
+    path: /tmp/setup_lvm_dingo_data.sh
+    state: absent
+
+# --- Verify ---
+- name: List {{ lvm_data_vg_prefix }} volume groups
+  shell: vgs --noheadings -o vg_name 2>/dev/null | grep '{{ lvm_data_vg_prefix }}' || true
+  register: lvm_data_final_vgs
+  changed_when: false
+  # Read-only, so run it for real even in check mode. Otherwise the assertion
+  # below sees rc=0 from the skipped task and passes without verifying anything.
+  check_mode: false
+
+- name: Display final VG list
+  debug:
+    msg: "Active volume groups: {{ lvm_data_final_vgs.stdout_lines }}"
+
+- name: Build expected data mount point list
+  set_fact:
+    lvm_data_expected_mounts: >-
+      {{ lvm_data_expected_mounts | default([]) + [lvm_data_mount_prefix ~ item] }}
+  loop: "{{ range(0, lvm_data_mount_count | int) | list }}"
+
+# Query with findmnt rather than ansible_mounts: the latter is a fact gathered
+# at play start, so mounts created by the script above would be missing from it.
+#
+# check_mode: false matters here (see the VG list task above) -- shell tasks are
+# skipped in check mode, leaving rc=0 and producing a false pass.
+- name: Check each expected data mount is actually mounted
+  shell: findmnt -rno SOURCE "{{ item }}"
+  register: lvm_data_mount_checks
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  loop: "{{ lvm_data_expected_mounts }}"
+
+# Fail loudly if a mount is missing: dingofs_cluster would otherwise not error
+# out, it would just write the data onto the system disk.
+- name: Assert every expected data mount is present
+  assert:
+    that:
+      - item.rc == 0
+    fail_msg: >-
+      {{ item.item }} is not mounted (findmnt returned {{ item.rc }}).
+      The meta server data directories depend on it; without it the data lands
+      on the system disk. {{ 'NOTE: you are running --check, which does not
+      execute the setup script, so this failure is expected -- re-run without
+      --check.' if ansible_check_mode else 'Check for unused NVMe devices, or
+      whether a previous run failed partway.' }}
+    success_msg: "{{ item.item }} -> {{ item.stdout }} - OK"
+  loop: "{{ lvm_data_mount_checks.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+# --- Service directory under each mount ---
+#
+# dingo CLI deploys as the dingofs user and creates data/logs/raft under
+# <mount>/<version-dir>, but a fresh XFS mount is root:root 0755. Without this
+# directory deploy fails with "mkdir: cannot create directory ...: Permission denied".
+# Runs on every invocation (the script above skips already-mounted indices, so
+# this cannot live there); idempotent.
+- name: Create the service subdirectory on every data mount
+  file:
+    path: "{{ lvm_data_mount_prefix }}{{ item }}/{{ lvm_data_subdir }}"
+    state: directory
+    owner: "{{ lvm_data_subdir_owner }}"
+    group: "{{ lvm_data_subdir_group }}"
+    mode: "{{ lvm_data_subdir_mode }}"
+  loop: "{{ range(0, lvm_data_mount_count | int) | list }}"
+  when: lvm_data_subdir | length > 0
+  loop_control:
+    label: "{{ lvm_data_mount_prefix }}{{ item }}/{{ lvm_data_subdir }}"

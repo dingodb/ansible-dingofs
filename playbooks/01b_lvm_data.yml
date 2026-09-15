@@ -1,0 +1,41 @@
+---
+# ============================================================
+# Playbook: LVM data disks for DingoFS meta server nodes
+#
+# Creates vg_diskN/lv on unused NVMe devices, XFS, mounted at
+# /mnt/disk0 .. /mnt/disk<N-1>. Counterpart to cache_02_lvm.yml.
+#
+# Naming follows production: vg_diskN / lv / /mnt/diskN, with data under
+# /mnt/disk<N>/dingofs-v<X.Y>/{data,logs,raft}/{mds,store,coordinator,executor}.
+# Verified against 8 hosts across 4 regions. Note that none of them mount
+# /mnt/data*, even though inventory/group_vars defaults dingofs_data_dir to
+# "/mnt/data${service_replica_sequence}/...". When using this playbook, set
+# dingofs_data_dir/log_dir/raft_dir to /mnt/disk${service_replica_sequence}/...
+# so the two agree.
+#
+# Index starts at 0 because dingo CLI expands service_replica_sequence from 0:
+# `server.port: 690${service_replica_sequence}` with mds_base_port=690 yields
+# 6900/6901/6902, matching bj09's MDS ports.
+#
+# This step is required: dingofs_cluster creates its data/log/raft directories
+# under /mnt/diskN, and when those mounts are missing it does not fail -- it
+# silently writes onto the system disk.
+#
+# Run BEFORE 01_prepare.yml (i.e. before meta_site.yml): the common role creates
+# /mnt/disk1/corefiles, which would land on the system disk and then be hidden
+# once this playbook mounts /mnt/disk1. This playbook has no dependency on
+# 01_prepare -- it only needs root and python3, and installs lvm2/xfsprogs itself.
+#   Correct order: 01b_lvm_data.yml -> meta_site.yml
+#
+# --check cannot preview this playbook: the actual work happens in a shell
+# script, which check mode skips. The mount assertion at the end of the role
+# does run (check_mode: false) and will fail with "not mounted", which is the
+# expected outcome. Just run it for real -- it is idempotent and will not touch
+# disks that already carry a filesystem signature.
+# ============================================================
+- name: Set up LVM data disks on meta server nodes
+  hosts: "{{ target_hosts | default('meta_servers') }}"
+  remote_user: root
+  become: false
+  roles:
+    - lvm_data

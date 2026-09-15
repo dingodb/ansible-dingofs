@@ -1,0 +1,77 @@
+---
+# ============================================================
+# Role: lvm_data - LVM data disks for DingoFS meta server nodes
+#
+# Layout: one VG per disk (vg_diskN), one LV (lv) per VG, XFS,
+# mounted at /mnt/diskN -- e.g. vg_disk0/lv -> /mnt/disk0.
+#
+# Naming follows what production actually runs, verified by inspecting
+# 8 hosts across 4 regions (hd04-cpu-0008/0009/0010, hd05-cpu-0009/0010/0011,
+# bj09-cpu-0026/0027). Their data lives at
+#   /mnt/disk<N>/dingofs-v<X.Y>/{data,logs,raft}/{mds,store,coordinator,executor}
+#
+# NOTE: the repo's own inventory/group_vars defaults dingofs_data_dir to
+# "/mnt/data${service_replica_sequence}/...", but none of those hosts mount
+# /mnt/data* -- that convention does not exist in production. When using this
+# role, set dingofs_data_dir/log_dir/raft_dir to /mnt/disk${service_replica_sequence}/...
+# accordingly. The two must agree.
+#
+# Mount index starts at 0 because dingo CLI expands service_replica_sequence
+# from 0: the topology template renders `server.port: 690${service_replica_sequence}`
+# with mds_base_port=690, giving 6900/6901/6902 -- which is what bj09's MDS
+# actually listens on.
+#
+# Differences from lvm_cache (copying that role will not work):
+#   - index starts at 0 (cache starts at /mnt/disk1)
+#   - creates a fixed lvm_data_mount_count mounts (= mds_replicas), not
+#     "one per disk found"; extra disks are left alone
+#   - no aux/small-disk handling: meta servers have uniform disks
+#   - idempotency is per mount point (cache skips everything if any VG exists)
+#   - fstab uses UUID (cache uses /dev/vg/lv), mount options add noatime
+# ============================================================
+
+# Resulting VG names: vg_disk0, vg_disk1, vg_disk2
+lvm_data_vg_prefix: vg_disk
+lvm_data_lv_name: lv
+lvm_data_fs_type: xfs
+lvm_data_mount_prefix: /mnt/disk
+
+# Should equal mds_replicas: each host runs 3 MDS replicas, and the
+# coordinator/store/executor instances all live on disk0.
+lvm_data_mount_count: 3
+
+# Disks smaller than this (decimal GB) are ignored. NVMe detection already
+# excludes system disks like sda; this is a second guard against small disks.
+lvm_data_min_disk_gb: 100
+
+# Refuse to touch disks that already carry a filesystem signature or partition
+# table, so we never silently wipe data. Set true only when you mean to.
+lvm_data_force: false
+
+# Disks belonging to these VGs are skipped.
+# vg_dingodb holds the DingoDB store on production meta servers (bj09/hd05).
+lvm_data_skip_vg_names:
+  - csi-lvm
+  - vg_dingodb
+
+# --- Service directory under each mount ---
+#
+# After mounting, create this subdirectory under every data mount and chown it
+# to lvm_data_subdir_owner. Empty (the default) skips the step.
+#
+# Why it is needed: dingo CLI deploys as the dingofs user and creates
+# data/logs/raft under <mount>/<version-dir>. A freshly mkfs'd XFS root is
+# root:root 0755, so that user cannot create anything, and deploy fails with:
+#     Error-Code: 620002
+#     mkdir: cannot create directory '/mnt/disk0/dingofs-v5.2': Permission denied
+#
+# Do NOT chown the mount point itself -- production keeps the mount root-owned
+# and only the version directory accessible:
+#     /mnt/disk1                root:root      0755
+#     /mnt/disk1/dingofs-v5.1   dingofs:dingofs
+#
+# Example: lvm_data_subdir: "dingofs-{{ dingofs_version }}"  ->  /mnt/disk0/dingofs-v5.2
+lvm_data_subdir: ""
+lvm_data_subdir_owner: "{{ dingofs_user | default('root') }}"
+lvm_data_subdir_group: "{{ dingofs_user | default('root') }}"
+lvm_data_subdir_mode: "0755"
