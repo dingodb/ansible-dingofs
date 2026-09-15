@@ -1,8 +1,55 @@
 ---
+# Playbook: Label client nodes in Kubernetes
+#
+# Labelling happens through kubectl on the control node, which only makes sense
+# where a Kubernetes cluster exists and knows these hosts. Both are detected
+# rather than assumed: bare-metal regions have no kubectl, and a host outside
+# the cluster simply has no node to label. Either way the client deployment
+# carries on instead of failing here.
 - name: Label client nodes in Kubernetes
   hosts: client_servers
   gather_facts: false
   tasks:
+    - name: Check whether kubectl is available on the control node
+      delegate_to: localhost
+      command: which kubectl
+      register: kubectl_present
+      changed_when: false
+      failed_when: false
+      run_once: true
+
+    - name: Report that labelling is skipped
+      delegate_to: localhost
+      debug:
+        msg: >-
+          kubectl not found on the control node - skipping node labelling.
+          Expected outside a Kubernetes-managed region; the rest of the client
+          deployment is unaffected.
+      run_once: true
+      when: kubectl_present.rc != 0
+
+    - name: Check whether {{ inventory_hostname }} is a node in that cluster
+      delegate_to: localhost
+      command: kubectl get node {{ inventory_hostname }} --no-headers
+      register: k8s_node
+      changed_when: false
+      failed_when: false
+      when: kubectl_present.rc | default(1) == 0
+
     - name: Apply label to Kubernetes node
       delegate_to: localhost
       command: "kubectl label node {{ inventory_hostname }} dc.com/service.dingofs=enable --overwrite"
+      changed_when: true
+      when:
+        - kubectl_present.rc | default(1) == 0
+        - k8s_node.rc | default(1) == 0
+
+    - name: Report hosts that are not in the cluster
+      delegate_to: localhost
+      debug:
+        msg: >-
+          {{ inventory_hostname }} is not a node in this Kubernetes cluster -
+          skipping the label. It can still be a perfectly good client host.
+      when:
+        - kubectl_present.rc | default(1) == 0
+        - k8s_node.rc | default(1) != 0

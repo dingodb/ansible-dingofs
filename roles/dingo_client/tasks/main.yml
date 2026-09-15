@@ -21,10 +21,24 @@
     dingo_client_fsname: "{{ client_instance.fsname }}"
     dingo_client_mount_point: "{{ client_instance.mount_point }}"
     dingo_client_port: "{{ client_instance.port }}"
-    dingo_client_cache_group: "{{ client_instance.cache_group | default(hostvars[inventory_hostname]['dingo_client_cache_group']) }}"
+    # hostvars holds inventory vars, not role defaults, so a bare
+    # hostvars[...]['key'] lookup raises KeyError for any inventory that does
+    # not carry these in group_vars -- which is how the role's own defaults for
+    # them ended up unreachable. .get() with a role default as the fallback
+    # keeps group_vars authoritative while letting the role stand on its own.
+    #
+    # The fallbacks have their own names because these two vars are being
+    # defined here and cannot reference themselves.
+    dingo_client_cache_group: >-
+      {{ client_instance.cache_group
+         | default(hostvars[inventory_hostname].get('dingo_client_cache_group',
+                                                   dingo_client_cache_group_default)) }}
     dingo_client_service_name: "dingofs-mount-{{ client_instance.fsname }}"
     dingo_client_log_dir: "{{ client_instance.log_dir | default('/mnt/disk1/dingofs/logs/' ~ client_instance.fsname) }}"
-    dingo_client_mds_addrs: "{{ client_instance.mds_addrs | default(hostvars[inventory_hostname]['dingo_client_mds_addrs']) }}"
+    dingo_client_mds_addrs: >-
+      {{ client_instance.mds_addrs
+         | default(hostvars[inventory_hostname].get('dingo_client_mds_addrs',
+                                                   dingo_client_mds_addrs_default)) }}
     dingo_client_base_dir: "{{ client_instance.base_dir | default('/root/dingofs/dingo-client/' ~ client_instance.fsname) }}"
   loop: "{{ dingo_clients }}"
   loop_control:
