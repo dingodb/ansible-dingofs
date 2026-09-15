@@ -112,6 +112,9 @@
     var: hosts_list.stdout_lines
 
 # --- Deploy cluster ---
+# `dingo cluster add` returns 410009 "cluster already exist" for an existing
+# cluster. Treat that as success, otherwise a re-run after a failed deployment
+# always stops here and never reaches the deploy step.
 - name: Create DingoFS cluster
   become: true
   become_user: "{{ dingofs_user }}"
@@ -121,6 +124,10 @@
   args:
     executable: /bin/bash
   register: cluster_add
+  failed_when: >-
+    cluster_add.rc != 0 and
+    'already exist' not in (cluster_add.stdout | default(''))
+  changed_when: cluster_add.rc == 0
 
 - name: Activate DingoFS cluster
   become: true
@@ -138,10 +145,20 @@
   args:
     executable: /bin/bash
 
+# The CLI draws an interactive progress spinner even when stdout is not a TTY,
+# writing lines of "…" wrapped in ANSI erase codes. Strip them so the recorded
+# output is readable. Two sed programs:
+#   1. remove ANSI CSI sequences  2. drop lines with no printable ASCII left
+#     (which covers both the "…" lines and blank lines)
+# pipefail is required: without it the pipeline would report sed's exit status
+# and a failed deploy would look like a success.
 - name: Deploy DingoFS cluster
   become: true
   become_user: "{{ dingofs_user }}"
-  shell: "{{ dingo_cli_bin_dir }}/dingo cluster deploy -k --local"
+  shell: |
+    set -o pipefail
+    {{ dingo_cli_bin_dir }}/dingo cluster deploy -k --local \
+      | sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' -e '/^[^ -~]*$/d'
   args:
     executable: /bin/bash
   register: deploy_result
@@ -151,10 +168,14 @@
     var: deploy_result.stdout_lines
 
 # --- Verify ---
+# Same spinner noise as the deploy step; see the comment there.
 - name: Check cluster status
   become: true
   become_user: "{{ dingofs_user }}"
-  shell: "{{ dingo_cli_bin_dir }}/dingo cluster status -sv"
+  shell: |
+    set -o pipefail
+    {{ dingo_cli_bin_dir }}/dingo cluster status -sv \
+      | sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' -e '/^[^ -~]*$/d'
   args:
     executable: /bin/bash
   register: cluster_status
