@@ -1,13 +1,61 @@
 ---
 # Master playbook: Full Dingo Cache deployment
 # Independent from the DingoFS meta server deployment (site.yml)
-# Executes all phases in order:
-#   0. SELinux -> permissive (see roles/selinux/defaults/main.yml)
-#   1. System preparation (basic tools, cpupower, dev tools)
-#   2. LVM setup (detect NVMe, create VGs, format, mount)
-#   3. Performance tuning (reuses tune role)
-#   4. Jemalloc compile and install
-#   5. Dingo-cache service deployment
+#
+# Every phase below really runs:
+#   0. SELinux -> permissive (roles/selinux/defaults/main.yml)
+#   1. System preparation (packages, cpupower, dev tools)
+#   2. LVM setup (cache_02_lvm.yml -> roles/lvm_cache)
+#   3. Performance tuning (tune role)
+#   4. Jemalloc build & install
+#   5. dingo-cache service deployment
+#
+# ============================================================
+# Re-running: what happens on the second run, phase by phase
+# ============================================================
+#   0 SELinux   : idempotent; already permissive means no change
+#   1 prepare   : idempotent (yum/apt) plus idempotent directory creation
+#   2 LVM       : SAFE NO-OP. The script skips devices that are already mounted
+#                 and devices already in a dingo_cache_* VG, so a second run
+#                 finds no candidates and exits 0. Mount indices are found
+#                 dynamically ("next free index"), not hardcoded, so they cannot
+#                 shift either.
+#   3 tune      : idempotent (nothing written when the sysctl values already match)
+#   4 jemalloc  : skipped when already installed (libjemalloc.so.2 present)
+#   5 deploy    : writes conf / unit / start script. NOTHING CHANGES => NO
+#                 RESTART (the handlers only fire when a template changes).
+#                 Restarting only on change is deliberate: a cache restart
+#                 briefly disconnects clients, but without it the new config
+#                 would never take effect.
+#
+# ⚠️ The one thing phase 2 needs a human to confirm is that the target disks are
+#    actually free. It only knows "is it mounted" and "is it in a dingo_cache
+#    VG" -- it does not inspect what else might be on the device. Fine on a fresh
+#    host with bare disks; on a host whose disks were partitioned by hand, run
+#    `findmnt -rno TARGET,SOURCE` first and confirm those NVMe devices are
+#    mounted (mounted devices are skipped).
+#
+# ============================================================
+# Ordering vs client: cache first is recommended, but the
+# reverse order heals itself
+# ============================================================
+# dingo-client looks up its cache group members at STARTUP; if the group does not
+# exist the mount fails:
+#     E members.cc:154] There is no member in cache group=<name>
+#
+# However the client's systemd unit is `Restart=always` + `RestartSec=5`, so it
+# retries every 5 seconds. Running client before cache therefore still works --
+# once the cache registers, the client's next retry succeeds with no manual
+# intervention. The only difference is that the client run ends in a fatal
+# failure on "Wait for mount point to be active" (10 retries x 3s, ~30s).
+#
+# To get through in one pass, run cache_site.yml -> client_site.yml. If you have
+# already run them the other way round, either wait for it to heal
+# (`systemctl show <svc> -p NRestarts` will climb) or re-run the client once the
+# cache is up.
+#
+# (Cache groups are scoped to one MDS cluster -- a v5.1 group lives on the v5.1
+#  MDS, a v5.2 group must live on the v5.2 MDS. The two cannot be mixed.)
 
 - name: "Phase 0: SELinux"
   import_playbook: config_selinux.yml

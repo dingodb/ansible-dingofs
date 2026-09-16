@@ -2,12 +2,80 @@
 # Master playbook: Full Dingo Client deployment
 # Independent from the DingoFS meta server deployment (meta_site.yml)
 # and the Dingo Cache deployment (cache_site.yml)
-# Executes all phases in order:
-#   0. SELinux -> permissive (see roles/selinux/defaults/main.yml)
-#   1. System preparation (basic tools, cpupower, dev tools)
-#   2. Performance tuning (reuses tune role)
-#   3. Jemalloc compile and install
-#   4. Dingo-client (FUSE mount) service deployment
+#
+# ============================================================
+# ⚠️ This does NOT only deploy the client -- it makes
+#    IRREVERSIBLE CHANGES TO THE HOST'S DISKS.
+# ============================================================
+# Every phase below really runs:
+#   0.   SELinux -> permissive
+#   1.   System preparation (user, packages, cpupower)
+#   1.5  LVM setup (cache_02_lvm.yml) <- see below
+#   2.   Performance tuning (sysctl / ulimit / THP)
+#   3.   Jemalloc build & install
+#   4.   dingo-client (FUSE mount) service deployment
+#   5.   Label Kubernetes nodes (dc.com/service.dingofs=enable)
+#   6.   Configure the dingo command environment (~/.dingo/dingo.yaml)
+#
+# ⚠️ Phase 1.5 turns UNUSED NVMe devices into VG/LVs, formats them xfs, mounts
+#    them at <mount_prefix><N> and WRITES /etc/fstab entries (persistent). The
+#    cache and log directories need that, but it is not a side effect anyone
+#    expects from "deploy the client": on bj09-gpu-p800-0063 (2026-09-16) a run
+#    that was meant to add one filesystem instead built dingo_cache_1/2/3 out of
+#    three bare 3.5T disks and mounted them at /mnt/disk1..3.
+#
+# ➜ To only mount or upgrade the client, use client_04_deploy.yml (or
+#   client_07_upgrade.yml) -- not this master playbook.
+#
+# Phase 1.5 runs cache_02_lvm.yml -> roles/lvm_cache (creates dingo_cache_* VGs,
+# indices start at 1 and are found dynamically rather than hardcoded). It is NOT
+# the lvm_data role used by 01b_lvm_data.yml.
+#
+# ============================================================
+# Re-running: what happens on the second run, phase by phase
+# ============================================================
+#   0    SELinux  : idempotent
+#   1    prepare  : idempotent
+#   1.5  LVM      : SAFE NO-OP. The script skips devices that are already
+#                   mounted and devices already in a dingo_cache_* VG, so a
+#                   second run finds no candidates and exits 0.
+#   2    tune     : idempotent
+#   3    jemalloc : skipped when already installed
+#   4    deploy   : writes binaries / mount script / unit. Before restarting it
+#                   checks `fuser -m <mountpoint>` -- if anything is using the
+#                   mountpoint the restart is SKIPPED with a warning; only idle
+#                   mountpoints are restarted. So re-running will NOT interrupt a
+#                   training job that is reading or writing the filesystem.
+#                   (-e dingo_client_force_restart=true forces the restart.)
+#   5    label    : kubectl label --overwrite, idempotent (always reports changed)
+#   6    dingo env: SKIPPED ENTIRELY when no system user owns dingo_env_home --
+#                   it is /home/dingofs (the dingofs user) on a meta admin node
+#                   and should be /root on a client node. A wrong value no longer
+#                   conjures up /home/dingofs/.dingo/.
+#
+# ============================================================
+# Ordering vs cache: cache first is recommended, but the
+# reverse order heals itself
+# ============================================================
+# dingo-client looks up its cache group members at STARTUP; if the group does not
+# exist the mount fails:
+#     E members.cc:154] There is no member in cache group=<name>
+#
+# However the client's systemd unit is `Restart=always` + `RestartSec=5`
+# (roles/dingo_client/templates/dingofs-mount.service.j2), so it retries every
+# 5 seconds. Once the cache registers, the next retry succeeds -- at the machine
+# level the order does not matter.
+#
+# What the order does affect is THIS playbook run: "Wait for mount point to be
+# active" in roles/dingo_client/tasks/instance.yml retries only 10 times x 3s
+# (~30s) before failing. So running client before cache ends with that host
+# reported as failed in the PLAY RECAP, and heals on its own shortly after
+# (NRestarts climbs). Either wait for it, or re-run the client after the cache is
+# up.
+#
+# (Cache groups are scoped to one MDS cluster: a v5.1 group lives on the v5.1
+#  MDS, a v5.2 group must live on the v5.2 MDS. An empty cache_group means the
+#  client does not look up any group and reads the object store directly.)
 
 - name: "Phase 0: SELinux"
   import_playbook: config_selinux.yml
