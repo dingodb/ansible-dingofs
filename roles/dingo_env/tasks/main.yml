@@ -22,6 +22,42 @@
       - dingo_env_mdsaddr | length > 0
     fail_msg: "dingo_env_mdsaddr is mandatory (defaults to dingo_client_mds_addrs)"
 
+# --- The target home directory must actually belong to a user ---
+#
+# dingo_env_home is meant to be set PER NODE ROLE: on a meta admin node the dingo
+# CLI belongs to the dingofs user (/home/dingofs), on a client node the client
+# runs as root (/root). Using one value for both kinds of node goes wrong:
+#
+#   With /home/dingofs on a client node there is no such system user, so the role
+#   creates /home/dingofs/.dingo/{bin,dingo.yaml} out of thin air -- including a
+#   22MB dingo binary that nothing will ever use. Seen on bj09-gpu-p800-0063 on
+#   2026-09-16 after running client_site.yml (its Phase 6).
+#
+# The test is "some user's home IS dingo_env_home", not "the directory exists":
+# the directory may be left over from a previous mis-run, and testing for
+# existence would cement the mistake.
+- name: Check whether a user actually owns {{ dingo_env_home }}
+  shell: "getent passwd | awk -F: '$6==\"{{ dingo_env_home }}\" {print $1; exit}'"
+  args:
+    executable: /bin/bash
+  register: _env_home_owner
+  changed_when: false
+  failed_when: false
+
+- name: Report that dingo env setup is skipped on this host
+  debug:
+    msg: >-
+      Skipping the dingo command environment: no system user has
+      {{ dingo_env_home }} as their home. This variable is /home/dingofs (the
+      dingofs user) on a meta admin node and /root on a client node -- the two
+      node types need different values. If this host really does need
+      ~/.dingo/dingo.yaml, point dingo_env_home somewhere valid and re-run.
+  when: _env_home_owner.stdout | default('') == ''
+
+- name: Stop configuring this host when dingo_env_home has no owning user
+  meta: end_host
+  when: _env_home_owner.stdout | default('') == ''
+
 # --- Step 1: detect whether dingo env is already configured ---
 - name: Check whether dingo env binary is already installed
   stat:
