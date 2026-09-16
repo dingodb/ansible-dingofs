@@ -4,10 +4,17 @@
 #
 # Policy:
 #   - Pick the {{ lvm_data_mount_count }} largest unused NVMe devices. One VG per
-#     device ({{ lvm_data_vg_prefix }}0 .. {{ lvm_data_vg_prefix }}N-1), one
+#     device ({{ lvm_data_vg_prefix }}<offset> .. <offset+N-1>), one
 #     {{ lvm_data_lv_name }} LV per VG, formatted {{ lvm_data_fs_type }}, mounted at
-#     {{ lvm_data_mount_prefix }}0 .. {{ lvm_data_mount_prefix }}N-1.
-#   - Index starts at 0 to match ${service_replica_sequence} in dingofs_data_dir.
+#     {{ lvm_data_mount_prefix }}<offset> .. {{ lvm_data_mount_prefix }}<offset+N-1>.
+#   - Index starts at lvm_data_mount_index_offset ({{ lvm_data_mount_index_offset }}).
+#     0 matches ${service_replica_sequence}; 1 matches
+#     ${service_replica_sequence_with_offset} with sequence_offset: 1.
+#     ⚠️ It must match the topology's sequence_offset. If they disagree the data
+#        directories land on unmounted indices (i.e. on the system disk), and
+#        the "which indices still need creating" test below goes wrong: with 0
+#        on a 1-based host this script thinks {{ lvm_data_mount_prefix }}0 is
+#        missing and goes looking for a free NVMe to pvcreate.
 #   - Remaining disks are left untouched.
 #   - Idempotent: already-mounted indices are skipped, only missing ones are created.
 #
@@ -19,14 +26,19 @@
 set -o pipefail
 
 MOUNT_COUNT={{ lvm_data_mount_count | int }}
+# First disk index. 0 = /mnt/disk0..N-1 (bj12); 1 = /mnt/disk1..N (bj09 and
+# everything else, disks allocated by hand starting at 1).
+# Must match the topology's sequence_offset.
+MOUNT_OFFSET={{ lvm_data_mount_index_offset | int }}
+MOUNT_END=$((MOUNT_OFFSET + MOUNT_COUNT))
 MIN_BYTES={{ lvm_data_min_disk_gb | int * 1000000000 }}
 PREFIX="{{ lvm_data_mount_prefix }}"
 
 # --- 1. Which mount indices still need creating ---
 echo "=== Checking existing mounts ==="
 pending_indices=()
-i=0
-while [ "$i" -lt "$MOUNT_COUNT" ]; do
+i="$MOUNT_OFFSET"
+while [ "$i" -lt "$MOUNT_END" ]; do
     target="${PREFIX}${i}"
     if findmnt -rno SOURCE "$target" >/dev/null 2>&1; then
         echo "  ${target} already mounted ($(findmnt -rno SOURCE "$target")), skipping"
@@ -156,8 +168,8 @@ done
 
 # --- 5. Summary ---
 echo "=== Final layout ==="
-i=0
-while [ "$i" -lt "$MOUNT_COUNT" ]; do
+i="$MOUNT_OFFSET"
+while [ "$i" -lt "$MOUNT_END" ]; do
     target="${PREFIX}${i}"
     if findmnt -rno SOURCE "$target" >/dev/null 2>&1; then
         avail=$(df -h --output=avail "$target" 2>/dev/null | tail -1 | tr -d ' ')
