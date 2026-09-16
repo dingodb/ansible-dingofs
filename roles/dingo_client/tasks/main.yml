@@ -3,6 +3,71 @@
 # Role: dingo_client - Deploy dingo-client (FUSE mount) services
 # ============================================================
 
+# --- Pre-flight: psmisc (provides fuser) ---
+#
+# instance.yml decides whether a restart is safe by running
+# `fuser -m <mountpoint>`. fuser comes from psmisc, which a minimal install may
+# not have. Same as roles/dingo_client_upgrade.
+- name: Ensure psmisc is installed (provides fuser)
+  package:
+    name: psmisc
+    state: present
+  when: ansible_os_family == "RedHat"
+
+- name: Ensure psmisc is installed (provides fuser)
+  package:
+    name: psmisc
+    state: present
+  when: ansible_os_family == "Debian"
+
+# --- Pre-flight: the binaries must exist on the control node ---
+#
+# dingo_client_bin_local_src / dingo_client_dingo_bin_local_src are paths on the
+# CONTROL node (the one running ansible-playbook) -- instance.yml's copy tasks
+# have no remote_src, so the source is read locally, not from the target.
+#
+# When they are missing, the failure lands on the "Copy dingo-client binary ...
+# for <fsname>" task and is reported ONCE PER TARGET HOST: 26 hosts means 26
+# identical "file not found" errors, easily mistaken for a network or
+# permissions problem. Hit exactly this on 2026-09-16. Checking up front reports
+# it once and names the paths.
+- name: Check the dingo-client binary exists on the control node
+  delegate_to: localhost
+  become: false
+  stat:
+    path: "{{ dingo_client_bin_local_src }}"
+  register: _client_bin_src
+  run_once: true
+  changed_when: false
+
+- name: Check the dingo CLI binary exists on the control node
+  delegate_to: localhost
+  become: false
+  stat:
+    path: "{{ dingo_client_dingo_bin_local_src }}"
+  register: _dingo_bin_src
+  run_once: true
+  changed_when: false
+
+- name: Fail early if a client binary is missing on the control node
+  delegate_to: localhost
+  become: false
+  assert:
+    that:
+      - _client_bin_src.stat.exists
+      - _dingo_bin_src.stat.exists
+    fail_msg: >-
+      Client binaries not found on the control node. Note these are paths on the
+      CONTROL node, not on the targets:
+      dingo_client_bin_local_src = {{ dingo_client_bin_local_src }}
+      (exists = {{ _client_bin_src.stat.exists }});
+      dingo_client_dingo_bin_local_src = {{ dingo_client_dingo_bin_local_src }}
+      (exists = {{ _dingo_bin_src.stat.exists }}).
+      Put the matching dingo-client / dingo there, or point these two variables
+      elsewhere.
+    success_msg: "client binaries present on the control node"
+  run_once: true
+
 - name: Set default list of dingo clients if not provided
   set_fact:
     dingo_clients:
@@ -34,6 +99,20 @@
          | default(hostvars[inventory_hostname].get('dingo_client_cache_group',
                                                    dingo_client_cache_group_default)) }}
     dingo_client_service_name: "dingofs-mount-{{ client_instance.fsname }}"
+    # NOTE: log_dir / base_dir are taken from the instance ONLY -- unlike
+    # cache_group / mds_addrs above, they deliberately do NOT fall back to a
+    # same-named group_vars value. Setting dingo_client_log_dir /
+    # dingo_client_base_dir in group_vars has NO effect (measured 2026-09-16:
+    # /dingofs-cache/logs/... was configured, the client actually used
+    # /mnt/disk1/dingofs/logs/<fsname>). To change them, set log_dir: / base_dir:
+    # on the entry in dingo_clients.
+    #
+    # Why not read hostvars like the other two: those globals routinely contain
+    # {{ }} templates, and hostvars holds the UNRENDERED string -- it would be
+    # substituted literally into the mount script. (bj12's inventory records the
+    # same trap for mds_addrs: the client came up with
+    # "check mds addr fail, addr(0.0.0.0:0)".) Better to keep the plain
+    # behaviour than to introduce a subtler failure.
     dingo_client_log_dir: "{{ client_instance.log_dir | default('/mnt/disk1/dingofs/logs/' ~ client_instance.fsname) }}"
     dingo_client_mds_addrs: >-
       {{ client_instance.mds_addrs

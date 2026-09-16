@@ -29,17 +29,26 @@
     mode: "0755"
 
 # --- Copy binaries from control node ---
+#
+# These two are registered because the restart decision further down needs them.
+# The destination is per-fsname (dest includes dingo_client_base_dir), so each
+# mountpoint on a host keeps its own copy -- changing one instance's binary
+# cannot affect another's.
+#
+# src is a path on the CONTROL node (no remote_src), not on the target.
 - name: "Copy dingo-client binary to remote host for {{ dingo_client_fsname }}"
   copy:
     src: "{{ dingo_client_bin_local_src }}"
     dest: "{{ dingo_client_base_dir }}/bin/dingo-client"
     mode: "0755"
+  register: _client_bin
 
 - name: "Copy dingo CLI binary to remote host for {{ dingo_client_fsname }}"
   copy:
     src: "{{ dingo_client_dingo_bin_local_src }}"
     dest: "{{ dingo_client_base_dir }}/bin/dingo"
     mode: "0755"
+  register: _dingo_bin
 
 # --- NUMA detection (for numactl) ---
 - name: Detect NUMA node count
@@ -84,11 +93,67 @@
     daemon_reload: true
   when: _mount_service.changed
 
+# --- Restart: first decide WHETHER, then decide WHETHER IT IS SAFE ---
+#
+# 1) Whether a restart is needed.
+#    This used to look only at _mount_sh / _mount_service, so swapping just the
+#    binary (mount script and unit unchanged) did not restart anything: the new
+#    dingo-client was on disk while the old one kept running. Nothing looks wrong
+#    at the time; the problem surfaces at the next reboot, or when the process
+#    dies and Restart=always brings up the new binary. Very hard to diagnose by
+#    then. And the trigger is mundane: bumping the client version changes
+#    dingo_client_bin_local_src while the mount-script template stays identical.
+#    => the two copy results must be part of the condition.
+#
+# 2) Whether it is safe to restart right now.
+#    Do NOT just systemctl restart: this mountpoint is very likely in use by a
+#    training job, and restarting tears the FUSE mount out from under it. Check
+#    with `fuser -m` and SKIP with a loud warning when it is busy -- the same
+#    approach as roles/dingo_client_upgrade's dingofs_restart_check.sh (the
+#    proven path for upgrades).
+#    Escape hatch: -e dingo_client_force_restart=true skips the check.
+- name: "Set whether a restart is needed for {{ dingo_client_fsname }}"
+  set_fact:
+    _restart_needed: >-
+      {{ _mount_sh.changed or _mount_service.changed
+         or _client_bin.changed or _dingo_bin.changed }}
+
+- name: "Check whether {{ dingo_client_mount_point }} is in use"
+  shell: >-
+    if ! command -v fuser >/dev/null 2>&1; then echo nofuser;
+    elif fuser -m {{ dingo_client_mount_point }} >/dev/null 2>&1; then echo busy;
+    else echo idle; fi
+  args:
+    executable: /bin/bash
+  register: _mount_in_use
+  changed_when: false
+  failed_when: false
+  when: _restart_needed | bool
+
 - name: "Restart dingo-client service for {{ dingo_client_fsname }}"
   systemd:
     name: "{{ dingo_client_service_name }}"
     state: restarted
-  when: _mount_sh.changed or _mount_service.changed
+  when: >-
+    _restart_needed | bool
+    and ( dingo_client_force_restart | default(false) | bool
+          or _mount_in_use.stdout | default('idle') == 'idle' )
+
+- name: "Warn that the restart was skipped because {{ dingo_client_mount_point }} is in use"
+  debug:
+    msg: >-
+      Skipped the restart of {{ dingo_client_service_name }}:
+      {{ dingo_client_mount_point }} is in use (fuser -m hit; "nofuser" means
+      psmisc is not installed and the check could not run).
+      The config/binary IS already updated on disk, but the running process is
+      still the old one. Once the mountpoint is idle, restart it by hand
+      (`systemctl restart {{ dingo_client_service_name }}`), or run
+      playbooks/client_07_upgrade.yml (which checks each mountpoint), or force it
+      with -e dingo_client_force_restart=true.
+  when: >-
+    _restart_needed | bool
+    and not ( dingo_client_force_restart | default(false) | bool )
+    and _mount_in_use.stdout | default('idle') != 'idle'
 
 - name: "Enable and start dingo-client service for {{ dingo_client_fsname }}"
   systemd:

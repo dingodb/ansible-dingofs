@@ -44,14 +44,37 @@
 #     UNIQUE SMBIOS system-uuid assigned by the hypervisor  -> use SMBIOS first
 #   - bare metal has all-zero/unset SMBIOS uuid but a unique machine-id
 #     -> fall back to machine-id (reset it when cloning images)
+#
+# ⚠️ Two corrections to that plan, both learned the hard way on 2026-09-16 when
+#    four bj09 nodes ended up with the SAME id and could not join the cache
+#    group ("Fail to send JoinCacheGroup rpc request ... cache member has
+#    locked", ELOCKED from mds/cachegroup/member_manager.cc:137):
+#
+#    1. Only a FULLY zero SMBIOS uuid means "no uuid". The old glob
+#       `00000000-0000-0000-0000-*` also matched partially-zero uuids such as
+#       00000000-0000-0000-0000-905a0817c1ed, which are perfectly unique per
+#       host. Treating them as invalid sent those hosts to machine-id, which
+#       they share (cloned images), so they hashed to the same id.
+#       Match the all-zero and all-ff forms exactly instead.
+#
+#    2. The hostname is appended to the hashed string as well. Both fallback
+#       sources can be duplicated across a fleet; the hostname cannot (it is
+#       the k8s node name) and is stable. This is what makes the id unique
+#       even when the seed is not.
+#
+# NOTE: existing dingo-cache.conf files keep their recorded --id (the task
+# below returns early when the conf exists), so changing this formula does not
+# move the cache of an already-deployed node. It only affects nodes that have
+# no conf yet, plus any node whose --id is removed to force a regeneration.
 - name: Generate deterministic config ID (stable per machine)
   shell: |
     smbios=$(dmidecode -s system-uuid 2>/dev/null | tr 'A-F' 'a-f')
     case "$smbios" in
-      ""|00000000-0000-0000-0000-*) seed=$(cat /etc/machine-id 2>/dev/null || hostname) ;;
+      ""|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)
+        seed=$(cat /etc/machine-id 2>/dev/null || hostname) ;;
       *) seed="$smbios" ;;
     esac
-    python3 -c "import sys, uuid; print(uuid.uuid5(uuid.NAMESPACE_DNS, 'dingofs-cache:' + sys.argv[1]))" "$seed"
+    python3 -c "import sys, uuid; print(uuid.uuid5(uuid.NAMESPACE_DNS, 'dingofs-cache:' + sys.argv[1] + ':' + sys.argv[2]))" "$seed" "$(hostname)"
   register: generated_uuid
   changed_when: false
   when: not existing_conf.stat.exists

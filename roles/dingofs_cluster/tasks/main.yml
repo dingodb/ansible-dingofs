@@ -97,6 +97,38 @@
     group: "{{ dingofs_user }}"
     mode: "0644"
 
+# --- Validate the render before shipping it ---
+#
+# Render the template once on the CONTROL node and parse it as YAML. When the
+# rendering is broken the error should point at the template, not surface later
+# as a CLI error from `dingo cluster add` on the remote:
+#
+#     Error-Code: 330003
+#     Error-Description: parse topology failed
+#     Error-Clue: While parsing config: yaml: line 2: mapping values are not allowed
+#
+# That is exactly what happened on 2026-09-16: a conditional block was inlined at
+# the end of a line, Ansible's trim_blocks ate the newlines, and
+# `global:` / `report_usage: false` / `container_image: ...` were joined into a
+# single line. The bug was in the template; the error looked like a cluster
+# configuration problem.
+#
+# lookup('template') uses the same Ansible Jinja environment as the template
+# module (trim_blocks and friends included), so it reproduces the real thing.
+- name: Validate the rendered topology parses as YAML
+  assert:
+    that:
+      - (lookup('template', 'topology.yaml.j2') | from_yaml) is mapping
+    fail_msg: >-
+      The rendered topology is not valid YAML. The problem is in
+      roles/dingofs_cluster/templates/topology.yaml.j2, not on the remote
+      cluster. The usual cause is an if/endif (or other block) tag placed at the
+      end of a line: Ansible's Jinja2 enables trim_blocks, which removes the
+      newline after the tag, joining the neighbouring lines into one.
+      Block tags must sit on their own line.
+    success_msg: "rendered topology parses as YAML"
+  changed_when: false
+
 - name: Generate topology.yaml for cluster
   template:
     src: topology.yaml.j2
@@ -178,14 +210,30 @@
 # Counting the service rows, not just grepping for a role name: the header
 # ("Role") and the "mds addr :" / "coordinator addr :" summary lines all
 # contain role names. Anchoring on the Instances column (n/m) takes only real
-# rows -- coordinator x3, store x3, mds x3 (one row per host, 3/3 instances
+# rows -- coordinator x3, store x3, mds x3 (one row per host, 1/3 instances
 # each), executor x1.
+#
+# ⚠️ And THEN excluding Cleaned -- counting the raw rows is wrong.
+#
+# `cluster status` lists the services as soon as the topology is committed
+# (`config commit`), BEFORE anything is deployed: each row is present with
+# Status=Cleaned and Container Id="-". So on a first-ever deploy the raw count
+# is 16, the guard concludes "already deployed", and `cluster deploy` is
+# skipped -- leaving a registered-but-empty cluster (2026-09-16, bj09 v5.2;
+# bj12 never hit it because it was deployed before this guard was added).
+#
+# Cleaned is exactly "no container": dingocli sets it when the container id is
+# the sentinel (internal/task/task/common/service_status.go:203) --
+#     if s.containerId == comm.CLEANED_CONTAINER_ID { status = "Cleaned" }
+# A deployed-and-running service shows the real podman status instead ("Up ...").
+# So: count rows that are NOT Cleaned.
 - name: Check whether the cluster is already deployed
   become: true
   become_user: "{{ dingofs_user }}"
   shell: >
     {{ dingo_cli_bin_dir }}/dingo cluster status 2>/dev/null
-    | grep -cE '^ *[^ ]+ +(coordinator|store|mds|executor) +[^ ]+ +[0-9]+/[0-9]+'
+    | grep -E '^ *[^ ]+ +(coordinator|store|mds|executor) +[^ ]+ +[0-9]+/[0-9]+'
+    | grep -vc 'Cleaned'
   args:
     executable: /bin/bash
   register: cluster_existing

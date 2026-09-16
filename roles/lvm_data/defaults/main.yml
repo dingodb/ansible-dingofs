@@ -37,8 +37,37 @@ lvm_data_fs_type: xfs
 lvm_data_mount_prefix: /mnt/disk
 
 # Should equal mds_replicas: each host runs 3 MDS replicas, and the
-# coordinator/store/executor instances all live on disk0.
+# coordinator/store/executor instances all live on the FIRST data disk.
 lvm_data_mount_count: 3
+
+# --- First disk index ---
+#
+# **Defaults to 1**, because that is what production actually looks like. This
+# role's own notes record "inspected 8 hosts across 4 regions -- their data
+# lives at /mnt/disk<N>/dingofs-v<X.Y>/", and bj12's inventory states
+# "production uses /mnt/disk1..3, because the disks were allocated by hand
+# starting at 1". Confirmed directly on bj09-cpu-0026 (2026-09-16): only
+# /mnt/disk1,2,3 exist, there is no /mnt/disk0.
+#
+# **bj12 is the only 0-based region** -- it built its disks from scratch with
+# this role, so they came out as vg_disk0..3 -> /mnt/disk0..3 -- and its
+# inventory therefore pins `lvm_data_mount_index_offset: 0` explicitly.
+#
+# This value must match the region's topology `sequence_offset`; the two are
+# read by different tools and nothing cross-checks them.
+#
+# ⚠️ Getting it wrong is DESTRUCTIVE in either direction. The role concludes
+#    that some disks are missing, takes the "find unused NVMe devices" branch,
+#    and runs `pvcreate -y -ff` on whatever it picks -- irreversible.
+#      0 on a 1-based host  -> misreads /mnt/disk0 as missing
+#      1 on a 0-based host  -> misreads /mnt/disk3 as missing
+#    Before provisioning a host, confirm its disk numbering:
+#      ls -d /mnt/disk*; findmnt -rno TARGET,SOURCE | grep disk
+#
+# Note the "Assert every expected data mount is present" task runs *after* the
+# setup script: it catches data directories pointing at the wrong disk, but not
+# disks the script has already reformatted.
+lvm_data_mount_index_offset: 1
 
 # Disks smaller than this (decimal GB) are ignored. NVMe detection already
 # excludes system disks like sda; this is a second guard against small disks.

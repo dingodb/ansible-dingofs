@@ -71,11 +71,15 @@
   debug:
     msg: "Active volume groups: {{ lvm_data_final_vgs.stdout_lines }}"
 
+# Indices start at lvm_data_mount_index_offset (default 1).
+# range(offset, offset+count), not range(0, count): a 1-based host expects
+# /mnt/disk1..3, not /mnt/disk0..2.
 - name: Build expected data mount point list
   set_fact:
     lvm_data_expected_mounts: >-
       {{ lvm_data_expected_mounts | default([]) + [lvm_data_mount_prefix ~ item] }}
-  loop: "{{ range(0, lvm_data_mount_count | int) | list }}"
+  loop: "{{ range(lvm_data_mount_index_offset | int,
+                  (lvm_data_mount_index_offset | int) + (lvm_data_mount_count | int)) | list }}"
 
 # Query with findmnt rather than ansible_mounts: the latter is a fact gathered
 # at play start, so mounts created by the script above would be missing from it.
@@ -122,7 +126,8 @@
     owner: "{{ lvm_data_subdir_owner }}"
     group: "{{ lvm_data_subdir_group }}"
     mode: "{{ lvm_data_subdir_mode }}"
-  loop: "{{ range(0, lvm_data_mount_count | int) | list }}"
+  loop: "{{ range(lvm_data_mount_index_offset | int,
+                  (lvm_data_mount_index_offset | int) + (lvm_data_mount_count | int)) | list }}"
   when: lvm_data_subdir | length > 0
   loop_control:
     label: "{{ lvm_data_mount_prefix }}{{ item }}/{{ lvm_data_subdir }}"
