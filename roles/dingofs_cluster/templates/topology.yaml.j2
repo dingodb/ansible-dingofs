@@ -1,5 +1,13 @@
+{# Ansible's Jinja2 enables trim_blocks, which eats the newline after a block
+   tag. So {% if %} / {% endif %} must sit on their OWN line -- inlining them at
+   the end of a line joins the surrounding lines into one and the result is not
+   valid YAML. With the tags on their own lines, the branch where the variable is
+   undefined renders byte-identically to not having this block at all. #}
 kind: dingofs
 global:
+{% if dingofs_report_usage is defined %}
+  report_usage: {{ dingofs_report_usage | lower }}
+{% endif %}
   container_image: {{ dingofs_container_image }}
   data_dir: {{ dingofs_data_dir }}
   log_dir: {{ dingofs_log_dir }}
@@ -8,6 +16,9 @@ global:
   source_core_dir: {{ dingofs_core_dir }}
   target_core_dir: {{ dingofs_core_dir }}
   cluster_id: {{ dingofs_cluster_id }}
+{% if dingofs_sequence_offset | default(0) | int > 0 %}
+  sequence_offset: {{ dingofs_sequence_offset | int }}
+{% endif %}
   variable:
     home: {{ dingofs_home_tmp }}
 {% for host in groups['meta_servers'] %}
@@ -41,6 +52,12 @@ mds_services:
   config:
     server.port: {{ mds_base_port }}${service_replica_sequence}
     mds_compact_chunk_enable: {{ mds_compact_chunk_enable | lower }}
+{% if mds_gc_worker_num is defined %}
+    mds_gc_worker_num: {{ mds_gc_worker_num }}
+{% endif %}
+{% if mds_log_level is defined %}
+    log_level: {{ mds_log_level }}
+{% endif %}
   deploy:
 {% for host in groups['meta_servers'] %}
     - host: ${machine{{ loop.index }}}
