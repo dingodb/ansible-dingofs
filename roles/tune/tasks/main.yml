@@ -77,7 +77,13 @@
 - name: Assert the CPU governor is actually performance
   assert:
     that:
-      - "'[performance]' in (cpu_governor_after.content | b64decode)"
+      # Substring, not the bracketed form. `scaling_governor` holds the bare
+      # name -- "performance" -- while the bracketed one ("always [madvise]
+      # never") belongs to THP's `enabled` file a few tasks up. Asserting on
+      # "[performance]" made this task fail on a host where the governor had
+      # just been set correctly (measured on bj09-gpu-p800-0062), i.e. it
+      # reported exactly the failure this task exists to rule out.
+      - "'performance' in (cpu_governor_after.content | b64decode)"
     fail_msg: >-
       The CPU governor reads "{{ cpu_governor_after.content | b64decode | trim }}"
       after both cpupower and the sysfs write were tried on a host that has
