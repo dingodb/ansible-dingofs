@@ -30,21 +30,60 @@ for dev in $devices; do
         continue
     fi
 
-    # Skip if in excluded volume groups
+    # Skip if in excluded volume groups.
+    # grep -q, NOT grep -qw: "_" is a word character, so -w made the check
+    # below never match the VGs this role creates itself (measured:
+    # `grep -qw dingo_cache` does not match "dingo_cache_1"). lvm_data already
+    # uses the plain form (setup_lvm_data.sh.j2:80).
 {% for vg in lvm_skip_vg_names %}
-    if pvs --noheadings -o vg_name "$path" 2>/dev/null | grep -qw "{{ vg }}"; then
+    if pvs --noheadings -o vg_name "$path" 2>/dev/null | grep -q "{{ vg }}"; then
         echo "Skipping $path (in VG {{ vg }})"
         continue
     fi
 {% endfor %}
 
-    # Skip if already in a dingo_cache VG
-    if pvs --noheadings -o vg_name "$path" 2>/dev/null | grep -qw "{{ lvm_vg_prefix }}"; then
+    # Skip if already in a {{ lvm_vg_prefix }} VG
+    if pvs --noheadings -o vg_name "$path" 2>/dev/null | grep -q "{{ lvm_vg_prefix }}"; then
         echo "Skipping $path (already in a {{ lvm_vg_prefix }} VG)"
         continue
     fi
 
-    size_bytes=$(blockdev --getsize64 "$path")
+    # Safety gate: never claim a device that already holds data. "Not mounted"
+    # is not "empty" -- a filesystem that happens to be unmounted right now (a
+    # failed fstab entry, a maintenance umount), a disk carrying a VG from
+    # another host, and a hand-partitioned disk all look exactly like a blank
+    # NVMe to the two checks above. lvm_data has had this gate all along
+    # (setup_lvm_data.sh.j2:92); without it the only thing protecting a shared
+    # Ceph RBD whose VG holds dozens of live PVCs is one string comparison on
+    # the VG name.
+    # Two things the reason string has to get right, both learned by running
+    # this against hd02-gpu1-0022:
+    #   - blkid succeeds for a bare partition table too, and reports it as
+    #     PTTYPE with an empty TYPE. Printing only TYPE gave the useless
+    #     "has fs signature: " and sent the operator looking for a filesystem
+    #     that is not there. Ask for both tags.
+    #   - The second check is not only about partitions: lsblk lists an LVM LV
+    #     as a child of its PV exactly like a partition, so it either needs to
+    #     say "child devices" or it will mislabel an LVM disk. (It is a net for
+    #     cases blkid cannot see: md/crypt members, foreign metadata.)
+    # Set lvm_force=true to deliberately reuse disks with stale signatures.
+    if [ "{{ lvm_force | bool | lower }}" != "true" ]; then
+        if blkid "$path" >/dev/null 2>&1; then
+            signature=$(blkid -o value -s TYPE -s PTTYPE "$path" 2>/dev/null | grep -v '^$' | head -n1)
+            echo "Skipping $path (existing signature: ${signature:-unknown}; set lvm_force=true to wipe)"
+            continue
+        fi
+        if [ -n "$(lsblk -rno NAME "$path" | tail -n +2)" ]; then
+            echo "Skipping $path (has child devices; set lvm_force=true to wipe)"
+            continue
+        fi
+    fi
+
+    # Abort here rather than fall through: an empty $size_bytes makes the
+    # numeric comparison below fail (rc 2) and the else branch then files the
+    # device under CACHE records -- i.e. a disk we cannot even measure would
+    # have been formatted.
+    size_bytes=$(blockdev --getsize64 "$path") || { echo "Error: cannot read size of $path"; exit 1; }
     size=$(numfmt --to=iec --format %.1f --suffix=B "$size_bytes" | sed 's/B//')
     if [ "$size_bytes" -lt "$MIN_CACHE_BYTES" ]; then
         echo "Found aux device: $path ($size, below {{ lvm_min_cache_disk_gb }}GB) -> {{ lvm_aux_mount }}"

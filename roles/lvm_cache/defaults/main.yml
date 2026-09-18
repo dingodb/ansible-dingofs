@@ -14,3 +14,8 @@ lvm_mount_prefix: /mnt/disk
 lvm_min_cache_disk_gb: 1000
 lvm_aux_vg_name: dingo_cache_aux
 lvm_aux_mount: /mnt/aux
+
+# The setup script refuses to touch any device that already carries a filesystem
+# signature or a partition table (see templates/setup_lvm.sh.j2). Flip this to
+# true only to deliberately reclaim disks whose old signatures are known junk.
+lvm_force: false
