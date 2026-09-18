@@ -10,5 +10,11 @@
   remote_user: root
   become: false
   gather_facts: true
+  # Batched rather than all at once: the restart-check script already skips
+  # mountpoints that are in use, but without serial every idle mountpoint on
+  # every host is torn down and remounted in the same instant.
+  # `1` would be safest and slowest; a fifth of the fleet bounds the blast
+  # radius without turning a 50-host upgrade into a 50-serial one.
+  serial: "20%"
   roles:
     - dingo_client_upgrade

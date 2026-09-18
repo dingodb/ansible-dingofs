@@ -38,6 +38,7 @@ if ! command -v fuser >/dev/null 2>&1; then
 fi
 
 any_skipped=false
+failures=0
 
 for mountpoint in "${!MOUNTS[@]}"; do
   service="${MOUNTS[$mountpoint]}"
@@ -73,11 +74,22 @@ for mountpoint in "${!MOUNTS[@]}"; do
       log "  OK: $service restarted successfully."
     else
       log "  ERROR: failed to restart $service."
+      # Counted, not just logged. The restart sits in an `if`, which `set -e`
+      # deliberately does not apply to, so without this the script reached the
+      # final log line, exited 0, and Ansible reported a green upgrade while
+      # the old binary was still running.
+      # (Assignment form on purpose: ((failures++)) returns 1 on the first
+      # increment and would abort the script under set -e.)
+      failures=$((failures + 1))
     fi
   fi
 done
 
 log "----------------------------------------"
+if [ "$failures" -gt 0 ]; then
+  log "Done. $failures service(s) FAILED to restart -- see the ERROR lines above."
+  exit 1
+fi
 if $any_skipped; then
   log "Done. One or more mountpoints were busy and skipped."
 else

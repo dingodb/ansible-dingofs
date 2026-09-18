@@ -246,11 +246,21 @@
     mode: "0755"
 
 # --- Copy binary from control node ---
+# notify, like the conf/unit/start-script tasks below: without it a rebuilt
+# binary landed on disk and the service kept running the old one until the
+# next unrelated restart. dingo_client got exactly this fix earlier
+# ("restart idle mounts only, and notice binary changes"); the cache side was
+# missed.
+#
+# Cost, so it is a deliberate one: a cache restart drops this node's cache and
+# its clients reconnect. The role already accepts that for any config change
+# (see the header of cache_site.yml) -- a stale binary is not different.
 - name: Copy dingo-cache binary to remote host
   copy:
     src: "{{ dingo_cache_bin_local_src }}"
     dest: "{{ dingo_cache_base_dir }}/{{ dingo_cache_bin_name }}"
     mode: "0755"
+  notify: restart dingo-cache
 
 # --- Deploy config and scripts ---
 - name: Deploy dingo-cache config file
