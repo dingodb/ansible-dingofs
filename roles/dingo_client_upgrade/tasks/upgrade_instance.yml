@@ -13,10 +13,15 @@
     path: "{{ _bin_path }}"
   register: _bin_stat
 
+# cp -p with `creates`, not mv: the backup has to survive a second upgrade.
+# `mv` ran unconditionally, so a second pass moved the freshly deployed binary
+# over .bak -- the known-good rollback copy was silently replaced by the new
+# (possibly broken) one, exactly when you would want it back.
 - name: "Backup current binary for {{ client_instance.fsname }}"
-  command: "mv {{ _bin_path }} {{ _bak_path }}"
+  command: "cp -p {{ _bin_path }} {{ _bak_path }}"
+  args:
+    creates: "{{ _bak_path }}"
   when: _bin_stat.stat.exists
-  changed_when: true
 
 # --- Step 2: Copy new binary ---
 - name: "Copy new dingo-client binary for {{ client_instance.fsname }}"

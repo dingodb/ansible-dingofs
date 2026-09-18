@@ -21,6 +21,28 @@ devices=$(lsblk -lno NAME | grep '^nvme[0-9]\+n[0-9]\+$')
 cache_records=()
 aux_records=()
 
+# A dingo_cache VG whose LV is not mounted means a first run died between
+# vgcreate and mount. Counted and reported at exit (see finish) -- the old
+# behaviour skipped the device and said nothing, so the host kept running at a
+# fraction of its cache capacity and the playbook stayed green.
+# lvm_repair=true makes this script activate and mount such volumes instead of
+# just reporting them; it is opt-in because an operator who unmounted a cache
+# disk on purpose should not have it mounted back underneath them.
+half_provisioned=0
+LVM_REPAIR={{ lvm_repair | bool | lower }}
+
+finish() {
+    if [ "$half_provisioned" -gt 0 ]; then
+        echo ""
+        echo "ERROR: $half_provisioned dingo_cache volume group(s) exist but are not mounted."
+        echo "       This host is half-provisioned and will serve a fraction of its cache"
+        echo "       capacity. Mount them by hand, or re-run with -e lvm_repair=true to let"
+        echo "       this script activate and mount them."
+        exit 1
+    fi
+    echo "=== DingoFS Cache LVM setup completed ==="
+}
+
 for dev in $devices; do
     path="/dev/$dev"
 
@@ -30,21 +52,87 @@ for dev in $devices; do
         continue
     fi
 
-    # Skip if in excluded volume groups
+    # Skip if in excluded volume groups.
+    # grep -q, NOT grep -qw: "_" is a word character, so -w made the check
+    # below never match the VGs this role creates itself (measured:
+    # `grep -qw dingo_cache` does not match "dingo_cache_1"). lvm_data already
+    # uses the plain form (setup_lvm_data.sh.j2:80).
 {% for vg in lvm_skip_vg_names %}
-    if pvs --noheadings -o vg_name "$path" 2>/dev/null | grep -qw "{{ vg }}"; then
+    if pvs --noheadings -o vg_name "$path" 2>/dev/null | grep -q "{{ vg }}"; then
         echo "Skipping $path (in VG {{ vg }})"
         continue
     fi
 {% endfor %}
 
-    # Skip if already in a dingo_cache VG
-    if pvs --noheadings -o vg_name "$path" 2>/dev/null | grep -qw "{{ lvm_vg_prefix }}"; then
-        echo "Skipping $path (already in a {{ lvm_vg_prefix }} VG)"
+    # Already in one of our VGs? Then do not just skip it -- check that it is
+    # actually mounted, and say so when it is not (see half_provisioned).
+    if vg=$(pvs --noheadings -o vg_name "$path" 2>/dev/null | tr -d ' ' | grep "{{ lvm_vg_prefix }}"); then
+        # Aux is matched first: its name ({{ lvm_aux_vg_name }}) also starts
+        # with the prefix, so the numbered pattern alone would not order them.
+        case "$vg" in
+            {{ lvm_aux_vg_name }}) mp="{{ lvm_aux_mount }}" ;;
+            {{ lvm_vg_prefix }}_[0-9]*) mp="{{ lvm_mount_prefix }}${vg##*_}" ;;
+            *)
+                echo "Skipping $path (in VG $vg, which this role does not manage)"
+                continue
+                ;;
+        esac
+        # Report where it is mounted, not where we expect it: the two differ
+        # when someone moved a mount by hand, and the honest one is useful.
+        mounted_at=$(findmnt -rno TARGET "/dev/$vg/{{ lvm_lv_name }}" 2>/dev/null | head -n1)
+        if [ -n "$mounted_at" ]; then
+            echo "Skipping $path (VG $vg already mounted at $mounted_at)"
+        elif [ "$LVM_REPAIR" = "true" ]; then
+            echo "Repairing $path: VG $vg exists but $mp is not mounted"
+            vgchange -ay "$vg" || { echo "Error: cannot activate $vg"; exit 1; }
+            mkdir -p "$mp"
+            mount "/dev/$vg/{{ lvm_lv_name }}" "$mp" || { echo "Error: mount $mp failed"; exit 1; }
+            if ! grep -q "/dev/$vg/{{ lvm_lv_name }}" /etc/fstab; then
+                echo "/dev/$vg/{{ lvm_lv_name }} $mp {{ lvm_fs_type }} defaults 0 0" >> /etc/fstab
+            fi
+        else
+            echo "HALF-PROVISIONED $path: VG $vg exists but $mp is not mounted"
+            half_provisioned=$((half_provisioned + 1))
+        fi
         continue
     fi
 
-    size_bytes=$(blockdev --getsize64 "$path")
+    # Safety gate: never claim a device that already holds data. "Not mounted"
+    # is not "empty" -- a filesystem that happens to be unmounted right now (a
+    # failed fstab entry, a maintenance umount), a disk carrying a VG from
+    # another host, and a hand-partitioned disk all look exactly like a blank
+    # NVMe to the two checks above. lvm_data has had this gate all along
+    # (setup_lvm_data.sh.j2:92); without it the only thing protecting a shared
+    # Ceph RBD whose VG holds dozens of live PVCs is one string comparison on
+    # the VG name.
+    # Two things the reason string has to get right, both learned by running
+    # this against hd02-gpu1-0022:
+    #   - blkid succeeds for a bare partition table too, and reports it as
+    #     PTTYPE with an empty TYPE. Printing only TYPE gave the useless
+    #     "has fs signature: " and sent the operator looking for a filesystem
+    #     that is not there. Ask for both tags.
+    #   - The second check is not only about partitions: lsblk lists an LVM LV
+    #     as a child of its PV exactly like a partition, so it either needs to
+    #     say "child devices" or it will mislabel an LVM disk. (It is a net for
+    #     cases blkid cannot see: md/crypt members, foreign metadata.)
+    # Set lvm_force=true to deliberately reuse disks with stale signatures.
+    if [ "{{ lvm_force | bool | lower }}" != "true" ]; then
+        if blkid "$path" >/dev/null 2>&1; then
+            signature=$(blkid -o value -s TYPE -s PTTYPE "$path" 2>/dev/null | grep -v '^$' | head -n1)
+            echo "Skipping $path (existing signature: ${signature:-unknown}; set lvm_force=true to wipe)"
+            continue
+        fi
+        if [ -n "$(lsblk -rno NAME "$path" | tail -n +2)" ]; then
+            echo "Skipping $path (has child devices; set lvm_force=true to wipe)"
+            continue
+        fi
+    fi
+
+    # Abort here rather than fall through: an empty $size_bytes makes the
+    # numeric comparison below fail (rc 2) and the else branch then files the
+    # device under CACHE records -- i.e. a disk we cannot even measure would
+    # have been formatted.
+    size_bytes=$(blockdev --getsize64 "$path") || { echo "Error: cannot read size of $path"; exit 1; }
     size=$(numfmt --to=iec --format %.1f --suffix=B "$size_bytes" | sed 's/B//')
     if [ "$size_bytes" -lt "$MIN_CACHE_BYTES" ]; then
         echo "Found aux device: $path ($size, below {{ lvm_min_cache_disk_gb }}GB) -> {{ lvm_aux_mount }}"
@@ -57,6 +145,7 @@ done
 
 if [ {% raw %}${#cache_records[@]}{% endraw %} -eq 0 ] && [ {% raw %}${#aux_records[@]}{% endraw %} -eq 0 ]; then
     echo "No unused NVMe devices found. Nothing to do."
+    finish
     exit 0
 fi
 
@@ -108,7 +197,7 @@ fi
 if [ {% raw %}${#sorted_cache_records[@]}{% endraw %} -eq 0 ]; then
     echo ""
     echo "No cache-sized devices (>= {{ lvm_min_cache_disk_gb }}GB) found. Only aux mount created."
-    echo "=== DingoFS Cache LVM setup completed ==="
+    finish
     exit 0
 fi
 
@@ -149,4 +238,4 @@ for record in "${sorted_cache_records[@]}"; do
     index=$((index + 1))
 done
 
-echo "=== DingoFS Cache LVM setup completed ==="
+finish

@@ -14,3 +14,15 @@ lvm_mount_prefix: /mnt/disk
 lvm_min_cache_disk_gb: 1000
 lvm_aux_vg_name: dingo_cache_aux
 lvm_aux_mount: /mnt/aux
+
+# The setup script refuses to touch any device that already carries a filesystem
+# signature or a partition table (see templates/setup_lvm.sh.j2). Flip this to
+# true only to deliberately reclaim disks whose old signatures are known junk.
+lvm_force: false
+
+# When a dingo_cache VG exists but its LV is not mounted (a first run that died
+# between vgcreate and mount), the script reports the host as half-provisioned
+# and exits non-zero. Set this to true to have it activate and mount those
+# volumes instead. Off by default: an operator who unmounted a cache disk on
+# purpose should not have it mounted back underneath them.
+lvm_repair: false

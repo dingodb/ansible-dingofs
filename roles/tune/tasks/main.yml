@@ -7,17 +7,21 @@
 # =========================
 # CPU governor
 # =========================
+# Two mechanisms, and neither is reliable on its own:
+#   - cpupower fails on intel_pstate hosts ("Error: Setting cpu frequency failed")
+#   - a sysfs write only reaches CPUs that expose scaling_governor
+# So: read the current value, try cpupower, fall back to sysfs for every CPU,
+# then read the value BACK and assert on it.
+#
+# The assertion is the point. The sysfs task used to be `with_fileglob`, which
+# expands on the CONTROL node: from a controller without cpufreq (any laptop or
+# VM) the list was empty, the task reported ok, and the governor was never
+# written on any target. A task that reads its own result back cannot pass
+# while doing nothing.
 - name: Check if cpupower is available
   command: which cpupower
   register: cpupower_check
   changed_when: false
-  failed_when: false
-
-- name: Set CPU governor to performance using cpupower
-  command: cpupower frequency-set -g performance
-  when: cpupower_check.rc == 0
-  register: cpupower_set
-  changed_when: cpupower_set.rc == 0
   failed_when: false
 
 - name: Check if CPU frequency scaling is available (sysfs)
@@ -31,13 +35,63 @@
   register: cpu_governor_current
   when: cpufreq_dir.stat.exists
 
-- name: Set CPU governor to performance (sysfs)
-  shell: echo performance > "{{ item }}"
-  with_fileglob: /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor
+- name: Determine whether the CPU governor needs changing
+  set_fact:
+    tune_governor_needs_update: >-
+      {{ cpufreq_dir.stat.exists
+         and (cpu_governor_current.content | b64decode | trim) != 'performance' }}
+
+- name: Set CPU governor to performance using cpupower
+  command: cpupower frequency-set -g performance
+  register: cpupower_set
+  when:
+    - cpupower_check.rc == 0
+    - tune_governor_needs_update | bool
+  changed_when: cpupower_set.rc == 0
+  # Deliberately not fatal: on intel_pstate hosts this command fails and the
+  # sysfs write below is the fallback. The assert at the end decides.
+  failed_when: false
+
+- name: Set CPU governor to performance (sysfs, every CPU)
+  shell: |
+    set -e
+    for f in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+      if [ -w "$f" ]; then
+        echo performance > "$f"
+      fi
+    done
+  args:
+    executable: /bin/bash
   when:
     - cpufreq_dir.stat.exists
-    - (cpu_governor_current.content | b64decode | trim) != "performance"
+    - tune_governor_needs_update | bool
   changed_when: true
+  failed_when: false
+
+- name: Read the CPU governor back
+  slurp:
+    src: /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor
+  register: cpu_governor_after
+  when: tune_governor_needs_update | bool
+
+- name: Assert the CPU governor is actually performance
+  assert:
+    that:
+      # Substring, not the bracketed form. `scaling_governor` holds the bare
+      # name -- "performance" -- while the bracketed one ("always [madvise]
+      # never") belongs to THP's `enabled` file a few tasks up. Asserting on
+      # "[performance]" made this task fail on a host where the governor had
+      # just been set correctly (measured on bj09-gpu-p800-0062), i.e. it
+      # reported exactly the failure this task exists to rule out.
+      - "'performance' in (cpu_governor_after.content | b64decode)"
+    fail_msg: >-
+      The CPU governor reads "{{ cpu_governor_after.content | b64decode | trim }}"
+      after both cpupower and the sysfs write were tried on a host that has
+      /sys/devices/system/cpu/cpu0/cpufreq. Reporting ok here would mean
+      latency-sensitive cache/MDS threads run throttled with nobody told, so
+      this fails on purpose.
+    success_msg: "CPU governor is performance"
+  when: tune_governor_needs_update | bool
 
 # =========================
 # Ulimits (check each line, only add if absent or wrong)
@@ -177,12 +231,9 @@
 # =========================
 # CPU idle states (check before setting)
 # =========================
-- name: Check if cpupower is available
-  command: which cpupower
-  register: cpupower_check
-  changed_when: false
-  failed_when: false
-
+# cpupower_check is registered once, in the CPU governor section above; the
+# copy that used to sit here ran the same `which cpupower` a second time and
+# threw the first result away.
 - name: Read current CPU idle state config
   shell: cpupower idle-info 2>/dev/null | grep -c 'DISABLED'
   register: cpuidle_disabled_count
