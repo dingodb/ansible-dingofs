@@ -50,6 +50,14 @@
   shell: /tmp/setup_lvm_dingo_cache.sh
   register: lvm_setup_result
   # No `when` here on purpose -- see the pre-flight comment above.
+  #
+  # `changed_when` from the script's own output, not the default "the command
+  # ran". The script now always runs, so the default would report changed on
+  # every play -- on a host where it skipped every device and touched nothing.
+  changed_when: >-
+    'Successfully set up LVM' in lvm_setup_result.stdout or
+    'Aux disk(s) set up' in lvm_setup_result.stdout or
+    'Repairing ' in lvm_setup_result.stdout
 
 - name: Display LVM setup output
   debug:
