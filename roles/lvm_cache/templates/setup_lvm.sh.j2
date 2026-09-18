@@ -21,6 +21,28 @@ devices=$(lsblk -lno NAME | grep '^nvme[0-9]\+n[0-9]\+$')
 cache_records=()
 aux_records=()
 
+# A dingo_cache VG whose LV is not mounted means a first run died between
+# vgcreate and mount. Counted and reported at exit (see finish) -- the old
+# behaviour skipped the device and said nothing, so the host kept running at a
+# fraction of its cache capacity and the playbook stayed green.
+# lvm_repair=true makes this script activate and mount such volumes instead of
+# just reporting them; it is opt-in because an operator who unmounted a cache
+# disk on purpose should not have it mounted back underneath them.
+half_provisioned=0
+LVM_REPAIR={{ lvm_repair | bool | lower }}
+
+finish() {
+    if [ "$half_provisioned" -gt 0 ]; then
+        echo ""
+        echo "ERROR: $half_provisioned dingo_cache volume group(s) exist but are not mounted."
+        echo "       This host is half-provisioned and will serve a fraction of its cache"
+        echo "       capacity. Mount them by hand, or re-run with -e lvm_repair=true to let"
+        echo "       this script activate and mount them."
+        exit 1
+    fi
+    echo "=== DingoFS Cache LVM setup completed ==="
+}
+
 for dev in $devices; do
     path="/dev/$dev"
 
@@ -42,9 +64,36 @@ for dev in $devices; do
     fi
 {% endfor %}
 
-    # Skip if already in a {{ lvm_vg_prefix }} VG
-    if pvs --noheadings -o vg_name "$path" 2>/dev/null | grep -q "{{ lvm_vg_prefix }}"; then
-        echo "Skipping $path (already in a {{ lvm_vg_prefix }} VG)"
+    # Already in one of our VGs? Then do not just skip it -- check that it is
+    # actually mounted, and say so when it is not (see half_provisioned).
+    if vg=$(pvs --noheadings -o vg_name "$path" 2>/dev/null | tr -d ' ' | grep "{{ lvm_vg_prefix }}"); then
+        # Aux is matched first: its name ({{ lvm_aux_vg_name }}) also starts
+        # with the prefix, so the numbered pattern alone would not order them.
+        case "$vg" in
+            {{ lvm_aux_vg_name }}) mp="{{ lvm_aux_mount }}" ;;
+            {{ lvm_vg_prefix }}_[0-9]*) mp="{{ lvm_mount_prefix }}${vg##*_}" ;;
+            *)
+                echo "Skipping $path (in VG $vg, which this role does not manage)"
+                continue
+                ;;
+        esac
+        # Report where it is mounted, not where we expect it: the two differ
+        # when someone moved a mount by hand, and the honest one is useful.
+        mounted_at=$(findmnt -rno TARGET "/dev/$vg/{{ lvm_lv_name }}" 2>/dev/null | head -n1)
+        if [ -n "$mounted_at" ]; then
+            echo "Skipping $path (VG $vg already mounted at $mounted_at)"
+        elif [ "$LVM_REPAIR" = "true" ]; then
+            echo "Repairing $path: VG $vg exists but $mp is not mounted"
+            vgchange -ay "$vg" || { echo "Error: cannot activate $vg"; exit 1; }
+            mkdir -p "$mp"
+            mount "/dev/$vg/{{ lvm_lv_name }}" "$mp" || { echo "Error: mount $mp failed"; exit 1; }
+            if ! grep -q "/dev/$vg/{{ lvm_lv_name }}" /etc/fstab; then
+                echo "/dev/$vg/{{ lvm_lv_name }} $mp {{ lvm_fs_type }} defaults 0 0" >> /etc/fstab
+            fi
+        else
+            echo "HALF-PROVISIONED $path: VG $vg exists but $mp is not mounted"
+            half_provisioned=$((half_provisioned + 1))
+        fi
         continue
     fi
 
@@ -96,6 +145,7 @@ done
 
 if [ {% raw %}${#cache_records[@]}{% endraw %} -eq 0 ] && [ {% raw %}${#aux_records[@]}{% endraw %} -eq 0 ]; then
     echo "No unused NVMe devices found. Nothing to do."
+    finish
     exit 0
 fi
 
@@ -147,7 +197,7 @@ fi
 if [ {% raw %}${#sorted_cache_records[@]}{% endraw %} -eq 0 ]; then
     echo ""
     echo "No cache-sized devices (>= {{ lvm_min_cache_disk_gb }}GB) found. Only aux mount created."
-    echo "=== DingoFS Cache LVM setup completed ==="
+    finish
     exit 0
 fi
 
@@ -188,4 +238,4 @@ for record in "${sorted_cache_records[@]}"; do
     index=$((index + 1))
 done
 
-echo "=== DingoFS Cache LVM setup completed ==="
+finish

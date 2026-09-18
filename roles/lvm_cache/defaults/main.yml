@@ -19,3 +19,10 @@ lvm_aux_mount: /mnt/aux
 # signature or a partition table (see templates/setup_lvm.sh.j2). Flip this to
 # true only to deliberately reclaim disks whose old signatures are known junk.
 lvm_force: false
+
+# When a dingo_cache VG exists but its LV is not mounted (a first run that died
+# between vgcreate and mount), the script reports the host as half-provisioned
+# and exits non-zero. Set this to true to have it activate and mount those
+# volumes instead. Off by default: an operator who unmounted a cache disk on
+# purpose should not have it mounted back underneath them.
+lvm_repair: false
