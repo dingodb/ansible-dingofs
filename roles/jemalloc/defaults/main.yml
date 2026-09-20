@@ -1,7 +1,17 @@
 ---
 jemalloc_version: "5.3.0"
 jemalloc_tarball: "jemalloc-{{ jemalloc_version }}.tar.bz2"
+
+# The tarball is fetched on the CONTROL node and then pushed to every target by
+# the copy task in tasks/main.yml -- so a 72-host run downloads it once, not 72
+# times. Both variables below are control-node paths.
+jemalloc_download_url: "https://github.com/jemalloc/jemalloc/releases/download/{{ jemalloc_version }}/{{ jemalloc_tarball }}"
 jemalloc_local_src: "/root/dingofs/pkg/{{ jemalloc_tarball }}"
+
+# Set true to skip the download entirely and require a pre-staged tarball at
+# jemalloc_local_src (air-gapped control nodes).
+jemalloc_use_local_pkg: false
+
 jemalloc_remote_dir: /root/dingofs/pkg
 jemalloc_configure_opts: "--enable-prof"
 jemalloc_lib_path: /usr/local/lib/libjemalloc.so.2

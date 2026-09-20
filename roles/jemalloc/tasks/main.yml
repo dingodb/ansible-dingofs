@@ -4,6 +4,86 @@
 # Requires: gcc, make (installed by cache_prepare role)
 # ============================================================
 
+# --- Stage the tarball on the CONTROL node, once, before any per-host gate ---
+#
+# Deliberately a TOP-LEVEL task, not part of the per-host "already installed"
+# block below. run_once picks the first host in the play and runs there; while
+# this sat inside that block, the first host had jemalloc already, skipped the
+# whole block, and the resulting skip ("{changed: false, skipped: true}", which
+# has no `stat` key) was propagated as _jemalloc_ready to every other host. The
+# one host that DID need jemalloc then died on
+#   The conditional check '_jemalloc_ready.stat.exists' failed ... 'dict object'
+#   has no attribute 'stat'
+# and the rescue below turned that into a misleading "download failed" message
+# (measured on bj11-gpu-300b-0041, 2026-09-20). Hoisting it keeps the run_once
+# scope free of per-host conditions.
+- name: Prepare jemalloc tarball on the control node
+  block:
+    - name: Look for a pre-staged jemalloc tarball on the control node
+      stat:
+        path: "{{ jemalloc_local_src }}"
+      register: _jemalloc_staged
+      delegate_to: localhost
+      run_once: true
+      become: false
+
+    - name: Create the package directory on the control node
+      file:
+        path: "{{ jemalloc_local_src | dirname }}"
+        state: directory
+        mode: "0755"
+      delegate_to: localhost
+      run_once: true
+      become: false
+
+    # get_url without delegate_to runs on EVERY target: N downloads of the same
+    # public tarball, and it requires every cache node to reach GitHub. This is
+    # a cache fleet of 70+ hosts, so that is both wasteful and fragile.
+    # Delegating to localhost + run_once pulls it a single time; the copy task
+    # in the build block below then pushes it out over the internal network,
+    # like every other artifact the roles stage under {{ jemalloc_remote_dir }}.
+    #
+    # Skipped when the tarball is already there, so re-running a play does not
+    # hit the network again.
+    - name: Download jemalloc tarball to the control node
+      get_url:
+        url: "{{ jemalloc_download_url }}"
+        dest: "{{ jemalloc_local_src }}"
+        mode: "0644"
+      delegate_to: localhost
+      run_once: true
+      become: false
+      when:
+        - not _jemalloc_staged.stat.exists
+        - not (jemalloc_use_local_pkg | default(false) | bool)
+        - jemalloc_download_url | default('') | length > 0
+
+    - name: Re-check the tarball on the control node
+      stat:
+        path: "{{ jemalloc_local_src }}"
+      register: _jemalloc_ready
+      delegate_to: localhost
+      run_once: true
+      become: false
+
+    - name: Assert the jemalloc tarball is available on the control node
+      assert:
+        that:
+          - _jemalloc_ready.stat.exists
+        fail_msg: >-
+          No jemalloc tarball on the control node at {{ jemalloc_local_src }},
+          and the download did not produce one.
+  rescue:
+    - name: Explain how to recover from a failed download
+      fail:
+        msg: >-
+          Could not obtain the jemalloc tarball on the control node.
+          The download from {{ jemalloc_download_url }} failed and nothing
+          exists at {{ jemalloc_local_src }}.
+          Either let this control node reach the download URL, point
+          jemalloc_download_url at a mirror it can reach, or pre-stage the
+          tarball at that path and set jemalloc_use_local_pkg: true.
+
 # --- Check if already installed ---
 - name: Check if jemalloc is already installed
   stat:
