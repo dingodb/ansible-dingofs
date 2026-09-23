@@ -38,15 +38,23 @@
         msg: "{{ inventory_hostname }}: port {{ dingo_cache_listen_port }} is {{ 'open' if port_check is success else 'closed' }}"
 
     # Which disks hold cache data depends on how they were discovered: a
-    # dingo_cache_* LVM volume group, or mounts under dingo_cache_mount_prefix
-    # on hosts that share their disks with another role. Report whichever
-    # applies. The previous version only looked for the VGs and printed "not
-    # found" for the prefix case, which reads like a problem when it is the
+    # dingo_cache_* LVM volume group, or mounts under dingo_cache_data_prefix /
+    # dingo_cache_log_prefix (plus the deprecated dingo_cache_mount_prefix
+    # fallback) on hosts that share their disks with another role. Report
+    # whichever applies. The previous version only looked for the VGs and printed
+    # "not found" for the prefix case, which reads like a problem when it is the
     # expected layout.
     - name: Show cache disks
       shell: |
-        {% if dingo_cache_mount_prefix | default('') | length > 0 %}
-        df -hT {{ dingo_cache_mount_prefix }}* 2>/dev/null || echo 'No mounts under {{ dingo_cache_mount_prefix }}'
+        {% set _data_p = dingo_cache_data_prefix | default(dingo_cache_mount_prefix | default('')) %}
+        {% set _log_p = dingo_cache_log_prefix | default(dingo_cache_mount_prefix | default('')) %}
+        {% if _data_p | length > 0 or _log_p | length > 0 %}
+        {% if _data_p | length > 0 %}
+        df -hT {{ _data_p }}* 2>/dev/null || echo 'No mounts under {{ _data_p }}'
+        {% endif %}
+        {% if _log_p | length > 0 and _log_p != _data_p %}
+        df -hT {{ _log_p }}* 2>/dev/null || echo 'No mounts under {{ _log_p }}'
+        {% endif %}
         {% else %}
         vgs --noheadings -o vg_name,vg_size 2>/dev/null | grep '{{ lvm_vg_prefix }}' || echo 'No dingo_cache VGs found'
         df -h | grep '{{ lvm_vg_prefix }}' || true

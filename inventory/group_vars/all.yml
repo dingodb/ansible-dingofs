@@ -163,10 +163,15 @@ dingo_cache_log_v: 0
 dingo_cache_ld_preload: /usr/local/lib/libjemalloc.so.2
 dingo_cache_ip_pattern: "192.168."
 
+dingo_cache_data_prefix: "/mnt/disk"
+dingo_cache_log_prefix: "/mnt/aux"
+dingo_cache_data_subdir: "dingofs/dingo-cache-v5.2"
+dingo_cache_log_subdir: "dingofs/logs/dingo-cache-v5.2"
+
 # Comma-separated cache directories (aligned with LVM mount points)
 # FALLBACK only — auto-discovery from mounted dingo_cache_* LVM volumes takes precedence.
-dingo_cache_cache_dirs: "/mnt/disk1/dingofs/dingo-cache,/mnt/disk2/dingofs/dingo-cache,/mnt/disk3/dingofs/dingo-cache"
-dingo_cache_log_dir: "/mnt/disk4/dingofs/logs/dingo-cache"
+#dingo_cache_cache_dirs: "/mnt/disk1/dingofs/dingo-cache,/mnt/disk2/dingofs/dingo-cache,/mnt/disk3/dingofs/dingo-cache"
+#dingo_cache_log_dir: "/mnt/disk4/dingofs/logs/dingo-cache"
 
 # MDS addresses (host:port pairs, comma-separated)
 dingo_cache_mds_addrs: "192.168.0.44:16900,192.168.0.44:16901,192.168.0.44:16902,192.168.0.45:16900,192.168.0.45:16901,192.168.0.45:16902,192.168.0.46:16900,192.168.0.46:16901,192.168.0.46:16902"
