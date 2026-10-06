@@ -12,6 +12,16 @@ lvm_mount_prefix: /mnt/disk
 # Matches dingo_cache_min_disk_gb semantics (1 GB = 10^9 bytes), so a 960GB
 # disk goes to aux while a 1TB disk stays a cache disk.
 lvm_min_cache_disk_gb: 1000
+
+# Lower bound for aux disks, in decimal GB. Anything below this is not a disk we
+# would ever pool: it is a stray namespace or metadata device that merely looks
+# free. Without the floor, "smaller than a cache disk" also matched a 510K
+# nvme4n2 namespace on the boot drive of bj11-gpu-300b-0026, and the script
+# pvcreate'd it (LVM refused, pv_min_size; nothing was written, but the exit
+# code took the node out of the play). Real aux disks are 3 orders of magnitude
+# above this.
+lvm_min_aux_disk_gb: 1
+
 lvm_aux_vg_name: dingo_cache_aux
 lvm_aux_mount: /mnt/aux
 

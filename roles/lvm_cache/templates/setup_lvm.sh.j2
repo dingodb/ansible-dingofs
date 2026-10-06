@@ -14,6 +14,16 @@ set -o pipefail
 # Disks below this size (decimal GB) are treated as aux disks.
 MIN_CACHE_BYTES={{ lvm_min_cache_disk_gb | int * 1000000000 }}
 
+# ...but only down to here. "Smaller than a cache disk" on its own also matches
+# junk that is not a disk at all: bj11-gpu-300b-0026 exposes a 510K nvme4n2
+# namespace alongside the boot drive nvme4n1, and it passes every other gate --
+# not mounted, no blkid signature, no child devices -- so it was filed as an aux
+# device and pvcreate'd. LVM refused it on its own (pv_min_size, 2 MiB by
+# default) so nothing was ever written, but the script exited 1 and took the
+# whole node out of the play. Every real aux disk we run is three orders of
+# magnitude above this floor.
+MIN_AUX_BYTES={{ lvm_min_aux_disk_gb | int * 1000000000 }}
+
 echo "=== Detecting unused NVMe devices ==="
 
 devices=$(lsblk -lno NAME | grep '^nvme[0-9]\+n[0-9]\+$')
@@ -134,6 +144,10 @@ for dev in $devices; do
     # have been formatted.
     size_bytes=$(blockdev --getsize64 "$path") || { echo "Error: cannot read size of $path"; exit 1; }
     size=$(numfmt --to=iec --format %.1f --suffix=B "$size_bytes" | sed 's/B//')
+    if [ "$size_bytes" -lt "$MIN_AUX_BYTES" ]; then
+        echo "Skipping $path ($size, below the {{ lvm_min_aux_disk_gb }}GB aux floor)"
+        continue
+    fi
     if [ "$size_bytes" -lt "$MIN_CACHE_BYTES" ]; then
         echo "Found aux device: $path ($size, below {{ lvm_min_cache_disk_gb }}GB) -> {{ lvm_aux_mount }}"
         aux_records+=("$size_bytes $path")
