@@ -34,14 +34,20 @@ dingo_cache_min_disk_gb: 1000
 # a group_vars value still wins, so no existing region changes behaviour.
 lvm_vg_prefix: dingo_cache
 
-# Second way to find cache disks: any mount whose mount point starts with this
-# prefix counts as a cache disk, alongside the dingo_cache_* LVM volumes.
-# Empty (default) = LVM volumes only, i.e. the original behaviour.
+# Second way to find cache disks: any mount whose mount point starts with the
+# data/log prefixes counts as a cache/log disk candidate, alongside the
+# dingo_cache_* LVM volumes. Empty (default) = LVM volumes only, i.e. the
+# original behaviour.
 #
-# Set it where dingo-cache shares disks with another role. Meta servers are the
-# case that motivated it: their /mnt/diskN already carries the cluster data, so
-# running lvm_cache would mount new volumes on top of those same paths.
-#   dingo_cache_mount_prefix: "/mnt/disk"    # picks up /mnt/disk0, /mnt/disk1, ...
+# Data and log prefixes are SEPARATE because they may live on different
+# devices -- e.g. data on /mnt/diskN but logs on /mnt/aux.
+#   dingo_cache_data_prefix: "/mnt/disk"    # picks up /mnt/disk0, /mnt/disk1, ...
+#   dingo_cache_log_prefix: "/mnt/aux"      # picks up the aux/log mount
+dingo_cache_data_prefix: ""
+dingo_cache_log_prefix: ""
+# DEPRECATED fallback: when the split prefixes above are empty, each falls
+# back to this single prefix (original behaviour). Prefer setting
+# dingo_cache_data_prefix / dingo_cache_log_prefix directly.
 dingo_cache_mount_prefix: ""
 dingo_cache_cache_size_mb: 3145728   # FALLBACK only — overridden by auto-selection when LVM mounts exist
 dingo_cache_free_space_ratio: "0.01"

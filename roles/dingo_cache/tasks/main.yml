@@ -102,6 +102,15 @@
       NUMA nodes: {{ dingo_cache_numa_node_count }},
       numactl: {{ 'enabled (bind to node ' + (dingo_cache_numa_node | default(0) | string) + ')' if dingo_cache_numa_enabled else 'skipped (single NUMA or numactl unavailable)' }}
 
+# --- Resolve effective data/log mount prefixes ---
+# dingo_cache_mount_prefix is the deprecated single-prefix fallback: each
+# split prefix defaults to it when empty, so existing inventories that only
+# set the old variable keep working unchanged.
+- name: Resolve effective data/log prefixes
+  set_fact:
+    _dingo_cache_data_prefix: "{{ dingo_cache_data_prefix | default('') if (dingo_cache_data_prefix | default('')) | length > 0 else (dingo_cache_mount_prefix | default('')) }}"
+    _dingo_cache_log_prefix: "{{ dingo_cache_log_prefix | default('') if (dingo_cache_log_prefix | default('')) | length > 0 else (dingo_cache_mount_prefix | default('')) }}"
+
 # --- Detect actual cache mount points (dynamic, per-host) ---
 # Always run: the uniform-spec selection below (measure mounts → exclude disks smaller
 # than dingo_cache_min_disk_gb → keep only the largest same-size group) takes
@@ -111,9 +120,12 @@
   shell: |
     {
       mount | grep '{{ lvm_vg_prefix }}_' | awk '{print $3}'
-      {% if dingo_cache_mount_prefix | length > 0 %}
+      {% if _dingo_cache_data_prefix | length > 0 %}
       # index(...) == 1 is a literal prefix test -- "^"p would treat the prefix as a regex
-      mount | awk -v p='{{ dingo_cache_mount_prefix }}' 'index($3, p) == 1 {print $3}'
+      mount | awk -v p='{{ _dingo_cache_data_prefix }}' 'index($3, p) == 1 {print $3}'
+      {% endif %}
+      {% if _dingo_cache_log_prefix | length > 0 and _dingo_cache_log_prefix != _dingo_cache_data_prefix %}
+      mount | awk -v p='{{ _dingo_cache_log_prefix }}' 'index($3, p) == 1 {print $3}'
       {% endif %}
     } | sort -u -V
   register: discovered_mounts
@@ -126,9 +138,10 @@
       - discovered_mounts.stdout_lines | length > 0
     fail_msg: >-
       No cache disks found on this host (neither mounted dingo_cache_* LVM volumes
-      nor a mount under dingo_cache_mount_prefix).
-      Either run cache_02_lvm.yml first, or point dingo_cache_mount_prefix at the
-      mount points that should hold cache data (for hosts where dingo-cache shares
+      nor a mount under dingo_cache_data_prefix / dingo_cache_log_prefix).
+      Either run cache_02_lvm.yml first, or point dingo_cache_data_prefix /
+      dingo_cache_log_prefix at the
+      mount points that should hold cache data / logs (for hosts where dingo-cache shares
       disks with another role).
       Failing fast here prevents dingo-cache from silently falling back to writing on the system disk.
 
@@ -136,7 +149,9 @@
 # Policy: (1) exclude disks smaller than dingo_cache_min_disk_gb (default 1000 GB) from caching,
 # (2) keep only the LARGEST same-spec group (disks within 1% of each other) so that a
 # single cache_size_mb = group_capacity × disk_usage_ratio applies to every selected disk,
-# (3) reuse the first excluded (small / mixed-spec) disk as the log disk.
+# (3) pick the log disk: a distinctly configured dingo_cache_log_prefix wins outright
+# (e.g. /mnt/aux while data lives on /mnt/diskN); otherwise reuse the first
+# excluded (small / mixed-spec) disk.
 # All selected disks share one cache_size_mb — no per-disk ":size" suffix needed.
 - name: Measure mounts and select uniform cache disk set
   shell: |
@@ -148,6 +163,8 @@
     ratio = {{ dingo_cache_disk_usage_ratio | float }}
     data_subdir = "{{ dingo_cache_data_subdir }}"
     log_subdir = "{{ dingo_cache_log_subdir }}"
+    log_prefix = "{{ _dingo_cache_log_prefix }}"
+    data_prefix = "{{ _dingo_cache_data_prefix }}"
 
     def gib(b):
         return "%.2f GiB" % (b / (1024.0 ** 3))
@@ -161,14 +178,25 @@
         print("  %-28s total=%s" % (mp, gib(total)))
 
     group = [d for d in disks if d[1] >= min_gb * (10**9)]
+    # A distinctly configured log prefix is reserved for logs -- never use
+    # those mounts as cache disks even when they are large enough to qualify.
+    if log_prefix and log_prefix != data_prefix:
+        group = [d for d in group if not d[0].startswith(log_prefix)]
     if group:
         largest = max(d[1] for d in group)
         group = [d for d in group if d[1] >= largest * 0.99]
 
     skipped = [d for d in disks if d not in group]
     size_mb = int(min(d[1] for d in group) * ratio / (1024 * 1024)) if group else 0
+    # Log disk: an explicitly configured, DISTINCT log prefix wins outright --
+    # e.g. data on /mnt/diskN but logs on /mnt/aux. Otherwise (single-prefix
+    # layout) reuse the first excluded (small / mixed-spec) disk as before.
     # empty string (not None) on purpose: ansible default('') does not catch null
-    log_dir = ("%s/%s" % (skipped[0][0], log_subdir)) if skipped else ""
+    log_mounts = sorted([mp for mp in mounts if log_prefix and mp.startswith(log_prefix)])
+    if log_prefix and log_prefix != data_prefix and log_mounts:
+        log_dir = "%s/%s" % (log_mounts[0], log_subdir)
+    else:
+        log_dir = ("%s/%s" % (skipped[0][0], log_subdir)) if skipped else ""
 
     result = {
         "dirs": ["%s/%s" % (d[0], data_subdir) for d in group],
