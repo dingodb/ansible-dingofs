@@ -517,10 +517,11 @@
 # --- Select uniform-spec cache disks (dynamic, per-host) ---
 # Policy: (1) exclude disks smaller than dingo_cache_min_disk_gb (default 1000 GB) from caching,
 # (2) keep only the LARGEST same-spec group (disks within 1% of each other) so that a
-# single cache_size_mb = group_capacity × disk_usage_ratio applies to every selected disk,
-# (3) pick the log disk: a distinctly configured dingo_cache_log_prefix wins outright
-# (e.g. /mnt/aux while data lives on /mnt/diskN); otherwise reuse the first
-# excluded (small / mixed-spec) disk.
+# single cache_size_mb = group_capacity × disk_usage_ratio applies to every selected disk.
+# A log prefix on a separate tree is still reserved for logs -- those mounts are
+# never used as cache disks -- but a log prefix nested inside the data prefix
+# stays a cache candidate under the normal size rule; the log dir itself
+# follows the prefix rule below, not disk measurement.
 # All selected disks share one cache_size_mb — no per-disk ":size" suffix needed.
 - name: Measure mounts and select uniform cache disk set
   shell: |
@@ -531,7 +532,6 @@
     min_gb = {{ dingo_cache_min_disk_gb | int }}
     ratio = {{ dingo_cache_disk_usage_ratio | float }}
     data_subdir = "{{ dingo_cache_data_subdir }}"
-    log_subdir = "{{ dingo_cache_log_subdir }}"
     log_prefix = "{{ _dingo_cache_log_prefix }}"
     data_prefix = "{{ _dingo_cache_data_prefix }}"
 
@@ -547,9 +547,16 @@
         print("  %-28s total=%s" % (mp, gib(total)))
 
     group = [d for d in disks if d[1] >= min_gb * (10**9)]
-    # A distinctly configured log prefix is reserved for logs -- never use
-    # those mounts as cache disks even when they are large enough to qualify.
-    if log_prefix and log_prefix != data_prefix:
+    # A log prefix on a SEPARATE tree is reserved for logs -- never use those
+    # mounts as cache disks even when large enough to qualify. But when the log
+    # prefix is nested inside the data prefix (e.g. data /mnt/disk + log
+    # /mnt/disk1), it is the same device tree: those mounts stay cache
+    # candidates under the normal size rule. Plain string-prefix test on
+    # purpose, matching how these prefixes are used everywhere else in this
+    # role (awk index() == 1 discovery, _data_p* shell globs).
+    if log_prefix and log_prefix != data_prefix \
+            and not log_prefix.startswith(data_prefix) \
+            and not data_prefix.startswith(log_prefix):
         group = [d for d in group if not d[0].startswith(log_prefix)]
     if group:
         largest = max(d[1] for d in group)
@@ -557,22 +564,14 @@
 
     skipped = [d for d in disks if d not in group]
     size_mb = int(min(d[1] for d in group) * ratio / (1024 * 1024)) if group else 0
-    # Log disk: an explicitly configured, DISTINCT log prefix wins outright --
-    # e.g. data on /mnt/diskN but logs on /mnt/aux. Otherwise (single-prefix
-    # layout) reuse the first excluded (small / mixed-spec) disk as before.
-    # empty string (not None) on purpose: ansible default('') does not catch null
-    log_mounts = sorted([mp for mp in mounts if log_prefix and mp.startswith(log_prefix)])
-    if log_prefix and log_prefix != data_prefix and log_mounts:
-        log_dir = "%s/%s" % (log_mounts[0], log_subdir)
-    else:
-        log_dir = ("%s/%s" % (skipped[0][0], log_subdir)) if skipped else ""
+    # NOTE: the log dir is NOT picked here -- it follows the prefix rule
+    # (effective log prefix, else /mnt/disk1, + dingo_cache_log_subdir).
 
     result = {
         "dirs": ["%s/%s" % (d[0], data_subdir) for d in group],
         "count": len(group),
         "size_mb": size_mb,
         "skipped": ["%s (%s)" % (d[0], gib(d[1])) for d in skipped],
-        "log_dir": log_dir,
     }
     print("JSON=" + json.dumps(result))
     PYEOF
@@ -603,10 +602,16 @@
     dingo_cache_group_weight: "{{ (_cache_sel.count | int) * (dingo_cache_weight_per_disk | int) }}"
   when: disk_selection is succeeded and _cache_sel.dirs | length > 0
 
-- name: Reuse first excluded (small / mixed-spec) disk for dingo-cache logs
+# --- Log dir: prefix rule (not disk measurement) ---
+# dingo_cache_log_dir = effective log prefix + dingo_cache_log_subdir when a
+# log prefix exists (_dingo_cache_log_prefix, i.e. dingo_cache_log_prefix else
+# the deprecated dingo_cache_mount_prefix), else /mnt/disk1 + subdir.
+# Unconditional: the log path is deterministic config, independent of which
+# disks qualified for caching. (An explicitly pinned dingo_cache_log_dir in
+# host_vars is superseded by this rule — pin via log_prefix/log_subdir.)
+- name: Set dingo-cache log dir from prefix rule
   set_fact:
-    dingo_cache_log_dir: "{{ _cache_sel.log_dir }}"
-  when: disk_selection is succeeded and _cache_sel.log_dir | default('') | length > 0
+    dingo_cache_log_dir: "{{ ((_dingo_cache_log_prefix | default('') | trim | regex_replace('/+$', '')) if ((_dingo_cache_log_prefix | default('') | trim) | length > 0) else '/mnt/disk1') + '/' + (dingo_cache_log_subdir | default('dingofs/logs/dingo-cache') | trim | regex_replace('^/+', '')) }}"
 
 - name: Log cache disk selection summary
   debug:

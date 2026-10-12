@@ -75,8 +75,8 @@
 
     - name: "Select preferred NUMA node for {{ dingo_client_fsname }}"
       set_fact:
-        _client_cpuset_node: "{{ _client_cpuset_explicit_node if (_client_cpuset_explicit_node | length > 0) else (_client_ib_preferred_node | default(dingo_client_numa_cpunode | default(1))) }}"
-        _client_cpuset_node_source: "{{ 'explicit override' if (_client_cpuset_explicit_node | length > 0) else ('host IB/memory decision' if (_client_ib_preferred_node is defined) else 'static default') }}"
+        _client_cpuset_node: "{{ _client_cpuset_explicit_node if (_client_cpuset_explicit_node | length > 0) else (_client_ib_preferred_node | default('')) }}"
+        _client_cpuset_node_source: "{{ 'explicit override' if (_client_cpuset_explicit_node | length > 0) else ('host IB/memory decision' if (_client_ib_preferred_node | default('') | length > 0) else 'auto (detector picks best node)') }}"
 
     - name: "Validate manually configured cpuset for {{ dingo_client_fsname }}"
       shell: |
@@ -180,8 +180,7 @@
     - name: "Keep existing cpuset for {{ dingo_client_fsname }} when it still validates"
       set_fact:
         dingo_client_cpuset_effective: "{{ _client_cpuset_existing.stdout | trim }}"
-        dingo_client_numa_cpunode_effective: "{{ ((_client_cpuset_recheck.stdout_lines | select('match', '^NODES=') | first | default('') | regex_replace('^NODES=', '') | trim | regex_replace(' .*', '')) or (dingo_client_numa_cpunode | default(1))) }}"
-        dingo_client_numa_memnode_effective: "{{ ((_client_cpuset_recheck.stdout_lines | select('match', '^NODES=') | first | default('') | regex_replace('^NODES=', '') | trim | regex_replace(' .*', '')) or (dingo_client_numa_memnode | default(1))) }}"
+        dingo_client_numa_cpunode_effective: "{{ ((_client_cpuset_recheck.stdout_lines | select('match', '^NODES=') | first | default('') | regex_replace('^NODES=', '') | trim | regex_replace(' .*', '')) or (_client_cpuset_node | default(''))) }}"
         _client_cpuset_source: "kept from existing mount script"
       when:
         - (_client_cpuset_manual | default('')) | length == 0
@@ -191,7 +190,7 @@
       shell: |
         /tmp/dingo-cpuset-detect.sh -S dingo-client \
           -s {{ _client_shards | int }} \
-          -n {{ _client_cpuset_node }} \
+          {{ ('-n ' + (_client_cpuset_node | string)) if (_client_cpuset_node | default('') | string | trim | length > 0) else '' }} \
           -b {{ dingo_client_cpuset_busy_pct | int }} \
           -x "{{ dingo_client_cpusets_claimed | default([]) | join(',') }}" \
           {{ '--siblings' if dingo_client_cpuset_include_siblings | default(false) | bool else '' }}
@@ -262,8 +261,7 @@
     - name: "Force best-effort cpuset for {{ dingo_client_fsname }} from occupied CPUs"
       set_fact:
         dingo_client_cpuset_effective: "{{ _client_cpuset_winner.stdout_lines | select('match', '^FORCED=') | first | default('FORCED=NONE') | regex_replace('^FORCED=', '') | trim }}"
-        dingo_client_numa_cpunode_effective: "{{ ((_client_cpuset_winner.stdout_lines | select('match', '^FORCED_NODE=') | first | default('') | regex_replace('^FORCED_NODE=', '') | trim) or (dingo_client_numa_cpunode | default(1))) }}"
-        dingo_client_numa_memnode_effective: "{{ ((_client_cpuset_winner.stdout_lines | select('match', '^FORCED_NODE=') | first | default('') | regex_replace('^FORCED_NODE=', '') | trim) or (dingo_client_numa_memnode | default(1))) }}"
+        dingo_client_numa_cpunode_effective: "{{ ((_client_cpuset_winner.stdout_lines | select('match', '^FORCED_NODE=') | first | default('') | regex_replace('^FORCED_NODE=', '') | trim) or (_client_cpuset_node | default(''))) }}"
         _client_cpuset_source: "FORCED overlap — no free CPUs left on this host, shards WILL contend with whatever runs there. Free CPUs or add capacity ASAP."
         _client_cpuset_forced: true
       when:
@@ -295,11 +293,7 @@
         dingo_client_numa_cpunode_effective: >-
           {{ (_client_cpuset_winner.stdout_lines | select('match', '^NODE=') | first | default('') | regex_replace('^NODE=', ''))
              if (_client_cpuset_manual | default('')) | length == 0 and _client_cpuset_winner.rc == 0
-             else (dingo_client_numa_cpunode | default(1)) }}
-        dingo_client_numa_memnode_effective: >-
-          {{ (_client_cpuset_winner.stdout_lines | select('match', '^NODE=') | first | default('') | regex_replace('^NODE=', '') | trim | regex_replace(' .*', ''))
-             if (_client_cpuset_manual | default('')) | length == 0 and _client_cpuset_winner.rc == 0
-             else (dingo_client_numa_memnode | default(1)) }}
+             else (_client_cpuset_node | default('')) }}
       when:
         - _client_cpuset_recheck.rc is not defined or _client_cpuset_recheck.rc != 0
         - (_client_cpuset_forced | default(false)) == false
