@@ -57,9 +57,58 @@ dingo_cache_log_v: 0
 dingo_cache_ld_preload: /usr/local/lib/libjemalloc.so.2
 dingo_cache_ip_pattern: "192.168."
 
-# NUMA binding: which NUMA node to bind dingo-cache to.
-# NOTE: Only effective on multi-NUMA machines. Single-NUMA VMs/small hosts skip numactl automatically.
+# NUMA node fallback (v5.2: no numactl binding — the start script runs unbound).
+# Only used as the last-resort preferred node when neither an explicit
+# dingo_cache_cpuset_numa_node nor any per-node memory data exists (e.g. VMs).
 dingo_cache_numa_node: 0
+
+# --- CPU pinning (v5.2+: --shards/--pin_cpu/--cpuset) ---
+dingo_cache_shards: 8
+dingo_cache_pin_cpu: true
+# Manual override: a range ("32-63") or an explicit CPU list
+# ("37,39,43,46-49,53" — e.g. the least-busy CPUs from a cpuset-check.sh
+# fallback suggest). Empty (default) = auto-detect per host at deploy time.
+# Overlap with claimed CPUs follows dingo_cache_cpuset_on_insufficient below
+# (fail stops, warn drops the list to auto-detect, force pins it anyway);
+# offline CPUs always fail. Set ONLY per host in host_vars, never fleet-wide.
+dingo_cache_cpuset: ""
+# Preferred NUMA node for the auto-detected cpuset. Empty (default) = AUTO:
+# the NUMA node of dingo_cache_rdma_device
+# (/sys/class/net/<device>/device/numa_node), unless that node is hotter than
+# dingo_cache_ib_node_mem_max_pct — then the coolest node under the threshold.
+# Set this ONLY to override the IB/memory decision per host or inventory.
+dingo_cache_cpuset_numa_node: ""
+# A node more memory-used than this % is skipped as preferred (bootstrap OOM
+# risk); the deploy warns LOUDLY when every node is hotter than this.
+dingo_cache_ib_node_mem_max_pct: 50
+# CPUs busier than this % (mpstat 1s sample, skipped when sysstat is absent)
+# are excluded from auto-detection.
+dingo_cache_cpuset_busy_pct: 30
+# fail|warn|force when a node cannot offer <shards> free whole cores on the
+# preferred NUMA node — and when a MANUAL dingo_cache_cpuset overlaps claimed
+# CPUs. fail = stop the deploy. warn = keep going WITHOUT --cpuset (cache still
+# starts, just unpinned) — use only to survey a fleet; an overlapping manual
+# list is dropped back to auto-detect instead.
+# force = pin onto OCCUPIED CPUs anyway (least-busy pick by sampled usage,
+# so the service still starts on fully-shared boxes; shards will contend until
+# CPUs are freed. Only fail-vs-host-too-small still stops a force deploy.
+dingo_cache_cpuset_on_insufficient: fail
+# When true, the auto-detected cpuset expands to all sibling threads of the
+# selected cores; false (default) keeps first-thread ids only, i.e. one shard
+# per physical core with no hyperthread sharing.
+dingo_cache_cpuset_include_siblings: false
+
+# --- RDMA (v5.2+: --use_rdma/--cache_rdma_device/--cache_rdma_port_num/--buffer_pool_mb/--rdma_idle_timeout_s) ---
+dingo_cache_use_rdma: true
+dingo_cache_rdma_device: ib6s200p0
+dingo_cache_rdma_port_num: 1
+dingo_cache_buffer_pool_mb: 1024
+dingo_cache_rdma_idle_timeout_s: 300
+
+# --- Poll mode (v5.2+: --poll_mode) ---
+# Poll mode busy-spins the selected CPUs — only meaningful together with
+# pin_cpu + an isolated/free cpuset. Turn off on shared/undersized hosts.
+dingo_cache_poll_mode: true
 
 # Sub-directories (relative to each cache mount point / log disk) used by the
 # auto-selection logic. Default is UNVERSIONED (dingofs/dingo-cache): the block

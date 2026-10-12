@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-set -x
 
 g_dingo="{{ dingo_client_base_dir }}/bin/dingo"
 g_fuse="{{ dingo_client_base_dir }}/bin/dingo-client"
@@ -40,9 +39,10 @@ else
     fi
 fi
 
+# v5.2: no numactl binding — locality comes from pinning --cpuset CPUs on the
+# right NUMA node (the RDMA device's node, memory permitting) at deploy time.
 LD_PRELOAD={{ dingo_client_ld_preload }} \
-{% if dingo_client_numa_enabled | default(false) %}    numactl --cpunodebind={{ dingo_client_numa_cpunode | default(0) }} --membind={{ dingo_client_numa_memnode | default(0) }} \
-{% endif %}    ${g_fuse} "mds://${g_mdsaddr}/${g_fsname}" "${g_mnt}" \
+    ${g_fuse} "mds://${g_mdsaddr}/${g_fsname}" "${g_mnt}" \
     --log_dir=${g_log} \
     --log_level={{ dingo_client_log_level }} \
     --log_v={{ dingo_client_log_v }} \
@@ -53,8 +53,16 @@ LD_PRELOAD={{ dingo_client_ld_preload }} \
     --vfs_write_buffer_total_mb={{ dingo_client_vfs_write_buffer_total_mb }} \
     --vfs_dummy_server_port=${g_port} \
     --vfs_prefetch_blocks={{ dingo_client_vfs_prefetch_blocks }} \
-    --connections={{ dingo_client_connections }} \
     --fuse_max_threads={{ dingo_client_fuse_max_threads }} \
     --fuse_enable_readdir_cache={{ dingo_client_fuse_enable_readdir_cache }} \
     --fuse_attr_cache_timeout_s={{ dingo_client_fuse_attr_cache_timeout_s }} \
-    --fuse_entry_cache_timeout_s={{ dingo_client_fuse_entry_cache_timeout_s }}
+    --fuse_entry_cache_timeout_s={{ dingo_client_fuse_entry_cache_timeout_s }} \
+    --shards={{ _client_shards | default(dingo_client_shards | default(8)) }} \
+    --pin_cpu={{ 'true' if dingo_client_pin_cpu | default(true) | bool else 'false' }} \
+{% if dingo_client_pin_cpu | default(true) | bool and dingo_client_cpuset_effective | default('') | length > 0 and dingo_client_cpuset_effective != 'NONE' %}
+    --cpuset={{ dingo_client_cpuset_effective }} \
+{% endif %}
+    --use_rdma={{ 'true' if dingo_client_use_rdma | default(true) | bool else 'false' }}{% if dingo_client_use_rdma | default(true) | bool %} \
+    --cache_rdma_device={{ dingo_client_rdma_device | default('ib6s200p0') }} \
+    --cache_rdma_port_num={{ dingo_client_rdma_port_num | default(1) }} \
+    --buffer_pool_mb={{ dingo_client_buffer_pool_mb | default(1024) }}{% endif %}

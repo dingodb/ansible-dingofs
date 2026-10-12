@@ -68,6 +68,130 @@
     success_msg: "client binaries present on the control node"
   run_once: true
 
+# --- CPU pinning host setup (v5.2+, once per host, before the instance loop) ---
+# The detect script and the claim seed are host-scoped: every mount on the host
+# (alayanew, manila, ...) draws from the same free-CPU pool, so seeding happens
+# once here and each instance appends its pick as the loop assigns it.
+- name: Deploy cpuset detection script (client hosts)
+  copy:
+    src: cpuset-detect.sh
+    dest: /tmp/dingo-cpuset-detect.sh
+    mode: "0755"
+  changed_when: false
+  when: dingo_client_pin_cpu | default(true) | bool
+
+- name: Seed cpuset claims from already-deployed mount scripts
+  shell: "grep -h -oE -- '--cpuset=[^ ]+' /root/dingofs/dingo-client/*/dingofs-mount.sh 2>/dev/null | sed 's/^--cpuset=//' || true"
+  register: _client_cpuset_seed
+  changed_when: false
+  when: dingo_client_pin_cpu | default(true) | bool
+
+- name: Init per-host cpuset claim list
+  set_fact:
+    dingo_client_cpusets_claimed: "{{ _client_cpuset_seed.stdout_lines | default([]) }}"
+  when: dingo_client_pin_cpu | default(true) | bool
+
+- name: Validate cpuset insufficiency policy (client hosts)
+  assert:
+    that:
+      - (dingo_client_cpuset_on_insufficient | default('fail')) in ['fail', 'warn', 'force']
+    fail_msg: >-
+      dingo_client_cpuset_on_insufficient must be one of fail|warn|force, got
+      '{{ dingo_client_cpuset_on_insufficient }}'. fail = stop the deploy;
+      warn = deploy WITHOUT --cpuset (unpinned); force = pin onto occupied
+      CPUs anyway so the mount still starts (overlap WILL contend).
+  when: dingo_client_pin_cpu | default(true) | bool
+
+# --- Preferred NUMA node: IB device + memory aware (v5.2, no numactl, once per host) ---
+# Same rule as dingo_cache: the RDMA device's NUMA node first, unless it is hot
+# on memory (> dingo_client_ib_node_mem_max_pct, default 50%) — then the
+# lowest-memory node under the threshold. Computed once here; every mount on
+# the host shares the decision (partitioning still gives each its own CPUs).
+- name: Read NUMA node of the RDMA device (client hosts)
+  shell: "cat '/sys/class/net/{{ dingo_client_rdma_device | default('ib6s200p0') }}/device/numa_node' 2>/dev/null || echo unknown"
+  register: _client_ib_numa_raw
+  changed_when: false
+  failed_when: false
+  when:
+    - dingo_client_pin_cpu | default(true) | bool
+    - dingo_client_use_rdma | default(true) | bool
+    - (dingo_client_rdma_device | default('ib6s200p0')) | length > 0
+
+- name: Sample per-NUMA-node memory usage (client hosts)
+  shell: |
+    for f in /sys/devices/system/node/node[0-9]*/meminfo; do
+      [ -e "$f" ] || continue
+      n=$(basename "$(dirname "$f")" | tr -dc '0-9')
+      total=$(awk '$3=="MemTotal:" {print $4}' "$f")
+      free=$(awk '$3=="MemFree:" {print $4}' "$f")
+      case "$total" in ''|0) continue;; esac
+      echo "MEM $n $(( (total - free) * 100 / total ))"
+    done
+  register: _client_numa_mem
+  changed_when: false
+  failed_when: false
+  when: dingo_client_pin_cpu | default(true) | bool
+
+- name: Build per-node memory map (client hosts)
+  set_fact:
+    _client_node_mem: "{{ (_client_node_mem | default({})) | combine({(item.split()[1]): (item.split()[2] | int)}) }}"
+  loop: "{{ _client_numa_mem.stdout_lines | default([]) | select('match', '^MEM [0-9]+ [0-9]+$') | list }}"
+  when: dingo_client_pin_cpu | default(true) | bool
+
+- name: Decide preferred NUMA node from IB device and memory headroom (client hosts)
+  set_fact:
+    _client_ib_node: >-
+      {{ _client_ib_numa_raw.stdout | default('unknown') | trim
+         if (_client_ib_numa_raw.stdout | default('unknown') | trim is match('^[0-9]+$'))
+         else '' }}
+    _client_mem_thr: "{{ dingo_client_ib_node_mem_max_pct | default(50) | int }}"
+    _client_mem_lowest: "{{ (_client_node_mem | default({}) | dict2items | sort(attribute='value') | map(attribute='key') | list | first | default('')) | string }}"
+    _client_mem_coolest: "{{ (_client_node_mem | default({}) | dict2items | selectattr('value', 'le', (dingo_client_ib_node_mem_max_pct | default(50) | int)) | sort(attribute='value') | map(attribute='key') | list | first | default('')) | string }}"
+  when: dingo_client_pin_cpu | default(true) | bool
+
+- name: Select preferred NUMA node (client hosts)
+  set_fact:
+    _client_ib_preferred_node: "{{ _client_ib_node if (_client_ib_node | length > 0 and ((_client_node_mem | default({})).get(_client_ib_node, 101) | int) <= (_client_mem_thr | int)) else (_client_mem_coolest if (_client_mem_coolest | length > 0) else (_client_mem_lowest if (_client_mem_lowest | length > 0) else (dingo_client_numa_cpunode | default(1) | string))) }}"
+    _client_mem_all_hot: "{{ (_client_node_mem | default({}) | length > 0) and (_client_mem_coolest | default('') | length == 0) }}"
+  when: dingo_client_pin_cpu | default(true) | bool
+
+- name: Log preferred NUMA node decision (client hosts)
+  debug:
+    msg: >-
+      IB device {{ dingo_client_rdma_device | default('ib6s200p0') }} on NUMA node
+      {{ _client_ib_node | default('unknown', true) | trim or 'unknown' }}
+      (mem {{ (_client_node_mem | default({})).get(_client_ib_node | default(''), 'n/a') }}%),
+      per-node mem {{ _client_node_mem | default({}) }}, threshold {{ _client_mem_thr }}% →
+      preferred node {{ _client_ib_preferred_node }}
+      {{ '(IB node, memory OK)' if (_client_ib_preferred_node == _client_ib_node and (_client_ib_node | length > 0))
+         else ('(IB node hot — OOM risk avoided)' if not (_client_mem_all_hot | bool)
+         else '(ALL NODES HOT — OOM RISK, lowest-memory node picked)') }}
+  when: dingo_client_pin_cpu | default(true) | bool
+
+# --- RDMA device validation (v5.2+, once per host, only when RDMA is on) ---
+# Same rule as dingo_cache: the IB device name comes from the host's HCA layout.
+- name: Check RDMA device exists (client hosts)
+  shell: "ibv_devices 2>/dev/null | awk '{print $1}' | grep -qx '{{ dingo_client_rdma_device | default('ib6s200p0') }}' && echo present || echo missing"
+  register: _client_rdma_dev_check
+  changed_when: false
+  failed_when: false
+  when: dingo_client_use_rdma | default(true) | bool
+
+- name: Fail when RDMA device is missing (client hosts)
+  assert:
+    that:
+      - _client_rdma_dev_check.stdout | trim == 'present'
+    fail_msg: >-
+      RDMA device {{ dingo_client_rdma_device | default('ib6s200p0') }} not found on
+      {{ inventory_hostname }} (ibv_devices says: {{ _client_rdma_dev_check.stdout | trim }};
+      if the ibv_devices tool itself is missing, the InfiniBand stack is not installed).
+      Set the right name per host via dingo_client_rdma_device in host_vars, or
+      dingo_client_use_rdma=false to deploy without RDMA.
+  when:
+    - dingo_client_use_rdma | default(true) | bool
+    - _client_rdma_dev_check.stdout is defined
+    - _client_rdma_dev_check.stdout | trim == 'missing'
+
 - name: Set default list of dingo clients if not provided
   set_fact:
     dingo_clients:
@@ -98,27 +222,34 @@
       {{ client_instance.cache_group
          | default(hostvars[inventory_hostname].get('dingo_client_cache_group',
                                                    dingo_client_cache_group_default)) }}
-    dingo_client_service_name: "dingofs-mount-{{ client_instance.fsname }}"
-    # NOTE: log_dir / base_dir are taken from the instance ONLY -- unlike
-    # cache_group / mds_addrs above, they deliberately do NOT fall back to a
-    # same-named group_vars value. Setting dingo_client_log_dir /
-    # dingo_client_base_dir in group_vars has NO effect (measured 2026-09-16:
-    # /dingofs-cache/logs/... was configured, the client actually used
-    # /mnt/disk1/dingofs/logs/<fsname>). To change them, set log_dir: / base_dir:
-    # on the entry in dingo_clients.
+    # service_name / log_dir / base_dir: per-instance keys win, else
+    # literal construction prefix + fsname + version_suffix.
     #
-    # Why not read hostvars like the other two: those globals routinely contain
-    # {{ }} templates, and hostvars holds the UNRENDERED string -- it would be
-    # substituted literally into the mount script. (bj12's inventory records the
-    # same trap for mds_addrs: the client came up with
-    # "check mds addr fail, addr(0.0.0.0:0)".) Better to keep the plain
-    # behaviour than to introduce a subtler failure.
-    dingo_client_log_dir: "{{ client_instance.log_dir | default('/mnt/disk1/dingofs/logs/' ~ client_instance.fsname) }}"
+    # Deliberately NOT read from same-named group_vars values: those routinely
+    # contain {{ dingo_client_fsname }}, and hostvars hands that string back
+    # RAW. Ansible templates a value in a single pass, so braces carried
+    # forward as data are NEVER re-rendered on later use — systemd then fails
+    # on a unit name with literal braces (measured twice 2026-10-09, with both
+    # regex_replace resolution and verbatim pass-through). Eager literal
+    # construction has no templates left to resolve and works on every version.
+    # To version these paths, set dingo_client_version_suffix (e.g. "-v5.2"),
+    # or set log_dir:/base_dir:/service_name: on the dingo_clients entry.
+    dingo_client_service_name: >-
+      {{ client_instance.service_name | default(
+           'dingofs-mount-' ~ client_instance.fsname
+           ~ (dingo_client_version_suffix | default(''))) }}
+    dingo_client_log_dir: >-
+      {{ client_instance.log_dir | default(
+           '/mnt/disk1/dingofs/logs/' ~ client_instance.fsname
+           ~ (dingo_client_version_suffix | default(''))) }}
     dingo_client_mds_addrs: >-
       {{ client_instance.mds_addrs
          | default(hostvars[inventory_hostname].get('dingo_client_mds_addrs',
                                                    dingo_client_mds_addrs_default)) }}
-    dingo_client_base_dir: "{{ client_instance.base_dir | default('/root/dingofs/dingo-client/' ~ client_instance.fsname) }}"
+    dingo_client_base_dir: >-
+      {{ client_instance.base_dir | default(
+           '/root/dingofs/dingo-client/' ~ client_instance.fsname
+           ~ (dingo_client_version_suffix | default(''))) }}
   loop: "{{ dingo_clients }}"
   loop_control:
     loop_var: client_instance

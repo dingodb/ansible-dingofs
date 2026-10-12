@@ -11,3 +11,16 @@
 --free_space_ratio={{ dingo_cache_free_space_ratio }}
 --iodepth={{ dingo_cache_iodepth }}
 --group_weight={{ dingo_cache_group_weight }}
+--shards={{ dingo_cache_shards | default(8) }}
+--pin_cpu={{ 'true' if dingo_cache_pin_cpu | default(true) | bool else 'false' }}
+{% if dingo_cache_pin_cpu | default(true) | bool and dingo_cache_cpuset_effective | default('') | length > 0 and dingo_cache_cpuset_effective != 'NONE' %}
+--cpuset={{ dingo_cache_cpuset_effective }}
+{% endif %}
+--use_rdma={{ 'true' if dingo_cache_use_rdma | default(true) | bool else 'false' }}
+{% if dingo_cache_use_rdma | default(true) | bool %}
+--cache_rdma_device={{ dingo_cache_rdma_device | default('ib6s200p0') }}
+--cache_rdma_port_num={{ dingo_cache_rdma_port_num | default(1) }}
+--buffer_pool_mb={{ dingo_cache_buffer_pool_mb | default(1024) }}
+--rdma_idle_timeout_s={{ dingo_cache_rdma_idle_timeout_s | default(300) }}
+{% endif %}
+--poll_mode={{ 'true' if dingo_cache_poll_mode | default(true) | bool else 'false' }}

@@ -50,27 +50,303 @@
     mode: "0755"
   register: _dingo_bin
 
-# --- NUMA detection (for numactl) ---
-- name: Detect NUMA node count
-  # Folded scalar: a plain (unquoted) YAML scalar cannot contain ": ",
-  # otherwise parsing fails with "mapping values are not allowed here".
-  shell: >-
-    numactl --hardware 2>/dev/null | grep -oP 'available: \d+' | awk '{print $2}'
-  register: numa_node_count_raw
-  changed_when: false
-  failed_when: false
+# (v5.2: no numactl binding — the mount script runs unbound; locality comes from
+# the --cpuset CPUs chosen below. The preferred node is decided once per host in
+# main.yml from the RDMA device's NUMA node + memory headroom; each instance
+# only applies its own explicit override, if any.)
 
-- name: Set effective NUMA configuration
-  set_fact:
-    dingo_client_numa_node_count: "{{ numa_node_count_raw.stdout | default('1') | int }}"
-    # Only enable numactl on multi-NUMA machines (makes no sense on single-node and breaks on VMs)
-    dingo_client_numa_enabled: "{{ (numa_node_count_raw.stdout | default('1') | int) > 1 }}"
+# --- CPU set resolution for --pin_cpu/--cpuset (v5.2+, dynamic per host) ---
+# Same rules as the dingo_cache role (claim logic, policy-aware manual-override
+# validation — explicit lists like "37,39,43,46-49,53" allowed, overlap follows
+# dingo_client_cpuset_on_insufficient — keep-across-redeploys, preferred-node
+# with fallback, least-busy forced pick when nothing is free),
+# plus one client-specific rule: PARTITIONING. A host runs several mounts
+# (alayanew, manila, ...), so each instance excludes cpusets already assigned
+# on this host — seeded above from deployed mount scripts, appended below as
+# this loop assigns — and never shares shards with a sibling mount.
+- name: "Resolve cpuset for {{ dingo_client_fsname }}"
+  block:
+    - name: "Set per-instance pinning vars for {{ dingo_client_fsname }}"
+      set_fact:
+        _client_shards: "{{ client_instance.shards | default(dingo_client_shards | default(8)) }}"
+        _client_cpuset_manual: "{{ client_instance.cpuset | default(dingo_client_cpuset | default('')) }}"
+        _client_cpuset_explicit_node: "{{ client_instance.cpuset_numa_node | default(dingo_client_cpuset_numa_node | default('')) | string | trim }}"
+        _client_cpuset_forced: false
 
-- name: "Log NUMA config for {{ dingo_client_fsname }}"
-  debug:
-    msg: >-
-      NUMA nodes: {{ dingo_client_numa_node_count }},
-      numactl: {{ 'enabled (bind to node ' + (dingo_client_numa_cpunode | string) + ')' if dingo_client_numa_enabled else 'skipped (single NUMA or numactl unavailable)' }}
+    - name: "Select preferred NUMA node for {{ dingo_client_fsname }}"
+      set_fact:
+        _client_cpuset_node: "{{ _client_cpuset_explicit_node if (_client_cpuset_explicit_node | length > 0) else (_client_ib_preferred_node | default(dingo_client_numa_cpunode | default(1))) }}"
+        _client_cpuset_node_source: "{{ 'explicit override' if (_client_cpuset_explicit_node | length > 0) else ('host IB/memory decision' if (_client_ib_preferred_node is defined) else 'static default') }}"
+
+    - name: "Validate manually configured cpuset for {{ dingo_client_fsname }}"
+      shell: |
+        /tmp/dingo-cpuset-detect.sh --no-busy -S dingo-client \
+          -s {{ _client_shards | int }} \
+          -b {{ dingo_client_cpuset_busy_pct | int }} \
+          -c "{{ _client_cpuset_manual }}"
+      register: _client_cpuset_check
+      changed_when: false
+      failed_when: false
+      when: (_client_cpuset_manual | default('')) | length > 0
+
+    - name: "Fail on offline CPUs in manual cpuset for {{ dingo_client_fsname }}"
+      assert:
+        that:
+          - "'NOT-ONLINE' not in (_client_cpuset_check.stdout | default(''))"
+        fail_msg: >-
+          --cpuset={{ _client_cpuset_manual }} for {{ dingo_client_fsname }} on
+          {{ inventory_hostname }} contains CPUs that are not even online:
+          {{ _client_cpuset_check.stdout_lines | default([]) | join('; ') }}.
+          Fix the cpuset: on the dingo_clients entry (or dingo_client_cpuset)
+          to online CPUs only (compare with /sys/devices/system/cpu/online).
+      when: (_client_cpuset_manual | default('')) | length > 0
+
+    - name: "Fail on overlapping manual cpuset for {{ dingo_client_fsname }}"
+      assert:
+        that:
+          - _client_cpuset_check.rc is defined and _client_cpuset_check.rc == 0
+        fail_msg: >-
+          --cpuset={{ _client_cpuset_manual }} for {{ dingo_client_fsname }} on
+          {{ inventory_hostname }} overlaps CPUs already claimed elsewhere:
+          {{ _client_cpuset_check.stdout_lines | default([]) | join('; ') }}.
+          Either clear it (auto-detect partitions free CPUs per mount), choose
+          a free range — re-run /tmp/dingo-cpuset-detect.sh on the host — or
+          keep this exact list deliberately via
+          dingo_client_cpuset_on_insufficient=force (warns LOUDLY, pins anyway).
+      when:
+        - (_client_cpuset_manual | default('')) | length > 0
+        - (dingo_client_cpuset_on_insufficient | default('fail')) == 'fail'
+
+    - name: "Warn and keep overlapping manual cpuset for {{ dingo_client_fsname }} (force policy)"
+      debug:
+        msg: >-
+          WARNING: --cpuset={{ _client_cpuset_manual }} for
+          {{ dingo_client_fsname }} on {{ inventory_hostname }} overlaps
+          already-claimed CPUs
+          ({{ _client_cpuset_check.stdout_lines | default([]) | join('; ') }}),
+          but dingo_client_cpuset_on_insufficient=force — deploying PINNED onto
+          this explicit list anyway (e.g. idle-but-pinned CPUs like
+          37,39,43,46-49,53). Shards WILL contend with whatever holds those
+          CPUs until they free up.
+      when:
+        - (_client_cpuset_manual | default('')) | length > 0
+        - _client_cpuset_check.rc is defined and _client_cpuset_check.rc != 0
+        - "'NOT-ONLINE' not in (_client_cpuset_check.stdout | default(''))"
+        - (dingo_client_cpuset_on_insufficient | default('fail')) == 'force'
+
+    - name: "Warn that overlapping manual cpuset is dropped for {{ dingo_client_fsname }} (warn policy)"
+      debug:
+        msg: >-
+          WARNING: --cpuset={{ _client_cpuset_manual }} for
+          {{ dingo_client_fsname }} on {{ inventory_hostname }} overlaps
+          already-claimed CPUs
+          ({{ _client_cpuset_check.stdout_lines | default([]) | join('; ') }}),
+          and dingo_client_cpuset_on_insufficient=warn — dropping the manual
+          list and falling back to auto-detect (may deploy unpinned). Use
+          =force to pin onto this explicit list anyway.
+      when:
+        - (_client_cpuset_manual | default('')) | length > 0
+        - _client_cpuset_check.rc is defined and _client_cpuset_check.rc != 0
+        - "'NOT-ONLINE' not in (_client_cpuset_check.stdout | default(''))"
+        - (dingo_client_cpuset_on_insufficient | default('fail')) == 'warn'
+
+    - name: "Drop overlapping manual cpuset for {{ dingo_client_fsname }} (warn policy)"
+      set_fact:
+        _client_cpuset_manual: ""
+      when:
+        - (_client_cpuset_manual | default('')) | length > 0
+        - _client_cpuset_check.rc is defined and _client_cpuset_check.rc != 0
+        - "'NOT-ONLINE' not in (_client_cpuset_check.stdout | default(''))"
+        - (dingo_client_cpuset_on_insufficient | default('fail')) == 'warn'
+
+    - name: "Read cpuset from existing mount script for {{ dingo_client_fsname }}"
+      shell: "grep -oE -- '--cpuset=[^ ]+' '{{ dingo_client_base_dir }}/dingofs-mount.sh' 2>/dev/null | head -1 | cut -d= -f2- || true"
+      register: _client_cpuset_existing
+      changed_when: false
+      when: (_client_cpuset_manual | default('')) | length == 0
+
+    - name: "Re-validate existing cpuset for {{ dingo_client_fsname }}"
+      shell: |
+        /tmp/dingo-cpuset-detect.sh --no-busy -S dingo-client \
+          -b {{ dingo_client_cpuset_busy_pct | int }} \
+          -c "{{ _client_cpuset_existing.stdout | trim }}"
+      register: _client_cpuset_recheck
+      changed_when: false
+      failed_when: false
+      when:
+        - (_client_cpuset_manual | default('')) | length == 0
+        - _client_cpuset_existing.stdout is defined and (_client_cpuset_existing.stdout | trim) | length > 0
+
+    - name: "Keep existing cpuset for {{ dingo_client_fsname }} when it still validates"
+      set_fact:
+        dingo_client_cpuset_effective: "{{ _client_cpuset_existing.stdout | trim }}"
+        dingo_client_numa_cpunode_effective: "{{ ((_client_cpuset_recheck.stdout_lines | select('match', '^NODES=') | first | default('') | regex_replace('^NODES=', '') | trim | regex_replace(' .*', '')) or (dingo_client_numa_cpunode | default(1))) }}"
+        dingo_client_numa_memnode_effective: "{{ ((_client_cpuset_recheck.stdout_lines | select('match', '^NODES=') | first | default('') | regex_replace('^NODES=', '') | trim | regex_replace(' .*', '')) or (dingo_client_numa_memnode | default(1))) }}"
+        _client_cpuset_source: "kept from existing mount script"
+      when:
+        - (_client_cpuset_manual | default('')) | length == 0
+        - _client_cpuset_recheck.rc is defined and _client_cpuset_recheck.rc == 0
+
+    - name: "Auto-detect free cpuset for {{ dingo_client_fsname }} on preferred NUMA node"
+      shell: |
+        /tmp/dingo-cpuset-detect.sh -S dingo-client \
+          -s {{ _client_shards | int }} \
+          -n {{ _client_cpuset_node }} \
+          -b {{ dingo_client_cpuset_busy_pct | int }} \
+          -x "{{ dingo_client_cpusets_claimed | default([]) | join(',') }}" \
+          {{ '--siblings' if dingo_client_cpuset_include_siblings | default(false) | bool else '' }}
+      register: _client_cpuset_preferred
+      changed_when: false
+      failed_when: false
+      when:
+        - (_client_cpuset_manual | default('')) | length == 0
+        - _client_cpuset_recheck.rc is not defined or _client_cpuset_recheck.rc != 0
+
+    - name: "Auto-detect free cpuset for {{ dingo_client_fsname }} on best NUMA node (fallback)"
+      shell: |
+        /tmp/dingo-cpuset-detect.sh -S dingo-client \
+          -s {{ _client_shards | int }} \
+          -b {{ dingo_client_cpuset_busy_pct | int }} \
+          -x "{{ dingo_client_cpusets_claimed | default([]) | join(',') }}" \
+          {{ '--siblings' if dingo_client_cpuset_include_siblings | default(false) | bool else '' }}
+      register: _client_cpuset_fallback
+      changed_when: false
+      failed_when: false
+      when:
+        - (_client_cpuset_manual | default('')) | length == 0
+        - _client_cpuset_recheck.rc is not defined or _client_cpuset_recheck.rc != 0
+        - _client_cpuset_preferred.rc is defined and _client_cpuset_preferred.rc != 0
+
+    - name: "Select winning cpuset detection result for {{ dingo_client_fsname }}"
+      set_fact:
+        _client_cpuset_winner: "{{ _client_cpuset_preferred if _client_cpuset_preferred.rc == 0 else _client_cpuset_fallback }}"
+        _client_cpuset_source: "{{ 'preferred NUMA node ' + (_client_cpuset_node | string) + ' (' + (_client_cpuset_node_source | default('unknown')) + ')' if _client_cpuset_preferred.rc == 0 else 'fallback NUMA node ' + (_client_cpuset_fallback.stdout_lines | select('match', '^NODE=') | first | default('NODE=?') | regex_replace('^NODE=', '')) }}"
+      when:
+        - (_client_cpuset_manual | default('')) | length == 0
+        - _client_cpuset_recheck.rc is not defined or _client_cpuset_recheck.rc != 0
+
+    - name: "Fail when no NUMA node offers enough free cores for {{ dingo_client_fsname }}"
+      assert:
+        that:
+          - _client_cpuset_winner.rc == 0
+        fail_msg: >-
+          No {{ _client_shards }} free whole cores left for {{ dingo_client_fsname }}
+          on {{ inventory_hostname }} (other mounts on this host already hold
+          [{{ dingo_client_cpusets_claimed | default([]) | join(', ') }}]):
+          preferred node {{ _client_cpuset_node }}
+          gave [{{ _client_cpuset_preferred.stdout_lines | default([]) | join(' ') }}],
+          best-of-rest gave
+          [{{ _client_cpuset_fallback.stdout_lines | default(['(preferred node already had enough — fallback never ran)']) | join(' ') }}].
+          Either free CPUs on this host, lower the shards for this mount
+          (shards: on the dingo_clients entry), set
+          dingo_client_cpuset_on_insufficient=warn to deploy unpinned, or =force
+          to pin onto occupied CPUs anyway (mount starts, shards contend).
+      when:
+        - (_client_cpuset_manual | default('')) | length == 0
+        - _client_cpuset_recheck.rc is not defined or _client_cpuset_recheck.rc != 0
+        - (dingo_client_cpuset_on_insufficient | default('fail')) == 'fail'
+
+    - name: "Warn when deploying {{ dingo_client_fsname }} without a cpuset"
+      debug:
+        msg: >-
+          WARNING: no {{ _client_shards }} free whole cores left for
+          {{ dingo_client_fsname }} on {{ inventory_hostname }} — deploying
+          WITHOUT --cpuset (unpinned).
+          Detector said: {{ _client_cpuset_winner.stdout_lines | default([]) | join(' ') }}
+      when:
+        - (_client_cpuset_manual | default('')) | length == 0
+        - _client_cpuset_recheck.rc is not defined or _client_cpuset_recheck.rc != 0
+        - (dingo_client_cpuset_on_insufficient | default('fail')) == 'warn'
+        - _client_cpuset_winner.rc is defined and _client_cpuset_winner.rc != 0
+
+    - name: "Force best-effort cpuset for {{ dingo_client_fsname }} from occupied CPUs"
+      set_fact:
+        dingo_client_cpuset_effective: "{{ _client_cpuset_winner.stdout_lines | select('match', '^FORCED=') | first | default('FORCED=NONE') | regex_replace('^FORCED=', '') | trim }}"
+        dingo_client_numa_cpunode_effective: "{{ ((_client_cpuset_winner.stdout_lines | select('match', '^FORCED_NODE=') | first | default('') | regex_replace('^FORCED_NODE=', '') | trim) or (dingo_client_numa_cpunode | default(1))) }}"
+        dingo_client_numa_memnode_effective: "{{ ((_client_cpuset_winner.stdout_lines | select('match', '^FORCED_NODE=') | first | default('') | regex_replace('^FORCED_NODE=', '') | trim) or (dingo_client_numa_memnode | default(1))) }}"
+        _client_cpuset_source: "FORCED overlap — no free CPUs left on this host, shards WILL contend with whatever runs there. Free CPUs or add capacity ASAP."
+        _client_cpuset_forced: true
+      when:
+        - (_client_cpuset_manual | default('')) | length == 0
+        - _client_cpuset_recheck.rc is not defined or _client_cpuset_recheck.rc != 0
+        - (dingo_client_cpuset_on_insufficient | default('fail')) == 'force'
+        - _client_cpuset_winner.rc is defined and _client_cpuset_winner.rc != 0
+
+    - name: "Fail when even a forced cpuset is impossible for {{ dingo_client_fsname }}"
+      assert:
+        that:
+          - dingo_client_cpuset_effective not in ['NONE', '']
+        fail_msg: >-
+          {{ inventory_hostname }} has fewer than {{ _client_shards }} usable
+          physical cores in total for {{ dingo_client_fsname }} (after excluding
+          cpusets assigned to sibling mounts) — no cpuset, free or forced, can be
+          built. Lower the shards for this mount or add CPUs.
+      when:
+        - (_client_cpuset_manual | default('')) | length == 0
+        - _client_cpuset_recheck.rc is not defined or _client_cpuset_recheck.rc != 0
+        - (dingo_client_cpuset_on_insufficient | default('fail')) == 'force'
+        - _client_cpuset_winner.rc is defined and _client_cpuset_winner.rc != 0
+
+    - name: "Set effective cpuset and NUMA facts for {{ dingo_client_fsname }}"
+      set_fact:
+        dingo_client_cpuset_effective: >-
+          {{ (_client_cpuset_manual | default('')) if (_client_cpuset_manual | default('')) | length > 0
+             else (_client_cpuset_winner.stdout_lines | select('match', '^SUGGEST=') | first | default('SUGGEST=NONE') | regex_replace('^SUGGEST=', '')) }}
+        dingo_client_numa_cpunode_effective: >-
+          {{ (_client_cpuset_winner.stdout_lines | select('match', '^NODE=') | first | default('') | regex_replace('^NODE=', ''))
+             if (_client_cpuset_manual | default('')) | length == 0 and _client_cpuset_winner.rc == 0
+             else (dingo_client_numa_cpunode | default(1)) }}
+        dingo_client_numa_memnode_effective: >-
+          {{ (_client_cpuset_winner.stdout_lines | select('match', '^NODE=') | first | default('') | regex_replace('^NODE=', '') | trim | regex_replace(' .*', ''))
+             if (_client_cpuset_manual | default('')) | length == 0 and _client_cpuset_winner.rc == 0
+             else (dingo_client_numa_memnode | default(1)) }}
+      when:
+        - _client_cpuset_recheck.rc is not defined or _client_cpuset_recheck.rc != 0
+        - (_client_cpuset_forced | default(false)) == false
+
+    - name: "Reserve this cpuset for later mounts on the host"
+      set_fact:
+        dingo_client_cpusets_claimed: "{{ (dingo_client_cpusets_claimed | default([])) + [dingo_client_cpuset_effective] }}"
+      when: dingo_client_cpuset_effective is defined and dingo_client_cpuset_effective not in ['NONE', '']
+
+    - name: "Warn when the effective NUMA node is short on free memory for {{ dingo_client_fsname }}"
+      debug:
+        msg: >-
+          WARNING: NUMA node {{ dingo_client_numa_cpunode_effective }} for
+          {{ dingo_client_fsname }} on {{ inventory_hostname }} is
+          {{ (_client_node_mem | default({})).get(dingo_client_numa_cpunode_effective | string, 'n/a') }}%
+          memory-used (threshold {{ _client_mem_thr | default(50) }}%) — bootstrap
+          OOM risk. Free memory on this node or pin this mount to a cooler node
+          via cpuset_numa_node: on its dingo_clients entry.
+      when:
+        - (_client_cpuset_manual | default('')) | length == 0
+        - dingo_client_cpuset_effective is defined and dingo_client_cpuset_effective not in ['NONE', '']
+        - dingo_client_numa_cpunode_effective is defined
+        - ((_client_node_mem | default({})).get(dingo_client_numa_cpunode_effective | string, 0) | int) > (_client_mem_thr | default(50) | int)
+
+    - name: "Log forced-pick CPU usage for {{ dingo_client_fsname }}"
+      debug:
+        msg: >-
+          {{ dingo_client_fsname }}: FORCED least-busy pick on
+          {{ inventory_hostname }}: cpuset=
+          {{ dingo_client_cpuset_effective }} (node
+          {{ dingo_client_numa_cpunode_effective }}) — sampled 1s /proc/stat
+          usage % per CPU
+          [{{ _client_cpuset_winner.stdout_lines | select('match', '^FORCED_USAGE=') | first | default('FORCED_USAGE=') | regex_replace('^FORCED_USAGE=', '') }}].
+          These CPUs ARE claimed or busy elsewhere, so shards WILL contend with
+          whatever holds them until CPUs free up.
+      when:
+        - (_client_cpuset_forced | default(false)) == true
+        - _client_cpuset_winner.stdout_lines is defined
+
+    - name: "Log cpuset selection for {{ dingo_client_fsname }}"
+      debug:
+        msg: >-
+          {{ dingo_client_fsname }}: cpuset={{ dingo_client_cpuset_effective | default('NONE (unpinned)') }}
+          ({{ 'manual override' if (_client_cpuset_manual | default('')) | length > 0 else ('auto-detected on ' + (_client_cpuset_source | default('unknown node'))) }},
+          shards={{ _client_shards | default(dingo_client_shards | default(8)) }},
+          no numactl in v5.2 — locality is the cpuset's node)
+  when: dingo_client_pin_cpu | default(true) | bool
 
 # --- Deploy mount script ---
 - name: "Deploy dingofs-mount.sh for {{ dingo_client_fsname }}"
