@@ -83,24 +83,393 @@
   set_fact:
     dingo_cache_config_id: "{{ existing_id.stdout | default(generated_uuid.stdout) }}"
 
-# --- NUMA detection (for numactl) ---
-- name: Detect NUMA node count
-  shell: "numactl --hardware 2>/dev/null | grep -oP 'available: \\d+' | awk '{print $2}'"
-  register: numa_node_count_raw
+# --- Preferred NUMA node: IB device + memory aware (v5.2, no numactl) ---
+# v5.2 drops numactl binding, so locality comes from CHOOSING the right node's
+# CPUs: the NUMA node of the RDMA device first
+# (/sys/class/net/<rdma_device>/device/numa_node — your manual step 1), unless
+# that node is hot on memory (> dingo_cache_ib_node_mem_max_pct, default 50%
+# — your manual numa-mem.sh check). A hot node risks bootstrap OOM, so the
+# lowest-memory node under the threshold wins instead; if every node is hot,
+# the lowest-memory node wins anyway and the deploy warns LOUDLY.
+- name: Read NUMA node of the RDMA device
+  shell: "cat '/sys/class/net/{{ dingo_cache_rdma_device | default('ib6s200p0') }}/device/numa_node' 2>/dev/null || echo unknown"
+  register: _cache_ib_numa_raw
   changed_when: false
   failed_when: false
+  when:
+    - dingo_cache_pin_cpu | default(true) | bool
+    - dingo_cache_use_rdma | default(true) | bool
+    - (dingo_cache_rdma_device | default('ib6s200p0')) | length > 0
 
-- name: Set effective NUMA configuration
+- name: Sample per-NUMA-node memory usage
+  shell: |
+    for f in /sys/devices/system/node/node[0-9]*/meminfo; do
+      [ -e "$f" ] || continue
+      n=$(basename "$(dirname "$f")" | tr -dc '0-9')
+      total=$(awk '$3=="MemTotal:" {print $4}' "$f")
+      free=$(awk '$3=="MemFree:" {print $4}' "$f")
+      case "$total" in ''|0) continue;; esac
+      echo "MEM $n $(( (total - free) * 100 / total ))"
+    done
+  register: _cache_numa_mem
+  changed_when: false
+  failed_when: false
+  when: dingo_cache_pin_cpu | default(true) | bool
+
+- name: Build per-node memory map
   set_fact:
-    dingo_cache_numa_node_count: "{{ numa_node_count_raw.stdout | default('1') | int }}"
-    # Only enable numactl on multi-NUMA machines (makes no sense on single-node and breaks on VMs)
-    dingo_cache_numa_enabled: "{{ (numa_node_count_raw.stdout | default('1') | int) > 1 }}"
+    _cache_node_mem: "{{ (_cache_node_mem | default({})) | combine({(item.split()[1]): (item.split()[2] | int)}) }}"
+  loop: "{{ _cache_numa_mem.stdout_lines | default([]) | select('match', '^MEM [0-9]+ [0-9]+$') | list }}"
+  when: dingo_cache_pin_cpu | default(true) | bool
 
-- name: Log NUMA config
+- name: Decide preferred NUMA node from IB device and memory headroom
+  set_fact:
+    _cache_ib_node: >-
+      {{ _cache_ib_numa_raw.stdout | default('unknown') | trim
+         if (_cache_ib_numa_raw.stdout | default('unknown') | trim is match('^[0-9]+$'))
+         else '' }}
+    _cache_mem_thr: "{{ dingo_cache_ib_node_mem_max_pct | default(50) | int }}"
+    _cache_explicit_node: "{{ dingo_cache_cpuset_numa_node | default('') | string | trim }}"
+    _cache_mem_lowest: "{{ (_cache_node_mem | default({}) | dict2items | sort(attribute='value') | map(attribute='key') | list | first | default('')) | string }}"
+    _cache_mem_coolest: "{{ (_cache_node_mem | default({}) | dict2items | selectattr('value', 'le', (dingo_cache_ib_node_mem_max_pct | default(50) | int)) | sort(attribute='value') | map(attribute='key') | list | first | default('')) | string }}"
+  when: dingo_cache_pin_cpu | default(true) | bool
+
+- name: Select preferred NUMA node
+  set_fact:
+    _cache_preferred_node: "{{ _cache_explicit_node if (_cache_explicit_node | length > 0) else (_cache_ib_node if (_cache_ib_node | length > 0 and ((_cache_node_mem | default({})).get(_cache_ib_node, 101) | int) <= (_cache_mem_thr | int)) else (_cache_mem_coolest if (_cache_mem_coolest | length > 0) else (_cache_mem_lowest if (_cache_mem_lowest | length > 0) else (dingo_cache_numa_node | default(0) | string)))) }}"
+    _cache_mem_all_hot: "{{ (_cache_node_mem | default({}) | length > 0) and (_cache_mem_coolest | default('') | length == 0) and (_cache_explicit_node | default('') | length == 0) }}"
+  when: dingo_cache_pin_cpu | default(true) | bool
+
+- name: Log preferred NUMA node decision
   debug:
     msg: >-
-      NUMA nodes: {{ dingo_cache_numa_node_count }},
-      numactl: {{ 'enabled (bind to node ' + (dingo_cache_numa_node | default(0) | string) + ')' if dingo_cache_numa_enabled else 'skipped (single NUMA or numactl unavailable)' }}
+      IB device {{ dingo_cache_rdma_device | default('ib6s200p0') }} on NUMA node
+      {{ _cache_ib_node | default('unknown', true) | trim or 'unknown' }}
+      (mem {{ (_cache_node_mem | default({})).get(_cache_ib_node | default(''), 'n/a') }}%),
+      per-node mem {{ _cache_node_mem | default({}) }}, threshold {{ _cache_mem_thr }}% →
+      preferred node {{ _cache_preferred_node }}
+      {{ '(explicit override)' if (_cache_explicit_node | length > 0)
+         else ('(IB node, memory OK)' if (_cache_preferred_node == _cache_ib_node and (_cache_ib_node | length > 0))
+         else ('(IB node hot — OOM risk avoided)' if not (_cache_mem_all_hot | bool)
+         else '(ALL NODES HOT — OOM RISK, lowest-memory node picked)')) }}
+  when: dingo_cache_pin_cpu | default(true) | bool
+
+# --- CPU set resolution for --pin_cpu/--cpuset (v5.2+, dynamic per host) ---
+# Same free-CPU claim logic as the manual cpuset-check.sh triage script
+# (kernel isolation, cgroup cpusets, kubelet exclusive CPUs, process
+# --cpuset=/affinity, 1s /proc/stat usage sample, NUMA topology), but in
+# suggest/check modes the role can parse. Free CPUs differ per node, so this
+# runs on every target — never bake one node's cpuset into group_vars for the
+# whole fleet.
+# Manual override (dingo_cache_cpuset) accepts a range ("32-63") or an explicit
+# CPU list ("37,39,43,46-49,53"). Structural errors (offline CPUs) always fail;
+# overlap with claimed CPUs follows dingo_cache_cpuset_on_insufficient: fail =
+# stop, warn = drop the list back to auto-detect, force = pin it anyway loudly.
+# Auto-detect is two-pass: preferred NUMA node first (IB device's node when its
+# memory headroom is OK, else the coolest node — keeps RDMA and allocation
+# local without numactl), then the node with the most free whole cores — a GPU
+# host whose preferred node is fully claimed still deploys elsewhere. When no
+# node has enough free cores, force falls back to the LEAST-BUSY CPUs by
+# sampled usage instead of failing.
+- name: Resolve cpuset for CPU pinning
+  block:
+    - name: Validate cpuset insufficiency policy
+      assert:
+        that:
+          - (dingo_cache_cpuset_on_insufficient | default('fail')) in ['fail', 'warn', 'force']
+        fail_msg: >-
+          dingo_cache_cpuset_on_insufficient must be one of fail|warn|force, got
+          '{{ dingo_cache_cpuset_on_insufficient }}'. fail = stop the deploy;
+          warn = deploy WITHOUT --cpuset (unpinned); force = pin onto occupied
+          CPUs anyway so the service still starts (overlap WILL contend).
+
+    - name: Deploy cpuset detection script
+      copy:
+        src: cpuset-detect.sh
+        dest: /tmp/dingo-cpuset-detect.sh
+        mode: "0755"
+      changed_when: false
+
+    - name: Validate manually configured cpuset
+      shell: |
+        /tmp/dingo-cpuset-detect.sh --no-busy -S dingo-cache \
+          -s {{ dingo_cache_shards | int }} \
+          -b {{ dingo_cache_cpuset_busy_pct | int }} \
+          -c "{{ dingo_cache_cpuset }}"
+      register: cpuset_check
+      changed_when: false
+      failed_when: false
+      when: (dingo_cache_cpuset | default('')) | length > 0
+
+    - name: Fail on offline CPUs in manual cpuset
+      assert:
+        that:
+          - "'NOT-ONLINE' not in (cpuset_check.stdout | default(''))"
+        fail_msg: >-
+          --cpuset={{ dingo_cache_cpuset }} on {{ inventory_hostname }} contains
+          CPUs that are not even online:
+          {{ cpuset_check.stdout_lines | default([]) | join('; ') }}.
+          Fix dingo_cache_cpuset to online CPUs only (compare with
+          /sys/devices/system/cpu/online on the host).
+      when: (dingo_cache_cpuset | default('')) | length > 0
+
+    - name: Fail on overlapping manual cpuset
+      assert:
+        that:
+          - cpuset_check.rc is defined and cpuset_check.rc == 0
+        fail_msg: >-
+          --cpuset={{ dingo_cache_cpuset }} on {{ inventory_hostname }} overlaps CPUs
+          already claimed elsewhere, so dingo-cache would fight another workload:
+          {{ cpuset_check.stdout_lines | default([]) | join('; ') }}.
+          Either clear dingo_cache_cpuset (auto-detect picks free CPUs per host),
+          choose a free range — re-run /tmp/dingo-cpuset-detect.sh on the host —
+          or keep this exact list deliberately via
+          dingo_cache_cpuset_on_insufficient=force (warns LOUDLY, pins anyway).
+      when:
+        - (dingo_cache_cpuset | default('')) | length > 0
+        - (dingo_cache_cpuset_on_insufficient | default('fail')) == 'fail'
+
+    - name: Warn and keep overlapping manual cpuset (force policy)
+      debug:
+        msg: >-
+          WARNING: --cpuset={{ dingo_cache_cpuset }} on {{ inventory_hostname }}
+          overlaps already-claimed CPUs
+          ({{ cpuset_check.stdout_lines | default([]) | join('; ') }}), but
+          dingo_cache_cpuset_on_insufficient=force — deploying PINNED onto this
+          explicit list anyway (e.g. idle-but-pinned CPUs like 37,39,43,46-49,53).
+          Shards WILL contend with whatever holds those CPUs until they free up.
+      when:
+        - (dingo_cache_cpuset | default('')) | length > 0
+        - cpuset_check.rc is defined and cpuset_check.rc != 0
+        - "'NOT-ONLINE' not in (cpuset_check.stdout | default(''))"
+        - (dingo_cache_cpuset_on_insufficient | default('fail')) == 'force'
+
+    - name: Warn that overlapping manual cpuset is dropped (warn policy)
+      debug:
+        msg: >-
+          WARNING: --cpuset={{ dingo_cache_cpuset }} on {{ inventory_hostname }}
+          overlaps already-claimed CPUs
+          ({{ cpuset_check.stdout_lines | default([]) | join('; ') }}), and
+          dingo_cache_cpuset_on_insufficient=warn — dropping the manual list and
+          falling back to auto-detect (may deploy unpinned). Use =force to pin
+          onto this explicit list anyway.
+      when:
+        - (dingo_cache_cpuset | default('')) | length > 0
+        - cpuset_check.rc is defined and cpuset_check.rc != 0
+        - "'NOT-ONLINE' not in (cpuset_check.stdout | default(''))"
+        - (dingo_cache_cpuset_on_insufficient | default('fail')) == 'warn'
+
+    - name: Drop overlapping manual cpuset (warn policy)
+      set_fact:
+        dingo_cache_cpuset: ""
+      when:
+        - (dingo_cache_cpuset | default('')) | length > 0
+        - cpuset_check.rc is defined and cpuset_check.rc != 0
+        - "'NOT-ONLINE' not in (cpuset_check.stdout | default(''))"
+        - (dingo_cache_cpuset_on_insufficient | default('fail')) == 'warn'
+
+    # Stability first: a redeploy must NOT see the service's own running cpuset
+    # as "taken" and hop to new CPUs every run (which would restart the cache
+    # for nothing and break the idempotency contract in cache_site.yml). The
+    # already-deployed cpuset is re-validated IGNORING our own process (-S) and
+    # our own poll-mode spin (--no-busy); only a REAL new conflict moves it.
+    - name: Read cpuset from existing config
+      shell: "grep '^--cpuset=' '{{ dingo_cache_base_dir }}/dingo-cache.conf' 2>/dev/null | cut -d= -f2- || true"
+      register: cpuset_existing
+      changed_when: false
+      when: (dingo_cache_cpuset | default('')) | length == 0
+
+    - name: Re-validate existing cpuset
+      shell: |
+        /tmp/dingo-cpuset-detect.sh --no-busy -S dingo-cache \
+          -b {{ dingo_cache_cpuset_busy_pct | int }} \
+          -c "{{ cpuset_existing.stdout | trim }}"
+      register: cpuset_recheck
+      changed_when: false
+      failed_when: false
+      when:
+        - (dingo_cache_cpuset | default('')) | length == 0
+        - cpuset_existing.stdout is defined and (cpuset_existing.stdout | trim) | length > 0
+
+    - name: Keep existing cpuset when it still validates
+      set_fact:
+        dingo_cache_cpuset_effective: "{{ cpuset_existing.stdout | trim }}"
+        dingo_cache_numa_node_effective: >-
+          {{ ((cpuset_recheck.stdout_lines | select('match', '^NODES=') | first | default('') | regex_replace('^NODES=', '') | trim | regex_replace(' .*', '')) or (dingo_cache_numa_node | default(0))) }}
+        _cpuset_source: "kept from existing config"
+      when:
+        - (dingo_cache_cpuset | default('')) | length == 0
+        - cpuset_recheck.rc is defined and cpuset_recheck.rc == 0
+
+    - name: Auto-detect free cpuset on preferred NUMA node
+      shell: |
+        /tmp/dingo-cpuset-detect.sh -S dingo-cache \
+          -s {{ dingo_cache_shards | int }} \
+          -n {{ _cache_preferred_node | default(dingo_cache_numa_node | default(0)) }} \
+          -b {{ dingo_cache_cpuset_busy_pct | int }} \
+          {{ '--siblings' if dingo_cache_cpuset_include_siblings | default(false) | bool else '' }}
+      register: cpuset_detect_preferred
+      changed_when: false
+      failed_when: false
+      when:
+        - (dingo_cache_cpuset | default('')) | length == 0
+        - cpuset_recheck.rc is not defined or cpuset_recheck.rc != 0
+
+    - name: Auto-detect free cpuset on best NUMA node (fallback)
+      shell: |
+        /tmp/dingo-cpuset-detect.sh -S dingo-cache \
+          -s {{ dingo_cache_shards | int }} \
+          -b {{ dingo_cache_cpuset_busy_pct | int }} \
+          {{ '--siblings' if dingo_cache_cpuset_include_siblings | default(false) | bool else '' }}
+      register: cpuset_detect_fallback
+      changed_when: false
+      failed_when: false
+      when:
+        - (dingo_cache_cpuset | default('')) | length == 0
+        - cpuset_recheck.rc is not defined or cpuset_recheck.rc != 0
+        - cpuset_detect_preferred.rc is defined and cpuset_detect_preferred.rc != 0
+
+    - name: Select winning cpuset detection result
+      set_fact:
+        _cpuset_winner: "{{ cpuset_detect_preferred if cpuset_detect_preferred.rc == 0 else cpuset_detect_fallback }}"
+        _cpuset_source: "{{ 'preferred NUMA node ' + (_cache_preferred_node | default(dingo_cache_numa_node | default(0)) | string) if cpuset_detect_preferred.rc == 0 else 'fallback NUMA node ' + (cpuset_detect_fallback.stdout_lines | select('match', '^NODE=') | first | default('NODE=?') | regex_replace('^NODE=', '')) }}"
+      when:
+        - (dingo_cache_cpuset | default('')) | length == 0
+        - cpuset_recheck.rc is not defined or cpuset_recheck.rc != 0
+
+    - name: Fail when no NUMA node offers enough free cores
+      assert:
+        that:
+          - _cpuset_winner.rc == 0
+        fail_msg: >-
+          No {{ dingo_cache_shards }} free whole cores on {{ inventory_hostname }}:
+          preferred node {{ _cache_preferred_node | default(dingo_cache_numa_node | default(0)) }}
+          gave [{{ cpuset_detect_preferred.stdout_lines | default([]) | join(' ') }}],
+          best-of-rest gave
+          [{{ cpuset_detect_fallback.stdout_lines | default(['(preferred node already had enough — fallback never ran)']) | join(' ') }}].
+          Either free CPUs on this host, lower dingo_cache_shards, set
+          dingo_cache_cpuset_on_insufficient=warn to deploy unpinned, or =force
+          to pin onto occupied CPUs anyway (service starts, shards contend).
+      when:
+        - (dingo_cache_cpuset | default('')) | length == 0
+        - cpuset_recheck.rc is not defined or cpuset_recheck.rc != 0
+        - (dingo_cache_cpuset_on_insufficient | default('fail')) == 'fail'
+
+    - name: Warn when deploying without a cpuset
+      debug:
+        msg: >-
+          WARNING: no {{ dingo_cache_shards }} free whole cores on
+          {{ inventory_hostname }} — deploying WITHOUT --cpuset (unpinned).
+          Expect noisy-neighbour latency, especially with poll_mode=true.
+          Detector said: {{ _cpuset_winner.stdout_lines | default([]) | join(' ') }}
+      when:
+        - (dingo_cache_cpuset | default('')) | length == 0
+        - cpuset_recheck.rc is not defined or cpuset_recheck.rc != 0
+        - (dingo_cache_cpuset_on_insufficient | default('fail')) == 'warn'
+        - _cpuset_winner.rc is defined and _cpuset_winner.rc != 0
+
+    - name: Force best-effort cpuset from occupied CPUs
+      set_fact:
+        dingo_cache_cpuset_effective: "{{ _cpuset_winner.stdout_lines | select('match', '^FORCED=') | first | default('FORCED=NONE') | regex_replace('^FORCED=', '') | trim }}"
+        dingo_cache_numa_node_effective: "{{ ((_cpuset_winner.stdout_lines | select('match', '^FORCED_NODE=') | first | default('') | regex_replace('^FORCED_NODE=', '') | trim) or (dingo_cache_numa_node | default(0))) }}"
+        _cpuset_source: "FORCED overlap — no free CPUs anywhere on this host, shards WILL contend with whatever runs there. Free CPUs or add capacity ASAP."
+        _cpuset_forced: true
+      when:
+        - (dingo_cache_cpuset | default('')) | length == 0
+        - cpuset_recheck.rc is not defined or cpuset_recheck.rc != 0
+        - (dingo_cache_cpuset_on_insufficient | default('fail')) == 'force'
+        - _cpuset_winner.rc is defined and _cpuset_winner.rc != 0
+
+    - name: Fail when even a forced cpuset is impossible
+      assert:
+        that:
+          - dingo_cache_cpuset_effective not in ['NONE', '']
+        fail_msg: >-
+          {{ inventory_hostname }} has fewer than {{ dingo_cache_shards }} physical
+          cores in total — no cpuset, free or forced, can be built. This host
+          cannot run dingo-cache with {{ dingo_cache_shards }} shards; lower
+          dingo_cache_shards or add CPUs.
+      when:
+        - (dingo_cache_cpuset | default('')) | length == 0
+        - cpuset_recheck.rc is not defined or cpuset_recheck.rc != 0
+        - (dingo_cache_cpuset_on_insufficient | default('fail')) == 'force'
+        - _cpuset_winner.rc is defined and _cpuset_winner.rc != 0
+
+    - name: Set effective cpuset and NUMA facts
+      set_fact:
+        dingo_cache_cpuset_effective: >-
+          {{ (dingo_cache_cpuset | default('')) if (dingo_cache_cpuset | default('')) | length > 0
+             else (_cpuset_winner.stdout_lines | select('match', '^SUGGEST=') | first | default('SUGGEST=NONE') | regex_replace('^SUGGEST=', '')) }}
+        dingo_cache_numa_node_effective: >-
+          {{ (_cpuset_winner.stdout_lines | select('match', '^NODE=') | first | default('') | regex_replace('^NODE=', ''))
+             if (dingo_cache_cpuset | default('')) | length == 0 and _cpuset_winner.rc == 0
+             else (dingo_cache_numa_node | default(0)) }}
+      when:
+        - cpuset_recheck.rc is not defined or cpuset_recheck.rc != 0
+        - (_cpuset_forced | default(false)) == false
+
+    - name: Warn when the effective NUMA node is short on free memory
+      debug:
+        msg: >-
+          WARNING: NUMA node {{ dingo_cache_numa_node_effective }} on
+          {{ inventory_hostname }} is
+          {{ (_cache_node_mem | default({})).get(dingo_cache_numa_node_effective | string, 'n/a') }}%
+          memory-used (threshold {{ _cache_mem_thr | default(50) }}%) — bootstrap
+          OOM risk. Free memory on this node or pin to a cooler node via
+          dingo_cache_cpuset_numa_node.
+      when:
+        - (dingo_cache_cpuset | default('')) | length == 0
+        - dingo_cache_cpuset_effective is defined and dingo_cache_cpuset_effective not in ['NONE', '']
+        - dingo_cache_numa_node_effective is defined
+        - ((_cache_node_mem | default({})).get(dingo_cache_numa_node_effective | string, 0) | int) > (_cache_mem_thr | default(50) | int)
+
+    - name: Log forced-pick CPU usage
+      debug:
+        msg: >-
+          FORCED least-busy pick on {{ inventory_hostname }}: cpuset=
+          {{ dingo_cache_cpuset_effective }} (node
+          {{ dingo_cache_numa_node_effective }}) — sampled 1s /proc/stat usage %
+          per CPU
+          [{{ _cpuset_winner.stdout_lines | select('match', '^FORCED_USAGE=') | first | default('FORCED_USAGE=') | regex_replace('^FORCED_USAGE=', '') }}].
+          These CPUs ARE claimed or busy elsewhere, so shards WILL contend with
+          whatever holds them until CPUs free up.
+      when:
+        - (_cpuset_forced | default(false)) == true
+        - _cpuset_winner.stdout_lines is defined
+
+    - name: Log cpuset selection
+      debug:
+        msg: >-
+          cpuset={{ dingo_cache_cpuset_effective | default('NONE (unpinned)') }}
+          ({{ 'manual override' if (dingo_cache_cpuset | default('')) | length > 0 else ('auto-detected on ' + (_cpuset_source | default('unknown node'))) }},
+          shards={{ dingo_cache_shards }},
+          no numactl in v5.2 — locality is the cpuset's node)
+  when: dingo_cache_pin_cpu | default(true) | bool
+
+# --- RDMA device validation (v5.2+, only when RDMA is on) ---
+# The IB device name (e.g. ib6s200p0) comes from the host's HCA layout — if it
+# differs per node, override dingo_cache_rdma_device per host in host_vars.
+- name: Check RDMA device exists
+  shell: "ibv_devices 2>/dev/null | awk '{print $1}' | grep -qx '{{ dingo_cache_rdma_device }}' && echo present || echo missing"
+  register: rdma_dev_check
+  changed_when: false
+  failed_when: false
+  when: dingo_cache_use_rdma | default(true) | bool
+
+- name: Fail when RDMA device is missing
+  assert:
+    that:
+      - rdma_dev_check.stdout | trim == 'present'
+    fail_msg: >-
+      RDMA device {{ dingo_cache_rdma_device }} not found on {{ inventory_hostname }}
+      (ibv_devices says: {{ rdma_dev_check.stdout | trim }}; if the ibv_devices
+      tool itself is missing, the InfiniBand stack is not installed).
+      Set the right name per host via dingo_cache_rdma_device in host_vars, or
+      dingo_cache_use_rdma=false to deploy without RDMA.
+  when:
+    - dingo_cache_use_rdma | default(true) | bool
+    - rdma_dev_check.stdout is defined
+    - rdma_dev_check.stdout | trim == 'missing'
 
 # --- Resolve effective data/log mount prefixes ---
 # dingo_cache_mount_prefix is the deprecated single-prefix fallback: each

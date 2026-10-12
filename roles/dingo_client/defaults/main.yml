@@ -16,15 +16,63 @@ dingo_client_cache_group: dingofs-group
 # Keep them in step with the two values above.
 dingo_client_mds_addrs_default: ""
 dingo_client_cache_group_default: dingofs-group
+# Appended to every loop-built service_name / base_dir / log_dir, e.g. "-v5.2"
+# gives dingofs-mount-<fs>-v5.2. Empty (default) = unversioned names.
+# NOTE: the deploy loop does NOT read same-named group_vars templates for
+# service_name / base_dir / log_dir (their {{ dingo_client_fsname }} arrives
+# RAW from hostvars and Ansible never re-renders carried-forward braces) —
+# version them ONLY via this suffix, or per-instance service_name:/log_dir:/
+# base_dir: keys on the dingo_clients entry.
+dingo_client_version_suffix: ""
 dingo_client_log_dir: "/mnt/disk1/dingofs/logs/{{ dingo_client_fsname }}"
 dingo_client_log_level: ERROR
 dingo_client_log_v: 0
 dingo_client_ld_preload: /usr/local/lib/libjemalloc.so.2
-# NUMA binding: which NUMA node to bind dingo-client to.
-# NOTE: Only effective on multi-NUMA machines. Single-NUMA VMs/small hosts automatically skip numactl,
-# so binding to node 1 is safe as a default (it won't be used on single-NUMA machines).
+# NUMA node fallback (v5.2: no numactl binding — the mount script runs unbound).
+# Only used as the last-resort preferred node when neither an explicit
+# cpuset_numa_node nor any per-node memory data exists (e.g. VMs).
 dingo_client_numa_cpunode: 1
 dingo_client_numa_memnode: 1
+
+# --- CPU pinning (v5.2+: --shards/--pin_cpu/--cpuset; same rules as dingo_cache) ---
+dingo_client_shards: 8
+dingo_client_pin_cpu: true
+# Manual override: a range ("100-115") or an explicit CPU list
+# ("37,39,43,46-49,53" — e.g. the least-busy CPUs from a cpuset-check.sh
+# fallback suggest). Empty (default) = auto-detect per host at
+# deploy time: SHARDS free whole cores on the preferred NUMA node, failing over
+# to the freest node, then to the least-busy CPUs. Overlap with claimed CPUs
+# follows dingo_client_cpuset_on_insufficient (fail stops, warn drops the list
+# to auto-detect, force pins it anyway); offline CPUs always fail.
+# Per-instance override via `cpuset:` on a dingo_clients entry (needed when
+# mounts must differ); validated the same way when set.
+dingo_client_cpuset: ""
+# PREFERRED node for the auto-detected cpuset. Empty (default) = AUTO, decided
+# once per host: the NUMA node of dingo_client_rdma_device, unless that node is
+# hotter than dingo_client_ib_node_mem_max_pct — then the coolest node under
+# the threshold. Per-mount cpuset_numa_node: overrides this per mount.
+dingo_client_cpuset_numa_node: ""
+# A node more memory-used than this % is skipped as preferred (bootstrap OOM
+# risk); the deploy warns LOUDLY when every node is hotter than this.
+dingo_client_ib_node_mem_max_pct: 50
+dingo_client_cpuset_busy_pct: 30
+# fail|warn|force when a node cannot offer <shards> free whole cores — and when
+# a manual cpuset: overlaps claimed CPUs.
+# fail = stop the deploy. warn = keep going WITHOUT --cpuset (unpinned);
+# an overlapping manual list is dropped back to auto-detect instead.
+# force = pin onto OCCUPIED CPUs anyway (least-busy pick by sampled usage,
+# fully-shared boxes; shards will contend until CPUs are freed.
+dingo_client_cpuset_on_insufficient: fail
+# true = cpuset expands to all sibling threads of the chosen cores (e.g. 8
+# cores -> 16 ids like 100-115 on adjacent-pair HT layouts); false (default) =
+# first-thread ids only, one shard per physical core, no hyperthread sharing.
+dingo_client_cpuset_include_siblings: false
+
+# --- RDMA (v5.2+: --use_rdma/--cache_rdma_device/--cache_rdma_port_num/--buffer_pool_mb) ---
+dingo_client_use_rdma: true
+dingo_client_rdma_device: ib6s200p0
+dingo_client_rdma_port_num: 1
+dingo_client_buffer_pool_mb: 1024
 
 # FUSE / VFS tuning
 dingo_client_cache_store: none
@@ -32,12 +80,10 @@ dingo_client_vfs_read_executor_thread: 32
 dingo_client_vfs_read_buffer_total_mb: 8000
 dingo_client_vfs_write_buffer_total_mb: 8192
 dingo_client_vfs_prefetch_blocks: 0
-dingo_client_connections: 3
 dingo_client_fuse_max_threads: 512
 dingo_client_fuse_enable_readdir_cache: "false"
 dingo_client_fuse_attr_cache_timeout_s: 10
 dingo_client_fuse_entry_cache_timeout_s: 10
-# dingo_client_vfs_data_writeback_suffix: "@bfloat16.data:@bfloat16.tmp"
 
 dingo_client_service_name: "dingofs-mount-{{ dingo_client_fsname }}"
 

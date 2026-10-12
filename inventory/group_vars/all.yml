@@ -138,7 +138,7 @@ jemalloc_version: "5.3.0"
 jemalloc_local_src: "/root/dingofs/pkg/jemalloc-5.3.0.tar.bz2"
 
 # --- Dingo Cache Service ---
-dingo_cache_version: v5.1
+dingo_cache_version: v5.2
 dingo_cache_service_name: dingo-cache-{{ dingo_cache_version }}
 dingo_cache_base_dir: "/root/dingofs/dingo-cache/{{ dingo_cache_version }}"
 dingo_cache_bin_name: dingo-cache
@@ -158,6 +158,39 @@ dingo_cache_disk_usage_ratio: 0.80
 dingo_cache_cache_size_mb: 3145728   # FALLBACK only; auto-computed per-disk total × ratio overrides when LVM mounts exist
 dingo_cache_free_space_ratio: "0.01"
 dingo_cache_iodepth: 1024
+# --- CPU pinning (v5.2; cpuset auto-detected per host at deploy time) ---
+# Leave dingo_cache_cpuset empty so each node gets the SHARDS free whole cores
+# on its own best NUMA node (RDMA device's node when its memory is cooler than
+# the threshold, else the coolest node; fails over to the freest node when the
+# preferred node is fully claimed). Set a cpuset ONLY per
+# host (host_vars) for a hand-picked range such as 32-63 — never one
+# fleet-wide value, free CPUs differ per node.
+dingo_cache_shards: 8
+dingo_cache_pin_cpu: true
+dingo_cache_cpuset: ""
+# ...or an explicit range/list per host in host_vars ("32-63",
+# "37,39,43,46-49,53"). Overlap follows ..._on_insufficient below (force here
+# = an overlapping explicit list is pinned anyway, with a LOUD warning).
+# Empty = AUTO per host: NUMA node of dingo_cache_rdma_device, unless that node
+# is hotter than dingo_cache_ib_node_mem_max_pct (OOM risk) — then the coolest
+# node under the threshold. Set ONLY per host in host_vars to override.
+dingo_cache_cpuset_numa_node: ""
+# Skip-a-node memory threshold (mirrors the manual numa-mem.sh 50% rule).
+dingo_cache_ib_node_mem_max_pct: 50
+dingo_cache_cpuset_busy_pct: 30
+# force (not fail): shared boxes like hd02-cpu-* have ZERO free CPUs, and the
+# service must still start — pin onto occupied CPUs and contend rather than
+# refuse to deploy. Only a host with fewer physical cores than shards still fails.
+dingo_cache_cpuset_on_insufficient: force
+dingo_cache_cpuset_include_siblings: false
+# --- RDMA (v5.2; override dingo_cache_rdma_device per host in host_vars if HCA names differ) ---
+dingo_cache_use_rdma: true
+dingo_cache_rdma_device: ib6s200p0
+dingo_cache_rdma_port_num: 1
+dingo_cache_buffer_pool_mb: 1024
+dingo_cache_rdma_idle_timeout_s: 300
+# --- Poll mode (v5.2; needs pin_cpu + free cpuset, else it burns shared CPUs) ---
+dingo_cache_poll_mode: true
 dingo_cache_log_level: INFO
 dingo_cache_log_v: 0
 dingo_cache_ld_preload: /usr/local/lib/libjemalloc.so.2
@@ -202,6 +235,44 @@ dingo_client_ld_preload: /usr/local/lib/libjemalloc.so.2
 dingo_client_numa_cpunode: 1
 dingo_client_numa_memnode: 1
 
+# Version suffix appended to every loop-built service unit, base dir and log
+# dir (e.g. "-v5.2" -> dingofs-mount-<fs>-v5.2, .../<fs>-v5.2). Empty = unversioned.
+# NOTE: do NOT version by templating dingo_client_service_name/base_dir/
+# log_dir with {{ dingo_client_fsname }}-v5.2 — the loop ignores those globals
+# (their braces arrive RAW and are never re-rendered; systemd then fails on a
+# name with literal braces). This suffix is the supported knob.
+dingo_client_version_suffix: "-v5.2"
+
+# --- CPU pinning / RDMA (v5.2; same rules as dingo-cache: cpuset auto-detected per host) ---
+# Leave dingo_client_cpuset empty: each mount gets SHARDS free whole cores, and
+# mounts on the same host never share (alayanew's pick is excluded from manila's).
+# Per-mount override (shards:/cpuset:/cpuset_numa_node:) on a dingo_clients entry
+# when mounts must differ — e.g. a hand-picked range like 100-115.
+# NOTE: auto-detect yields first-thread ids (8 ids for 8 shards). If your 100-115
+# convention means HT pairs (8 cores x 2 threads), set
+# dingo_client_cpuset_include_siblings: true to reproduce that shape automatically.
+dingo_client_shards: 8
+dingo_client_pin_cpu: true
+dingo_client_cpuset: ""
+# ...or an explicit range/list per host in host_vars (or cpuset: per mount).
+# Overlap follows ..._on_insufficient below (force here = an overlapping
+# explicit list is pinned anyway, with a LOUD warning).
+# Empty = AUTO per host (RDMA device's NUMA node, memory permitting — same rule
+# as dingo-cache). Per-mount cpuset_numa_node: overrides this per mount.
+dingo_client_cpuset_numa_node: ""
+# Skip-a-node memory threshold (mirrors the manual numa-mem.sh 50% rule).
+dingo_client_ib_node_mem_max_pct: 50
+dingo_client_cpuset_busy_pct: 30
+# force (not fail): client hosts are fully shared — guarantee the mount starts
+# by pinning onto occupied CPUs when nothing is free. Expect contention noise
+# until CPUs are freed; the deploy log marks forced mounts LOUDLY.
+dingo_client_cpuset_on_insufficient: force
+dingo_client_cpuset_include_siblings: false
+dingo_client_use_rdma: true
+dingo_client_rdma_device: ib6s200p0
+dingo_client_rdma_port_num: 1
+dingo_client_buffer_pool_mb: 1024
+
 # MDS addresses (same as dingo_cache_mds_addrs typically)
 dingo_client_mds_addrs: "192.168.0.44:16900,192.168.0.44:16901,192.168.0.44:16902,192.168.0.45:16900,192.168.0.45:16901,192.168.0.45:16902,192.168.0.46:16900,192.168.0.46:16901,192.168.0.46:16902"
 
@@ -211,12 +282,10 @@ dingo_client_vfs_read_executor_thread: 32
 dingo_client_vfs_read_buffer_total_mb: 32000
 dingo_client_vfs_write_buffer_total_mb: 65536
 dingo_client_vfs_prefetch_blocks: 0
-dingo_client_connections: 3
 dingo_client_fuse_max_threads: 512
 dingo_client_fuse_enable_readdir_cache: "false"
 dingo_client_fuse_attr_cache_timeout_s: 10
 dingo_client_fuse_entry_cache_timeout_s: 10
-# dingo_client_vfs_data_writeback_suffix: "@bfloat16.data:@bfloat16.tmp"
 
 # --- Dingo command environment (~/.dingo/dingo.yaml) ---
 # mdsaddr is mandatory; reuses dingo_client_mds_addrs above.
