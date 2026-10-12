@@ -151,7 +151,7 @@
 
 - name: Select preferred NUMA node (client hosts)
   set_fact:
-    _client_ib_preferred_node: "{{ _client_ib_node if (_client_ib_node | length > 0 and ((_client_node_mem | default({})).get(_client_ib_node, 101) | int) <= (_client_mem_thr | int)) else (_client_mem_coolest if (_client_mem_coolest | length > 0) else (_client_mem_lowest if (_client_mem_lowest | length > 0) else (dingo_client_numa_cpunode | default(1) | string))) }}"
+    _client_ib_preferred_node: "{{ _client_ib_node if (_client_ib_node | length > 0 and ((_client_node_mem | default({})).get(_client_ib_node, 101) | int) <= (_client_mem_thr | int)) else (_client_mem_coolest if (_client_mem_coolest | length > 0) else (_client_mem_lowest if (_client_mem_lowest | length > 0) else '')) }}"
     _client_mem_all_hot: "{{ (_client_node_mem | default({}) | length > 0) and (_client_mem_coolest | default('') | length == 0) }}"
   when: dingo_client_pin_cpu | default(true) | bool
 

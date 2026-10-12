@@ -201,10 +201,9 @@ dingo_cache_log_prefix: "/mnt/aux"
 dingo_cache_data_subdir: "dingofs/dingo-cache-v5.2"
 dingo_cache_log_subdir: "dingofs/logs/dingo-cache-v5.2"
 
-# Comma-separated cache directories (aligned with LVM mount points)
-# FALLBACK only — auto-discovery from mounted dingo_cache_* LVM volumes takes precedence.
-#dingo_cache_cache_dirs: "/mnt/disk1/dingofs/dingo-cache,/mnt/disk2/dingofs/dingo-cache,/mnt/disk3/dingofs/dingo-cache"
-#dingo_cache_log_dir: "/mnt/disk4/dingofs/logs/dingo-cache"
+# NOTE: dingo_cache_log_dir is DERIVED every deploy by the prefix rule
+# (log prefix else /mnt/disk1, + dingo_cache_log_subdir) — do not pin it here.
+# With the values above this yields /mnt/aux/dingofs/logs/dingo-cache-v5.2.
 
 # MDS addresses (host:port pairs, comma-separated)
 dingo_cache_mds_addrs: "192.168.0.44:16900,192.168.0.44:16901,192.168.0.44:16902,192.168.0.45:16900,192.168.0.45:16901,192.168.0.45:16902,192.168.0.46:16900,192.168.0.46:16901,192.168.0.46:16902"
@@ -232,8 +231,6 @@ dingo_client_log_dir: "/mnt/disk1/dingofs/logs/{{ dingo_client_fsname }}"
 dingo_client_log_level: ERROR
 dingo_client_log_v: 0
 dingo_client_ld_preload: /usr/local/lib/libjemalloc.so.2
-dingo_client_numa_cpunode: 1
-dingo_client_numa_memnode: 1
 
 # Version suffix appended to every loop-built service unit, base dir and log
 # dir (e.g. "-v5.2" -> dingofs-mount-<fs>-v5.2, .../<fs>-v5.2). Empty = unversioned.

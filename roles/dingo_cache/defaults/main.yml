@@ -118,7 +118,10 @@ dingo_cache_poll_mode: true
 dingo_cache_data_subdir: "dingofs/dingo-cache"
 dingo_cache_log_subdir: "dingofs/logs/dingo-cache"
 dingo_cache_cache_dirs: "/mnt/disk1/dingofs/dingo-cache,/mnt/disk2/dingofs/dingo-cache,/mnt/disk3/dingofs/dingo-cache"
-dingo_cache_log_dir: "/mnt/disk4/dingofs/logs/dingo-cache"
+# Pre-selection default only — the "Set dingo-cache log dir from prefix rule"
+# task recomputes this every deploy as (effective log prefix else /mnt/disk1)
+# + dingo_cache_log_subdir, so a custom subdir (e.g. -v5.2) composes correctly.
+dingo_cache_log_dir: "/mnt/disk1/dingofs/logs/dingo-cache"
 
 dingo_cache_mds_addrs: ""
 
