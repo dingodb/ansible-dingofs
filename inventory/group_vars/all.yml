@@ -269,6 +269,7 @@ dingo_client_use_rdma: true
 dingo_client_rdma_device: ib6s200p0
 dingo_client_rdma_port_num: 1
 dingo_client_buffer_pool_mb: 1024
+dingo_client_rdma_max_connections: 128
 
 # MDS addresses (same as dingo_cache_mds_addrs typically)
 dingo_client_mds_addrs: "192.168.0.44:16900,192.168.0.44:16901,192.168.0.44:16902,192.168.0.45:16900,192.168.0.45:16901,192.168.0.45:16902,192.168.0.46:16900,192.168.0.46:16901,192.168.0.46:16902"
