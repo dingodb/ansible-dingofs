@@ -3,27 +3,47 @@
    the end of a line joins the surrounding lines into one and the result is not
    valid YAML. With the tags on their own lines, the branch where the variable is
    undefined renders byte-identically to not having this block at all. #}
+{# Two cluster shapes, keyed off dingofs_mds_storage_engine:
+     - dingo-store (default, unchanged): coordinator + store + mds + executor,
+       data_dir/raft_dir/cluster_id in global.
+     - tikv: the MDS keeps its metadata in TiKV / PD, so there is no
+       coordinator, store or executor at all, and no local data_dir/raft_dir
+       (only log_dir). Anything tikv-specific below is rendered only in that
+       shape, so dingo-store sites render exactly as before. #}
+{% set _tikv = dingofs_mds_storage_engine | default('dingo-store') == 'tikv' %}
 kind: dingofs
 global:
 {% if dingofs_report_usage is defined %}
   report_usage: {{ dingofs_report_usage | lower }}
 {% endif %}
   container_image: {{ dingofs_container_image }}
+{% if not _tikv %}
   data_dir: {{ dingofs_data_dir }}
+{% endif %}
   log_dir: {{ dingofs_log_dir }}
+{% if _tikv %}
+{% if dingofs_sequence_offset | default(0) | int > 0 %}
+  sequence_offset: {{ dingofs_sequence_offset | int }}
+{% endif %}
+{% endif %}
+{% if not _tikv %}
   raft_dir: {{ dingofs_raft_dir }}
   default_replica_num: {{ dingofs_default_replica_num }}
+{% endif %}
   source_core_dir: {{ dingofs_core_dir }}
   target_core_dir: {{ dingofs_core_dir }}
+{% if not _tikv %}
   cluster_id: {{ dingofs_cluster_id }}
 {% if dingofs_sequence_offset | default(0) | int > 0 %}
   sequence_offset: {{ dingofs_sequence_offset | int }}
+{% endif %}
 {% endif %}
   variable:
     home: {{ dingofs_home_tmp }}
 {% for host in groups['meta_servers'] %}
     machine{{ loop.index }}: {{ host }}
 {% endfor %}
+{% if not _tikv %}
 
 coordinator_services:
   config:
@@ -47,11 +67,29 @@ store_services:
 {% for host in groups['meta_servers'] %}
     - host: ${machine{{ loop.index }}}
 {% endfor %}
+{% endif %}
 
 mds_services:
   config:
     server.port: {{ mds_base_port }}${service_replica_sequence}
+{% if _tikv %}
+    mds_storage_engine: {{ dingofs_mds_storage_engine }}
+{% if (dingofs_mds_storage_url | default('') | length) > 0 %}
+    storage_url: {{ dingofs_mds_storage_url }}
+{% endif %}
+{% endif %}
+{% if dingofs_mds_enable_rocksdb_perf_metric is defined %}
+    enable_rocksdb_perf_metric: {{ dingofs_mds_enable_rocksdb_perf_metric | lower }}
+{% endif %}
+{% if dingofs_mds_ino_generator_share_enable is defined %}
+    mds_ino_generator_share_enable: {{ dingofs_mds_ino_generator_share_enable | lower }}
+{% endif %}
+{% if dingofs_mds_check_before_create_enable is defined %}
+    mds_check_before_create_enable: {{ dingofs_mds_check_before_create_enable | lower }}
+{% endif %}
+{% if not _tikv %}
     mds_compact_chunk_enable: {{ mds_compact_chunk_enable | lower }}
+{% endif %}
 {% if mds_gc_worker_num is defined %}
     mds_gc_worker_num: {{ mds_gc_worker_num }}
 {% endif %}
@@ -63,6 +101,7 @@ mds_services:
     - host: ${machine{{ loop.index }}}
       replicas: {{ mds_replicas }}
 {% endfor %}
+{% if not _tikv %}
 
 executor_services:
   config:
@@ -75,3 +114,4 @@ executor_services:
     java.MaxDirectMemorySize: {{ executor_java_max_direct_memory }}
   deploy:
     - host: ${machine1}
+{% endif %}

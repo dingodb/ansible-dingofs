@@ -211,6 +211,30 @@ Twenty of the playbooks set `remote_user: root` explicitly. The rest inherit
 and most region inventories override that with `ansible_user: root` in
 `group_vars/all.yml` anyway -- so in practice everything runs as root.
 
+### TiKV-backed meta clusters: run the pre-flight first
+
+A v5.2 MDS with `mds_storage_engine: tikv` keeps its metadata in TiKV, so a
+healthy TiKV cluster is a hard prerequisite. TiKV itself is deployed and
+upgraded with **tiup**, deliberately not by ansible (tiup owns the cluster
+state machine and its rolling operations); what this repo provides is the
+read-only check:
+
+```bash
+ansible-playbook -i <region>/hosts-meta.yml playbooks/tikv_verify.yml
+```
+
+It asserts that tiup lists the cluster, every component is `Up`, and PD
+reports every store `Up`, then prints the PD endpoints and the exact
+`mds_storage_engine` / `storage_url` lines for the site topology. It never
+writes anything, so it is safe before any deploy and on a live cluster.
+Sites whose metadata lives in dingo-store or rqlite do not need it.
+
+Note: the current `topology.yaml.j2` always renders coordinator/store/executor
+sections and does not render `mds_storage_engine` / `storage_url`, so a
+TiKV-backed cluster whose topology is MDS-only (no dingo-store, no executor)
+is deployed from a standalone topology file with `dingo cluster add -f`
+rather than through `05_deploy_cluster.yml`.
+
 ## DingoFS Cache Deployment
 
 Dingo Cache is deployed independently from the meta server cluster, on a separate set of `cache_servers` nodes.

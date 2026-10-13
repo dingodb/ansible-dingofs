@@ -1,4 +1,30 @@
 ---
+# --- Cluster shape ----------------------------------------------------------
+# dingo-store (the default, unchanged): coordinator + store + mds + executor,
+# with local data_dir/raft_dir on every meta server.
+# tikv: the MDS keeps its metadata in TiKV (PD address in
+# dingofs_mds_storage_url) -- there is no coordinator, store or executor at all
+# and no local data_dir/raft_dir. The topology template and the image pulls both
+# branch on this. See README "TiKV-backed meta clusters".
+dingofs_mds_storage_engine: dingo-store
+dingofs_mds_storage_url: ""
+# Node that runs the dingo CLI and owns the one-off executor image pull.
+# Empty = the historical default, groups['rqlite_master'][0]; a tikv site has no
+# rqlite and should name its admin node here instead.
+dingofs_control_host: ""
+
+# Container engine CLI for the image pulls. Region configs override it (xn01 is
+# the only docker site so far); podman keeps the historical behaviour.
+container_engine: podman
+
+# Paths whose base directory must exist before the CLI writes into them. log_dir
+# and core_dir apply to both shapes; data_dir/raft_dir/store_mount_volumes only
+# exist in the dingo-store shape.
+dingofs_dir_list: >-
+  {{ [dingofs_log_dir, dingofs_core_dir]
+     + ([dingofs_data_dir, dingofs_raft_dir, store_mount_volumes]
+        if dingofs_mds_storage_engine | default('dingo-store') != 'tikv' else []) }}
+
 dingofs_cluster_name: v5.1
 dingofs_cluster_id: 1
 dingofs_container_image: "harbor.zetyun.cn/dingofs/dingofs:v5.1-b484ef2"

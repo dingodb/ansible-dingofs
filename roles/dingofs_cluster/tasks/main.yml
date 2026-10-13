@@ -34,18 +34,29 @@
     group: "{{ dingofs_user }}"
     mode: "0755"
   delegate_to: "{{ item.0 }}"
-  loop: "{{ groups['meta_servers'] | product([dingofs_data_dir, dingofs_log_dir, dingofs_raft_dir, dingofs_core_dir, store_mount_volumes]) | list }}"
-  when: "'${' not in item.1.split('/${')[0]"
+  loop: "{{ groups['meta_servers'] | product(dingofs_dir_list) | list }}"
+  when:
+    - (item.1 | default('') | length) > 0
+    - "'${' not in item.1.split('/${')[0]"
 
 # --- Pull container images on ALL meta_servers ---
+#
+# The engine is a site variable (region configs set container_engine: docker or
+# podman; xn01 is docker, everyone else podman). `images -q <ref>` and `pull`
+# exist in both CLIs, which the check below relies on -- `podman image exists`
+# has no docker equivalent.
+#
+# Store / executor images only exist in the dingo-store shape. A tikv-backed
+# cluster has neither service, and its config carries no store/executor image at
+# all, so those two pulls are skipped rather than failing on an undefined var.
 - name: Ensure DingoFS container image is present for dingofs user
   become: true
   become_user: "{{ dingofs_user }}"
   shell: |
-    if podman image exists {{ dingofs_container_image }}; then
+    if {{ container_engine }} images -q {{ dingofs_container_image }} 2>/dev/null | grep -q .; then
       echo present
     else
-      podman pull {{ dingofs_container_image }}
+      {{ container_engine }} pull {{ dingofs_container_image }}
     fi
   args:
     executable: /bin/bash
@@ -58,10 +69,10 @@
   become: true
   become_user: "{{ dingofs_user }}"
   shell: |
-    if podman image exists {{ dingofs_store_image }}; then
+    if {{ container_engine }} images -q {{ dingofs_store_image }} 2>/dev/null | grep -q .; then
       echo present
     else
-      podman pull {{ dingofs_store_image }}
+      {{ container_engine }} pull {{ dingofs_store_image }}
     fi
   args:
     executable: /bin/bash
@@ -69,21 +80,27 @@
   changed_when: "'present' not in pull_store.stdout"
   delegate_to: "{{ item }}"
   loop: "{{ groups['meta_servers'] }}"
+  when: dingofs_mds_storage_engine | default('dingo-store') != 'tikv'
 
+# Delegated to the control node: pulling the executor image once is enough, it is
+# only needed by the single executor instance. dingofs_control_host lets a site
+# name that node explicitly; the rqlite master is the historical default (sites
+# without rqlite used to have to invent that group just to satisfy this line).
 - name: Ensure Dingo Executor container image is present for dingofs user
   become: true
   become_user: "{{ dingofs_user }}"
   shell: |
-    if podman image exists {{ dingofs_executor_image }}; then
+    if {{ container_engine }} images -q {{ dingofs_executor_image }} 2>/dev/null | grep -q .; then
       echo present
     else
-      podman pull {{ dingofs_executor_image }}
+      {{ container_engine }} pull {{ dingofs_executor_image }}
     fi
   args:
     executable: /bin/bash
   register: pull_executor
   changed_when: "'present' not in pull_executor.stdout"
-  delegate_to: "{{ groups['rqlite_master'][0] }}"
+  delegate_to: "{{ dingofs_control_host if (dingofs_control_host | default('') | length) > 0 else groups['rqlite_master'][0] }}"
+  when: dingofs_mds_storage_engine | default('dingo-store') != 'tikv'
 
 # --- Generate config files on admin node ---
 - name: Create working directory for cluster configs
