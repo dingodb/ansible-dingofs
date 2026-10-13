@@ -65,4 +65,5 @@ LD_PRELOAD={{ dingo_client_ld_preload }} \
     --use_rdma={{ 'true' if dingo_client_use_rdma | default(true) | bool else 'false' }}{% if dingo_client_use_rdma | default(true) | bool %} \
     --cache_rdma_device={{ dingo_client_rdma_device | default('ib6s200p0') }} \
     --cache_rdma_port_num={{ dingo_client_rdma_port_num | default(1) }} \
-    --buffer_pool_mb={{ dingo_client_buffer_pool_mb | default(1024) }}{% endif %}
+    --buffer_pool_mb={{ dingo_client_buffer_pool_mb | default(1024) }} \
+    --rdma_max_connections={{ dingo_client_rdma_max_connections | default(128) }}{% endif %}

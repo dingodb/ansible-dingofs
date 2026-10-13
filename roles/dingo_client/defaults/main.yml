@@ -67,11 +67,12 @@ dingo_client_cpuset_on_insufficient: fail
 # first-thread ids only, one shard per physical core, no hyperthread sharing.
 dingo_client_cpuset_include_siblings: false
 
-# --- RDMA (v5.2+: --use_rdma/--cache_rdma_device/--cache_rdma_port_num/--buffer_pool_mb) ---
+# --- RDMA (v5.2+: --use_rdma/--cache_rdma_device/--cache_rdma_port_num/--buffer_pool_mb/--rdma_max_connections) ---
 dingo_client_use_rdma: true
 dingo_client_rdma_device: ib6s200p0
 dingo_client_rdma_port_num: 1
 dingo_client_buffer_pool_mb: 1024
+dingo_client_rdma_max_connections: 128
 
 # FUSE / VFS tuning
 dingo_client_cache_store: none
