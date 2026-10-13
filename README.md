@@ -2,6 +2,26 @@
 
 Ansible playbooks and roles for deploying and managing DingoFS meta server clusters, DingoFS Cache nodes, and DingoFS Client (FUSE mount) nodes on CentOS/RHEL/Rocky and Ubuntu/Debian Linux.
 
+## Versioned branches
+
+A branch deploys exactly one DingoFS version. `main` tracks the current one and
+the `VERSION` file at the repo root names it; when a new version arrives, `main`
+moves on and a branch named after the old version freezes it:
+
+| branch   | deploys                     | VERSION |
+|----------|-----------------------------|---------|
+| `main`   | current version (v5.2)      | `v5.2`  |
+| `v5.1`   | v5.1 sites (frozen)         | --      |
+| `v5.2`   | v5.2 sites, once main is v5.3 | `v5.2` |
+
+Site configs live in the private `ansible-dingofs-env` repo and declare their
+version as `dingofs_site_version`. The `version_guard` role (imported by
+`dingo_cache`, `dingo_client`, `dingofs_cluster`) asserts that the checkout and
+the site agree, and fails before writing anything -- the v5.2 config carries
+flags the v5.1 binaries do not define, so the wrong pairing breaks a running
+service rather than erroring out cleanly. Override for a deliberate one-off:
+`-e dingofs_skip_version_check=true`.
+
 ## Prerequisites
 
 - **Control node**: Linux with Ansible >= 2.12 installed

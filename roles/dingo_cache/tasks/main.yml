@@ -3,6 +3,11 @@
 # Role: dingo_cache - Deploy dingo-cache service
 # ============================================================
 
+# --- Version guard: branch = version, fail before writing anything ---
+# (see roles/version_guard; the v5.2 conf below is not readable by v5.1 binaries)
+- import_role:
+    name: version_guard
+
 # --- Determine listen IP ---
 - name: Detect listen IP from network interface
   shell: ip route | awk '/{{ dingo_cache_ip_pattern }}/ && /src/ { for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}'

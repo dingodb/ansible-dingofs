@@ -3,6 +3,11 @@
 # Role: dingo_client - Deploy dingo-client (FUSE mount) services
 # ============================================================
 
+# --- Version guard: branch = version, fail before writing anything ---
+# (see roles/version_guard; the v5.2 mount flags are not readable by v5.1 binaries)
+- import_role:
+    name: version_guard
+
 # --- Pre-flight: psmisc (provides fuser) ---
 #
 # instance.yml decides whether a restart is safe by running
