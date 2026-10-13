@@ -1,0 +1,40 @@
+---
+# ============================================================
+# Role: version_guard - Fail before deploying the wrong version
+# ============================================================
+#
+# Branch = version (see README "Versioned branches"). Each ansible-dingofs
+# branch carries a VERSION file naming the DingoFS version it deploys, and
+# every site config declares the version it pairs with in dingofs_site_version.
+#
+# Imported by the roles that write version-specific service config
+# (dingo_cache, dingo_client, dingofs_cluster) so the check runs before
+# anything on the host is touched.
+#
+# Why this exists: main (v5.2) writes flags the v5.1 binaries do not define --
+# --shards is emitted unconditionally and --pin_cpu/--use_rdma/--poll_mode are
+# defaulted on. Running that code against a v5.1 site silently rewrites its
+# cache conf / mount script and the service then dies on an unknown gflags
+# flag. A stray `git pull` must not be able to do that.
+#
+# Deliberate one-off override: -e dingofs_skip_version_check=true
+
+- name: Guard - the code branch and the site config must agree on the version
+  vars:
+    _dingofs_repo_version: >-
+      {{ lookup('ansible.builtin.file', playbook_dir + '/../VERSION', errors='ignore') | default('', true) | trim }}
+  assert:
+    that:
+      - _dingofs_repo_version | length > 0
+      - (dingofs_site_version | default('')) | length > 0
+      - dingofs_site_version == _dingofs_repo_version
+    fail_msg: >-
+      Version guard failed: this ansible-dingofs checkout deploys
+      {{ _dingofs_repo_version if (_dingofs_repo_version | length > 0) else '(no VERSION file on this branch)' }},
+      but the site config declares dingofs_site_version={{ dingofs_site_version | default('(unset)') }}.
+      Fix: check out the branch that matches the site (a v5.1 site needs the
+      v5.1 branch, a v5.2 site needs main until the v5.2 branch exists), and
+      keep dingofs_site_version in the region's group_vars/all.yml in step.
+      Deliberate override only: -e dingofs_skip_version_check=true
+  run_once: true
+  when: not (dingofs_skip_version_check | default(false) | bool)

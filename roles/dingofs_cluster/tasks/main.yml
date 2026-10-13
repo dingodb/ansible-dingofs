@@ -3,6 +3,11 @@
 # Role: dingofs_cluster - Deploy DingoFS cluster via dingo CLI
 # ============================================================
 
+# --- Version guard: branch = version, fail before writing anything ---
+# (see roles/version_guard; a v5.2 topology must not be deployed by a v5.1 checkout)
+- import_role:
+    name: version_guard
+
 # --- Ensure base directories exist on all meta_servers ---
 #
 # The path is the part before the first "${" placeholder, which only yields a
