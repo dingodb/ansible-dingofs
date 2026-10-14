@@ -137,19 +137,17 @@
         # component rows look like: <id> <role> <host> <ports> <os/arch> <status> ...
         # column 2 is the role, column 1 the id (e.g. 192.168.0.16:2379 for a PD).
         _comp_lines: "{{ _tiup_display.stdout_lines | select('search', 'linux/') | list }}"
-        _roles: "{{ _comp_lines | map('split') | map(attribute=1) | list | unique | sort }}"
-        _pd_addrs: "{{ _comp_lines | map('split') | selectattr('1', 'eq', 'pd') | map('first') | list }}"
+        _roles: "{{ _comp_lines | map('regex_replace', '^[^ ]+[ ]+([^ ]+).*$', '\\1') | list | unique | sort }}"
+        _pd_addrs: "{{ _comp_lines | select('match', '^[^ ]+[ ]+pd[ ]+') | map('regex_replace', '[ ].*$', '') | list }}"
         _version: "{{ (_tiup_display.stdout_lines | select('match', '^Cluster version:') | list | first | default('Cluster version: ?')).split(':')[1] | trim }}"
       debug:
-        msg: |
-          TiKV cluster : {{ tikv_cluster_name }}  ({{ _version }})
-
-          Components   : {{ _comp_lines | length }} 个，全部 Up（上文已断言无 Down/Tombstone/Offline/N-A）
-                         角色：{{ _roles | join('  ') }}
-          Stores       : {{ _stores | length }} 个 Up（下限 {{ tikv_min_stores }}）
-          PD endpoints : {{ _pd_addrs | join('  ') }}
-
-          ↓ 照抄进区配置的 group_vars（dingofs_cluster 会渲染进 MDS 拓扑）：
-            dingofs_mds_storage_engine: tikv
-            dingofs_mds_storage_url: "list://{{ _pd_addrs | join(',') }}"
+        msg:
+          - "TiKV cluster : {{ tikv_cluster_name }}  ({{ _version }})"
+          - "Components   : {{ _comp_lines | length }} 个，全部 Up（上文已断言无 Down/Tombstone/Offline/N-A）"
+          - "               角色：{{ _roles | join('  ') }}"
+          - "Stores       : {{ _stores | length }} 个 Up（下限 {{ tikv_min_stores }}）"
+          - "PD endpoints : {{ _pd_addrs | join('  ') }}"
+          - "↓ 照抄进区配置的 group_vars（dingofs_cluster 会渲染进 MDS 拓扑）："
+          - "  dingofs_mds_storage_engine: tikv"
+          - "  dingofs_mds_storage_url: \"list://{{ _pd_addrs | join(',') }}\""
       run_once: true
