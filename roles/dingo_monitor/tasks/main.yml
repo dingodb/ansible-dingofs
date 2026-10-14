@@ -3,6 +3,59 @@
 # Role: dingo_monitor - Deploy the dingo monitor stack
 # ============================================================
 
+- name: Ensure monitor data directory exists on central host
+  become: true
+  file:
+    path: "{{ dingo_monitor_data_dir }}"
+    state: directory
+    owner: "{{ dingofs_user }}"
+    group: "{{ dingofs_user }}"
+    mode: "0755"
+  delegate_to: "{{ dingo_monitor_central_host }}"
+
+- name: Ensure node-exporter image is present on monitor hosts
+  become: true
+  become_user: "{{ dingofs_user }}"
+  shell: |
+    if {{ container_engine | default('podman') }} images -q {{ dingo_monitor_node_exporter_image }} 2>/dev/null | grep -q .; then
+      echo present
+    else
+      {{ container_engine | default('podman') }} pull {{ dingo_monitor_node_exporter_image }}
+    fi
+  args:
+    executable: /bin/bash
+  register: _pull_node_exp
+  changed_when: "'present' not in _pull_node_exp.stdout"
+  delegate_to: "{{ item }}"
+  loop: "{{ dingo_monitor_hosts }}"
+
+- name: Ensure prometheus and grafana images are present on central host
+  become: true
+  become_user: "{{ dingofs_user }}"
+  shell: |
+    if {{ container_engine | default('podman') }} images -q {{ item }} 2>/dev/null | grep -q .; then
+      echo present
+    else
+      {{ container_engine | default('podman') }} pull {{ item }}
+    fi
+  args:
+    executable: /bin/bash
+  register: _pull_central_mon
+  changed_when: "'present' not in _pull_central_mon.stdout"
+  delegate_to: "{{ dingo_monitor_central_host }}"
+  loop:
+    - "{{ dingo_monitor_prometheus_image }}"
+    - "{{ dingo_monitor_grafana_image }}"
+    - "{{ dingo_monitor_sync_image }}"
+
+- name: Activate target DingoFS cluster before monitor operations
+  become: true
+  become_user: "{{ dingofs_user }}"
+  shell: "{{ dingo_cli_bin_dir }}/dingo cluster checkout {{ dingofs_cluster_name }}"
+  args:
+    executable: /bin/bash
+  changed_when: false
+
 - name: Generate monitor.yaml
   template:
     src: monitor.yaml.j2
@@ -29,7 +82,8 @@
   become_user: "{{ dingofs_user }}"
   shell: >
     {{ dingo_cli_bin_dir }}/dingo monitor status 2>/dev/null
-    | grep -cE '^ *[0-9a-f]{6,} +(node_exporter|prometheus|grafana|monitor_sync)'
+    | grep -E '^ *[0-9a-f]{6,} +(node_exporter|prometheus|grafana|monitor_sync)'
+    | grep -vc 'Cleaned'
   args:
     executable: /bin/bash
   register: monitor_existing
@@ -41,7 +95,7 @@
   become_user: "{{ dingofs_user }}"
   shell: |
     set -o pipefail
-    {{ dingo_cli_bin_dir }}/dingo monitor deploy -c {{ dingo_monitor_config_file }} \
+    {{ dingo_cli_bin_dir }}/dingo monitor deploy -c {{ dingo_monitor_config_file }} --local \
       | sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' -e '/^[^ -~]*$/d'
   args:
     executable: /bin/bash
