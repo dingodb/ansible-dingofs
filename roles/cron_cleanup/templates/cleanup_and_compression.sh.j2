@@ -16,9 +16,37 @@ PROTECTED_FILES=({% for f in cron_cleanup_protected_files %}"{{ f }}" {% endfor 
 COMPRESS_DAYS={{ cron_cleanup_compress_days }}
 # =================================================
 
-# Extract days (last argument) and directories (all but last)
+# Extract days (last argument) and explicit directories (all but last)
 DAYS="${@: -1}"
-DIRECTORIES=("${@:1:$#-1}")
+RAW_DIRS=("${@:1:$#-1}")
+
+# Auto-discover actual log_dir paths from deployed cache configs and client mount scripts
+# on this host (covers v5.1 + v5.2 side-by-side and per-host disk layout differences).
+for conf in /root/dingofs/dingo-cache/*/dingo-cache.conf; do
+    [ -r "$conf" ] || continue
+    d=$(grep -oE '^--log_dir=[^[:space:]]+' "$conf" 2>/dev/null | head -n1 | cut -d= -f2-)
+    [ -n "$d" ] && RAW_DIRS+=("$d")
+done
+for sh in /root/dingofs/dingo-client/*/dingofs-mount.sh; do
+    [ -r "$sh" ] || continue
+    d=$(awk -F'"' '/^g_log=/{print $2; exit}' "$sh" 2>/dev/null)
+    if [ -z "$d" ] || [[ "$d" == *'$'* ]]; then
+        d=$(grep -oE -- '--log_dir=[^[:space:]\\]+' "$sh" 2>/dev/null | head -n1 | cut -d= -f2-)
+    fi
+    [ -n "$d" ] && [[ "$d" != *'$'* ]] && RAW_DIRS+=("$d")
+done
+
+# Deduplicate while preserving order
+DIRECTORIES=()
+declare -A _SEEN_DIRS=()
+for d in "${RAW_DIRS[@]}"; do
+    d="${d%/}"
+    [ -n "$d" ] || continue
+    if [ -z "${_SEEN_DIRS[$d]:-}" ]; then
+        _SEEN_DIRS[$d]=1
+        DIRECTORIES+=("$d")
+    fi
+done
 
 # Validate that DAYS is a number
 if ! [[ "$DAYS" =~ ^[0-9]+$ ]]; then

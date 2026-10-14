@@ -113,8 +113,13 @@
       n=$(basename "$(dirname "$f")" | tr -dc '0-9')
       total=$(awk '$3=="MemTotal:" {print $4}' "$f")
       free=$(awk '$3=="MemFree:" {print $4}' "$f")
+      file=$(awk '$3=="FilePages:" {print $4}' "$f")
+      shmem=$(awk '$3=="Shmem:" {print $4}' "$f")
+      srec=$(awk '$3=="SReclaimable:" {print $4}' "$f")
       case "$total" in ''|0) continue;; esac
-      echo "MEM $n $(( (total - free) * 100 / total ))"
+      avail=$(( ${free:-0} + ${file:-0} - ${shmem:-0} + ${srec:-0} ))
+      used=$(( total > avail ? total - avail : 0 ))
+      echo "MEM $n $(( used * 100 / total ))"
     done
   register: _cache_numa_mem
   changed_when: false
@@ -197,7 +202,7 @@
 
     - name: Validate manually configured cpuset
       shell: |
-        /tmp/dingo-cpuset-detect.sh --no-busy -S dingo-cache \
+        bash /tmp/dingo-cpuset-detect.sh --no-busy -S "{{ dingo_cache_bin_name | default('dingo-cache') }}" \
           -s {{ dingo_cache_shards | int }} \
           -b {{ dingo_cache_cpuset_busy_pct | int }} \
           -c "{{ dingo_cache_cpuset }}"
@@ -286,7 +291,7 @@
 
     - name: Re-validate existing cpuset
       shell: |
-        /tmp/dingo-cpuset-detect.sh --no-busy -S dingo-cache \
+        bash /tmp/dingo-cpuset-detect.sh --no-busy -S "{{ dingo_cache_bin_name | default('dingo-cache') }}" \
           -b {{ dingo_cache_cpuset_busy_pct | int }} \
           -c "{{ cpuset_existing.stdout | trim }}"
       register: cpuset_recheck
@@ -296,19 +301,24 @@
         - (dingo_cache_cpuset | default('')) | length == 0
         - cpuset_existing.stdout is defined and (cpuset_existing.stdout | trim) | length > 0
 
+    - name: Set whether existing cpuset can be kept
+      set_fact:
+        _cache_keep_existing_cpuset: >-
+          {{ (dingo_cache_cpuset | default('')) | length == 0
+             and cpuset_recheck.rc is defined
+             and cpuset_recheck.rc == 0 }}
+
     - name: Keep existing cpuset when it still validates
       set_fact:
         dingo_cache_cpuset_effective: "{{ cpuset_existing.stdout | trim }}"
         dingo_cache_numa_node_effective: >-
           {{ ((cpuset_recheck.stdout_lines | select('match', '^NODES=') | first | default('') | regex_replace('^NODES=', '') | trim | regex_replace(' .*', '')) or (dingo_cache_numa_node | default(0))) }}
         _cpuset_source: "kept from existing config"
-      when:
-        - (dingo_cache_cpuset | default('')) | length == 0
-        - cpuset_recheck.rc is defined and cpuset_recheck.rc == 0
+      when: _cache_keep_existing_cpuset | default(false) | bool
 
     - name: Auto-detect free cpuset on preferred NUMA node
       shell: |
-        /tmp/dingo-cpuset-detect.sh -S dingo-cache \
+        bash /tmp/dingo-cpuset-detect.sh -S "{{ dingo_cache_bin_name | default('dingo-cache') }}" \
           -s {{ dingo_cache_shards | int }} \
           -n {{ _cache_preferred_node | default(dingo_cache_numa_node | default(0)) }} \
           -b {{ dingo_cache_cpuset_busy_pct | int }} \
@@ -318,11 +328,11 @@
       failed_when: false
       when:
         - (dingo_cache_cpuset | default('')) | length == 0
-        - cpuset_recheck.rc is not defined or cpuset_recheck.rc != 0
+        - not (_cache_keep_existing_cpuset | default(false) | bool)
 
     - name: Auto-detect free cpuset on best NUMA node (fallback)
       shell: |
-        /tmp/dingo-cpuset-detect.sh -S dingo-cache \
+        bash /tmp/dingo-cpuset-detect.sh -S "{{ dingo_cache_bin_name | default('dingo-cache') }}" \
           -s {{ dingo_cache_shards | int }} \
           -b {{ dingo_cache_cpuset_busy_pct | int }} \
           {{ '--siblings' if dingo_cache_cpuset_include_siblings | default(false) | bool else '' }}
@@ -331,7 +341,7 @@
       failed_when: false
       when:
         - (dingo_cache_cpuset | default('')) | length == 0
-        - cpuset_recheck.rc is not defined or cpuset_recheck.rc != 0
+        - not (_cache_keep_existing_cpuset | default(false) | bool)
         - cpuset_detect_preferred.rc is defined and cpuset_detect_preferred.rc != 0
 
     - name: Select winning cpuset detection result
@@ -340,7 +350,7 @@
         _cpuset_source: "{{ 'preferred NUMA node ' + (_cache_preferred_node | default(dingo_cache_numa_node | default(0)) | string) if cpuset_detect_preferred.rc == 0 else 'fallback NUMA node ' + (cpuset_detect_fallback.stdout_lines | select('match', '^NODE=') | first | default('NODE=?') | regex_replace('^NODE=', '')) }}"
       when:
         - (dingo_cache_cpuset | default('')) | length == 0
-        - cpuset_recheck.rc is not defined or cpuset_recheck.rc != 0
+        - not (_cache_keep_existing_cpuset | default(false) | bool)
 
     - name: Fail when no NUMA node offers enough free cores
       assert:
@@ -357,7 +367,7 @@
           to pin onto occupied CPUs anyway (service starts, shards contend).
       when:
         - (dingo_cache_cpuset | default('')) | length == 0
-        - cpuset_recheck.rc is not defined or cpuset_recheck.rc != 0
+        - not (_cache_keep_existing_cpuset | default(false) | bool)
         - (dingo_cache_cpuset_on_insufficient | default('fail')) == 'fail'
 
     - name: Warn when deploying without a cpuset
@@ -369,7 +379,7 @@
           Detector said: {{ _cpuset_winner.stdout_lines | default([]) | join(' ') }}
       when:
         - (dingo_cache_cpuset | default('')) | length == 0
-        - cpuset_recheck.rc is not defined or cpuset_recheck.rc != 0
+        - not (_cache_keep_existing_cpuset | default(false) | bool)
         - (dingo_cache_cpuset_on_insufficient | default('fail')) == 'warn'
         - _cpuset_winner.rc is defined and _cpuset_winner.rc != 0
 
@@ -381,7 +391,7 @@
         _cpuset_forced: true
       when:
         - (dingo_cache_cpuset | default('')) | length == 0
-        - cpuset_recheck.rc is not defined or cpuset_recheck.rc != 0
+        - not (_cache_keep_existing_cpuset | default(false) | bool)
         - (dingo_cache_cpuset_on_insufficient | default('fail')) == 'force'
         - _cpuset_winner.rc is defined and _cpuset_winner.rc != 0
 
@@ -396,7 +406,7 @@
           dingo_cache_shards or add CPUs.
       when:
         - (dingo_cache_cpuset | default('')) | length == 0
-        - cpuset_recheck.rc is not defined or cpuset_recheck.rc != 0
+        - not (_cache_keep_existing_cpuset | default(false) | bool)
         - (dingo_cache_cpuset_on_insufficient | default('fail')) == 'force'
         - _cpuset_winner.rc is defined and _cpuset_winner.rc != 0
 
@@ -410,7 +420,7 @@
              if (dingo_cache_cpuset | default('')) | length == 0 and _cpuset_winner.rc == 0
              else (dingo_cache_numa_node | default(0)) }}
       when:
-        - cpuset_recheck.rc is not defined or cpuset_recheck.rc != 0
+        - not (_cache_keep_existing_cpuset | default(false) | bool)
         - (_cpuset_forced | default(false)) == false
 
     - name: Warn when the effective NUMA node is short on free memory
@@ -537,8 +547,10 @@
     min_gb = {{ dingo_cache_min_disk_gb | int }}
     ratio = {{ dingo_cache_disk_usage_ratio | float }}
     data_subdir = "{{ dingo_cache_data_subdir }}"
+    log_subdir = "{{ dingo_cache_log_subdir | default('dingofs/logs/dingo-cache') }}"
     log_prefix = "{{ _dingo_cache_log_prefix }}"
     data_prefix = "{{ _dingo_cache_data_prefix }}"
+    explicit_log_dir = "{{ hostvars[inventory_hostname].get('dingo_cache_log_dir', '') }}"
 
     def gib(b):
         return "%.2f GiB" % (b / (1024.0 ** 3))
@@ -569,14 +581,57 @@
 
     skipped = [d for d in disks if d not in group]
     size_mb = int(min(d[1] for d in group) * ratio / (1024 * 1024)) if group else 0
-    # NOTE: the log dir is NOT picked here -- it follows the prefix rule
-    # (effective log prefix, else /mnt/disk1, + dingo_cache_log_subdir).
+
+    # Resolve log_dir per host from what is ACTUALLY MOUNTED (Issue #18):
+    #   1) A separate log-prefix tree (e.g. /mnt/aux) that is actually mounted
+    #      on this host wins outright;
+    #   2) Otherwise, if this host has an excluded small disk (skipped[0], e.g.
+    #      an 894G/960G disk even when historically mounted at /mnt/disk2 or
+    #      /mnt/disk3), reuse that small disk for logs;
+    #   3) Otherwise, if log_prefix has a mount on the data tree (e.g.
+    #      /mnt/disk1 when all disks are 3.5T), use it;
+    #   4) Otherwise honour an explicitly pinned dingo_cache_log_dir, else the
+    #      first qualifying cache disk — never blindly mkdir an unmounted
+    #      prefix on the root filesystem /.
+    sub = log_subdir.strip().lstrip("/")
+    log_mounts = sorted([mp for mp in mounts if log_prefix and mp.startswith(log_prefix)])
+    separate_log_tree = bool(
+        log_prefix and log_prefix != data_prefix
+        and not log_prefix.startswith(data_prefix)
+        and not data_prefix.startswith(log_prefix)
+    )
+    log_warn = ""
+    if separate_log_tree and log_mounts:
+        log_dir = "%s/%s" % (log_mounts[0].rstrip("/"), sub)
+    elif skipped:
+        log_dir = "%s/%s" % (skipped[0][0].rstrip("/"), sub)
+        if separate_log_tree:
+            log_warn = (
+                "dingo_cache_log_prefix=%s has no mounted filesystem on this host; "
+                "falling back to excluded small disk %s" % (log_prefix, log_dir)
+            )
+    elif log_prefix and log_mounts:
+        log_dir = "%s/%s" % (log_mounts[0].rstrip("/"), sub)
+    else:
+        if not log_prefix and explicit_log_dir:
+            log_dir = explicit_log_dir
+        elif group:
+            log_dir = "%s/%s" % (group[0][0].rstrip("/"), sub)
+        else:
+            log_dir = explicit_log_dir or ("/mnt/disk1/%s" % sub)
+        if log_prefix:
+            log_warn = (
+                "dingo_cache_log_prefix=%s has no mounted filesystem on this host; "
+                "falling back to %s to avoid writing logs onto /" % (log_prefix, log_dir)
+            )
 
     result = {
         "dirs": ["%s/%s" % (d[0], data_subdir) for d in group],
         "count": len(group),
         "size_mb": size_mb,
         "skipped": ["%s (%s)" % (d[0], gib(d[1])) for d in skipped],
+        "log_dir": log_dir,
+        "log_warn": log_warn,
     }
     print("JSON=" + json.dumps(result))
     PYEOF
@@ -605,18 +660,15 @@
     dingo_cache_cache_dirs: "{{ _cache_sel.dirs | join(',') }}"
     dingo_cache_cache_size_mb: "{{ _cache_sel.size_mb }}"
     dingo_cache_group_weight: "{{ (_cache_sel.count | int) * (dingo_cache_weight_per_disk | int) }}"
+    dingo_cache_log_dir: "{{ _cache_sel.log_dir }}"
   when: disk_selection is succeeded and _cache_sel.dirs | length > 0
 
-# --- Log dir: prefix rule (not disk measurement) ---
-# dingo_cache_log_dir = effective log prefix + dingo_cache_log_subdir when a
-# log prefix exists (_dingo_cache_log_prefix, i.e. dingo_cache_log_prefix else
-# the deprecated dingo_cache_mount_prefix), else /mnt/disk1 + subdir.
-# Unconditional: the log path is deterministic config, independent of which
-# disks qualified for caching. (An explicitly pinned dingo_cache_log_dir in
-# host_vars is superseded by this rule — pin via log_prefix/log_subdir.)
-- name: Set dingo-cache log dir from prefix rule
-  set_fact:
-    dingo_cache_log_dir: "{{ ((_dingo_cache_log_prefix | default('') | trim | regex_replace('/+$', '')) if ((_dingo_cache_log_prefix | default('') | trim) | length > 0) else '/mnt/disk1') + '/' + (dingo_cache_log_subdir | default('dingofs/logs/dingo-cache') | trim | regex_replace('^/+', '')) }}"
+- name: Warn when configured log prefix is not mounted on this host
+  debug:
+    msg: "WARNING on {{ inventory_hostname }}: {{ _cache_sel.log_warn }}"
+  when:
+    - disk_selection is succeeded
+    - (_cache_sel.log_warn | default('')) | length > 0
 
 - name: Log cache disk selection summary
   debug:

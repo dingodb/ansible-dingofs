@@ -3,9 +3,9 @@
 
 - name: "Set facts for {{ client_instance.fsname }}"
   set_fact:
-    _base_dir: "{{ client_instance.base_dir | default('/root/dingofs/dingo-client/' ~ client_instance.fsname) }}"
-    _bin_path: "{{ (client_instance.base_dir | default('/root/dingofs/dingo-client/' ~ client_instance.fsname)) }}/bin/dingo-client"
-    _bak_path: "{{ (client_instance.base_dir | default('/root/dingofs/dingo-client/' ~ client_instance.fsname)) }}/bin/dingo-client.bak"
+    _base_dir: "{{ client_instance.base_dir | default('/root/dingofs/dingo-client/' ~ client_instance.fsname ~ (dingo_client_version_suffix | default(''))) }}"
+    _bin_path: "{{ (client_instance.base_dir | default('/root/dingofs/dingo-client/' ~ client_instance.fsname ~ (dingo_client_version_suffix | default('')))) }}/bin/dingo-client"
+    _bak_path: "{{ (client_instance.base_dir | default('/root/dingofs/dingo-client/' ~ client_instance.fsname ~ (dingo_client_version_suffix | default('')))) }}/bin/dingo-client.bak"
 
 # --- Step 1: Backup current binary ---
 - name: "Check if current binary exists for {{ client_instance.fsname }}"
