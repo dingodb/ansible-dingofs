@@ -81,16 +81,51 @@ ONLINE=$(read_file /sys/devices/system/cpu/online)
 ISOLATED=$(read_file /sys/devices/system/cpu/isolated)
 ONLINE_N=$(expand "$ONLINE" | wc -l)
 
+# ---- topology ----
+declare -A NODE_CPU_CNT
+while IFS=, read -r c n; do
+  [ -n "$c" ] || continue
+  n=${n:-0}
+  NODE_OF[$c]=$n
+  NODE_CPU_CNT[$n]=$(( ${NODE_CPU_CNT[$n]:-0} + 1 ))
+done < <(lscpu -p=CPU,NODE 2>/dev/null | grep -v '^#')
+# Fallback to sysfs when lscpu is absent or too old for -p=CPU,NODE
+if [ "${#NODE_OF[@]}" -eq 0 ]; then
+  for nf in /sys/devices/system/node/node[0-9]*/cpulist; do
+    [ -r "$nf" ] || continue
+    n=$(basename "$(dirname "$nf")" | tr -dc '0-9')
+    for c in $(expand "$(read_file "$nf")"); do
+      NODE_OF[$c]=${n:-0}
+      NODE_CPU_CNT[${n:-0}]=$(( ${NODE_CPU_CNT[${n:-0}]:-0} + 1 ))
+    done
+  done
+fi
+if [ "${#NODE_OF[@]}" -eq 0 ]; then
+  for c in $(expand "$ONLINE"); do
+    NODE_OF[$c]=0
+    NODE_CPU_CNT[0]=$(( ${NODE_CPU_CNT[0]:-0} + 1 ))
+  done
+fi
+MIN_NODE_CPUS=$ONLINE_N
+for n in "${!NODE_CPU_CNT[@]}"; do
+  [ "${NODE_CPU_CNT[$n]}" -lt "$MIN_NODE_CPUS" ] && MIN_NODE_CPUS=${NODE_CPU_CNT[$n]}
+done
+for c in $(expand "$ONLINE"); do
+  SIB[$c]=$(read_file /sys/devices/system/cpu/cpu$c/topology/thread_siblings_list)
+  : "${SIB[$c]:=$c}"
+done
+
 # ---- 1. kernel isolation ----
 [ -n "$ISOLATED" ] && claim "$ISOLATED" "kernel-isolated"
 
-# ---- 2. cgroup cpusets (skip ones that merely inherit the root set) ----
+# ---- 2. cgroup cpusets (skip root set and shared pools >= MIN_NODE_CPUS) ----
 if [ "$(stat -fc %T /sys/fs/cgroup 2>/dev/null)" = cgroup2fs ]; then
   ROOT_EFF=$(read_file /sys/fs/cgroup/cpuset.cpus.effective)
   while IFS= read -r f; do
     d=$(dirname "$f"); want=$(read_file "$f"); [ -z "$want" ] && continue
     eff=$(read_file "$d/cpuset.cpus.effective")
-    [ "$eff" = "$ROOT_EFF" ] && continue
+    [ -z "$eff" ] || [ "$eff" = "$ROOT_EFF" ] && continue
+    [ "$(expand "$eff" | wc -l)" -lt "$MIN_NODE_CPUS" ] || continue
     claim "$eff" "cgroup ${d#/sys/fs/cgroup}"
   done < <(find /sys/fs/cgroup -mindepth 2 -name cpuset.cpus 2>/dev/null)
 else
@@ -98,6 +133,7 @@ else
   while IFS= read -r f; do
     d=$(dirname "$f"); eff=$(read_file "$f")
     [ -z "$eff" ] || [ "$eff" = "$ROOT_EFF" ] && continue
+    [ "$(expand "$eff" | wc -l)" -lt "$MIN_NODE_CPUS" ] || continue
     claim "$eff" "cgroup ${d#/sys/fs/cgroup/cpuset}"
   done < <(find /sys/fs/cgroup/cpuset -mindepth 2 -name cpuset.effective_cpus 2>/dev/null)
 fi
@@ -108,9 +144,17 @@ if [ -r "$STATE" ] && command -v jq >/dev/null; then
   while read -r l; do [ -n "$l" ] && claim "$l" "kubelet-exclusive"; done \
     < <(jq -r '.entries // {} | .[] | .[]' "$STATE")
 fi
+for kcfg in /etc/kubernetes/kubelet-conf.yml /var/lib/kubelet/config.yaml; do
+  [ -r "$kcfg" ] || continue
+  kres=$(awk -F'["'"'"' ]+' '/^[[:space:]]*reservedSystemCPUs:/{print $2; exit}' "$kcfg" 2>/dev/null)
+  [ -n "$kres" ] && claim "$kres" "kubelet-reserved"
+done
 
 # ---- 4. other processes: --cpuset= in cmdline, or narrow affinity ----
 # A service started with --cpuset=32-63 --shards=8 owns all of 32-63.
+# Whole-NUMA-node affinity (e.g. numactl --cpunodebind=0 or kernel helpers
+# bound to all CPUs of a socket, count >= MIN_NODE_CPUS) is node-level
+# scheduling, not core pinning — only narrower masks count as pinned.
 SELF=$$
 for p in /proc/[0-9]*; do
   pid=${p#/proc/}; [ "$pid" = "$SELF" ] && continue
@@ -125,7 +169,7 @@ for p in /proc/[0-9]*; do
     claim "$cs" "pid $pid $comm --cpuset=$cs"; continue
   fi
   a=$(awk '/Cpus_allowed_list/ {print $2}' "$p/status" 2>/dev/null)
-  if [ -n "$a" ] && [ "$a" != "$ONLINE" ] && [ "$(expand "$a" | wc -l)" -lt "$ONLINE_N" ]; then
+  if [ -n "$a" ] && [ "$a" != "$ONLINE" ] && [ "$(expand "$a" | wc -l)" -lt "$MIN_NODE_CPUS" ]; then
     claim "$a" "pid $pid $comm pinned=$a"
   fi
 done
@@ -150,13 +194,6 @@ fi
 
 # ---- 6. exclusions handed in by the role (cpusets assigned earlier this run) ----
 [ -n "$EXCLUDE" ] && claim "$EXCLUDE" "assigned-this-run"
-
-# ---- topology ----
-while IFS=, read -r c n; do NODE_OF[$c]=${n:-0}; done < <(lscpu -p=CPU,NODE | grep -v '^#')
-for c in $(expand "$ONLINE"); do
-  SIB[$c]=$(read_file /sys/devices/system/cpu/cpu$c/topology/thread_siblings_list)
-  : "${SIB[$c]:=$c}"
-done
 
 is_free() { [ -z "${REASON[$1]:-}" ]; }
 
@@ -214,23 +251,15 @@ echo "CORES=$CORE_STR"
 
 suggest=""
 if [ "${#cores[@]}" -ge "$SHARDS" ]; then
-  read -r rs re rl < <(printf '%s\n' "${cores[@]}" | best_run)
-  if [ "${rl:-0}" -ge "$SHARDS" ]; then
-    if [ "$SIBLINGS" = 1 ]; then                       # expand to all threads of rs..rs+SHARDS-1
-      sel=$(seq "$rs" $((rs+SHARDS-1)))
-      out=(); for c in $sel; do out+=($(expand "${SIB[$c]}")); done
-      suggest=$(printf '%s\n' "${out[@]}" | compress)
-    else
-      suggest="$rs-$((rs+SHARDS-1))"
-    fi
+  # Pick from the high end of the NUMA node downward (last SHARDS cores) so
+  # host-level dingo services stay at the opposite end from kubelet's static
+  # CPU manager, which allocates Guaranteed pods from the lowest core IDs up.
+  picked=$(printf '%s\n' "${cores[@]: -$SHARDS}")
+  if [ "$SIBLINGS" = 1 ]; then
+    out=(); for c in $picked; do out+=($(expand "${SIB[$c]}")); done
+    suggest=$(printf '%s\n' "${out[@]}" | compress)
   else
-    picked=$(printf '%s\n' "${cores[@]:0:$SHARDS}")
-    if [ "$SIBLINGS" = 1 ]; then
-      out=(); for c in $picked; do out+=($(expand "${SIB[$c]}")); done
-      suggest=$(printf '%s\n' "${out[@]}" | compress)
-    else
-      suggest=$(printf '%s\n' "$picked" | compress)
-    fi
+    suggest=$(printf '%s\n' "$picked" | compress)
   fi
 fi
 
@@ -289,7 +318,7 @@ if [ -n "$F_NODE" ]; then
         [ "$(awk -v a="$u" -v b="$m" 'BEGIN{print (a>b)}')" = 1 ] && m=$u
       done
       echo "$m $c"
-    done | sort -n -k1,1 -k2,2 | head -n "$SHARDS")
+    done | sort -k1,1n -k2,2nr | head -n "$SHARDS")
     out=()
     while read -r m c; do
       [ -n "$c" ] || continue
@@ -303,8 +332,10 @@ if [ -n "$F_NODE" ]; then
     rank=$(for c in $(expand "$ONLINE"); do
       [ "${NODE_OF[$c]:-?}" = "$F_NODE" ] || continue
       [[ "$EXC" == *" $c "* ]] && continue
+      sibs=$(expand "${SIB[$c]}" | sort -n)
+      [ "$c" = "$(head -1 <<<"$sibs")" ] || continue
       echo "${USAGE[$c]:-0} $c"
-    done | sort -n -k1,1 -k2,2 | head -n "$SHARDS")
+    done | sort -k1,1n -k2,2nr | head -n "$SHARDS")
     pick=()
     while read -r u c; do
       [ -n "$c" ] || continue

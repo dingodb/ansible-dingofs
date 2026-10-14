@@ -58,7 +58,7 @@ LD_PRELOAD={{ dingo_client_ld_preload }} \
     --fuse_attr_cache_timeout_s={{ dingo_client_fuse_attr_cache_timeout_s }} \
     --fuse_entry_cache_timeout_s={{ dingo_client_fuse_entry_cache_timeout_s }} \
     --shards={{ _client_shards | default(dingo_client_shards | default(8)) }} \
-    --pin_cpu={{ 'true' if dingo_client_pin_cpu | default(true) | bool else 'false' }} \
+    --pin_cpu={{ 'true' if (dingo_client_pin_cpu | default(true) | bool and dingo_client_cpuset_effective | default('') | length > 0 and dingo_client_cpuset_effective != 'NONE') else 'false' }} \
 {% if dingo_client_pin_cpu | default(true) | bool and dingo_client_cpuset_effective | default('') | length > 0 and dingo_client_cpuset_effective != 'NONE' %}
     --cpuset={{ dingo_client_cpuset_effective }} \
 {% endif %}

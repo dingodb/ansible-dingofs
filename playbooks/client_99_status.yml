@@ -15,7 +15,7 @@
 
     - name: Check dingo-client service status
       systemd:
-        name: "dingofs-mount-{{ item.fsname }}"
+        name: "{{ item.service_name | default('dingofs-mount-' ~ item.fsname ~ (dingo_client_version_suffix | default(''))) }}"
       register: service_info
       loop: "{{ dingo_clients }}"
       loop_control:
@@ -23,7 +23,7 @@
 
     - name: Terminate if service is inactive
       fail:
-        msg: "{{ inventory_hostname }}: dingofs-mount-{{ item.fsname }} is {{ service_info.results[my_idx].status.ActiveState | default('unknown') }}"
+        msg: "{{ inventory_hostname }}: {{ item.service_name | default('dingofs-mount-' ~ item.fsname ~ (dingo_client_version_suffix | default(''))) }} is {{ service_info.results[my_idx].status.ActiveState | default('unknown') }}"
       when: (service_info.results[my_idx].status.ActiveState | default('unknown')) != 'active'
       loop: "{{ dingo_clients }}"
       loop_control:
@@ -32,7 +32,7 @@
 
     - name: Display active service status
       debug:
-        msg: "{{ inventory_hostname }}: dingofs-mount-{{ item.fsname }} is active"
+        msg: "{{ inventory_hostname }}: {{ item.service_name | default('dingofs-mount-' ~ item.fsname ~ (dingo_client_version_suffix | default(''))) }} is active"
       loop: "{{ dingo_clients }}"
       loop_control:
         label: "{{ item.fsname }}"

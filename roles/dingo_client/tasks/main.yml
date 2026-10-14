@@ -85,15 +85,10 @@
   changed_when: false
   when: dingo_client_pin_cpu | default(true) | bool
 
-- name: Seed cpuset claims from already-deployed mount scripts
-  shell: "grep -h -oE -- '--cpuset=[^ ]+' /root/dingofs/dingo-client/*/dingofs-mount.sh 2>/dev/null | sed 's/^--cpuset=//' || true"
-  register: _client_cpuset_seed
-  changed_when: false
-  when: dingo_client_pin_cpu | default(true) | bool
-
-- name: Init per-host cpuset claim list
+- name: Init per-host cpuset claim tracking
   set_fact:
-    dingo_client_cpusets_claimed: "{{ _client_cpuset_seed.stdout_lines | default([]) }}"
+    dingo_client_cpusets_claimed: []
+    dingo_client_scripts_processed: []
   when: dingo_client_pin_cpu | default(true) | bool
 
 - name: Validate cpuset insufficiency policy (client hosts)
@@ -129,8 +124,13 @@
       n=$(basename "$(dirname "$f")" | tr -dc '0-9')
       total=$(awk '$3=="MemTotal:" {print $4}' "$f")
       free=$(awk '$3=="MemFree:" {print $4}' "$f")
+      file=$(awk '$3=="FilePages:" {print $4}' "$f")
+      shmem=$(awk '$3=="Shmem:" {print $4}' "$f")
+      srec=$(awk '$3=="SReclaimable:" {print $4}' "$f")
       case "$total" in ''|0) continue;; esac
-      echo "MEM $n $(( (total - free) * 100 / total ))"
+      avail=$(( ${free:-0} + ${file:-0} - ${shmem:-0} + ${srec:-0} ))
+      used=$(( total > avail ? total - avail : 0 ))
+      echo "MEM $n $(( used * 100 / total ))"
     done
   register: _client_numa_mem
   changed_when: false

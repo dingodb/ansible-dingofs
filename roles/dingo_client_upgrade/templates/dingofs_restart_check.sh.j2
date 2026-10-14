@@ -14,7 +14,7 @@ set -euo pipefail
 # --- Configuration: mountpoint -> systemd service mapping -----------------
 declare -A MOUNTS=(
 {% for client in dingo_clients %}
-  ["{{ client.mount_point }}"]="dingofs-mount-{{ client.fsname }}.service"
+  ["{{ client.mount_point }}"]="{{ client.service_name | default('dingofs-mount-' ~ client.fsname ~ (dingo_client_version_suffix | default(''))) }}.service"
 {% endfor %}
 )
 
