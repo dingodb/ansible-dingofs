@@ -113,6 +113,16 @@ cron_cleanup_directories:
   - /mnt/disk1/dingofs/logs/alayanew
   - /mnt/disk1/dingofs/logs/manila
 
+# --- InfiniBand network readiness (dingo-cache / dingo-client ExecStartPre) ---
+# Both services wait for an ACTIVE RDMA port AND an IPv4 address starting with
+# IB_IP_PREFIX on an UP interface before starting, for up to IB_WAIT_TIMEOUT
+# seconds. HCA/IPoIB device names differ per machine, so the check auto-detects
+# every RDMA device instead of naming one.
+IB_CHECK_ENABLED: true
+IB_CHECK_SCRIPT: /root/dingofs/script/check/check-ib-ready.sh
+IB_IP_PREFIX: "192.168."
+IB_WAIT_TIMEOUT: 60
+
 # ============================================================
 # Dingo Cache
 # ============================================================
@@ -187,7 +197,7 @@ dingo_cache_cpuset_include_siblings: false
 dingo_cache_use_rdma: true
 dingo_cache_rdma_device: ib6s200p0
 dingo_cache_rdma_port_num: 1
-dingo_cache_buffer_pool_mb: 1024
+dingo_cache_buffer_pool_mb: 512
 dingo_cache_rdma_idle_timeout_s: 300
 # --- Poll mode (v5.2; needs pin_cpu + free cpuset, else it burns shared CPUs) ---
 dingo_cache_poll_mode: true
@@ -268,7 +278,7 @@ dingo_client_cpuset_include_siblings: false
 dingo_client_use_rdma: true
 dingo_client_rdma_device: ib6s200p0
 dingo_client_rdma_port_num: 1
-dingo_client_buffer_pool_mb: 1024
+dingo_client_buffer_pool_mb: 256
 dingo_client_rdma_max_connections: 128
 
 # MDS addresses (same as dingo_cache_mds_addrs typically)
@@ -277,8 +287,8 @@ dingo_client_mds_addrs: "192.168.0.44:16900,192.168.0.44:16901,192.168.0.44:1690
 # FUSE / VFS tuning
 dingo_client_cache_store: none
 dingo_client_vfs_read_executor_thread: 32
-dingo_client_vfs_read_buffer_total_mb: 32000
-dingo_client_vfs_write_buffer_total_mb: 65536
+dingo_client_vfs_read_buffer_total_mb: 4096
+dingo_client_vfs_write_buffer_total_mb: 4096
 dingo_client_vfs_prefetch_blocks: 0
 dingo_client_fuse_max_threads: 512
 dingo_client_fuse_enable_readdir_cache: "false"

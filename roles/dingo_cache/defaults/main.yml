@@ -126,3 +126,12 @@ dingo_cache_log_dir: "/mnt/disk1/dingofs/logs/dingo-cache"
 dingo_cache_mds_addrs: ""
 
 dingo_cache_service_name: dingo-cache
+
+# --- InfiniBand network readiness (systemd ExecStartPre) ---
+# Configure these globally in inventory/group_vars/all.yml; these values are
+# standalone-role fallbacks. The check script auto-detects every RDMA device,
+# so no per-host HCA/IPoIB name is needed.
+IB_CHECK_ENABLED: true
+IB_CHECK_SCRIPT: /root/dingofs/script/check/check-ib-ready.sh
+IB_IP_PREFIX: "192.168."
+IB_WAIT_TIMEOUT: 60

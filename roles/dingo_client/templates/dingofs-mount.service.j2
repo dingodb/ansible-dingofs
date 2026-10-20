@@ -3,11 +3,20 @@ Description=DingoFS Mount {{ dingo_client_fsname }} Service
 After=network.target
 
 [Service]
+{% if IB_CHECK_ENABLED | default(true) | bool %}
+# Wait for the RDMA fabric (ACTIVE port + cluster IPv4) before starting.
+# Device names are auto-detected by the script; only the IP prefix and the
+# timeout are configurable (inventory/group_vars/all.yml).
+Environment="IB_IP_PREFIX={{ IB_IP_PREFIX | default('192.168.') }}"
+Environment="IB_WAIT_TIMEOUT={{ IB_WAIT_TIMEOUT | default(60) }}"
+ExecStartPre={{ IB_CHECK_SCRIPT | default('/root/dingofs/script/check/check-ib-ready.sh') }}
+# ExecStartPre waiting counts against TimeoutStartSec (default 90s).
+TimeoutStartSec={{ (IB_WAIT_TIMEOUT | default(60) | int) + 60 }}
+{% endif %}
 ExecStart={{ dingo_client_base_dir }}/dingofs-mount.sh
 Restart=always
-RestartSec=5
+RestartSec=30
 LimitNOFILE=1000000
-OOMScoreAdjust=-1000
 
 [Install]
 WantedBy=multi-user.target

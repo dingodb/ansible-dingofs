@@ -704,6 +704,23 @@
     state: directory
     mode: "0755"
 
+# --- InfiniBand readiness check (used by systemd ExecStartPre) ---
+# The script auto-detects every RDMA device at runtime: HCA and IPoIB names
+# differ per machine, so nothing here is host-specific.
+- name: Create InfiniBand check script directory
+  file:
+    path: "{{ IB_CHECK_SCRIPT | default('/root/dingofs/script/check/check-ib-ready.sh') | dirname }}"
+    state: directory
+    mode: "0755"
+  when: IB_CHECK_ENABLED | default(true) | bool
+
+- name: Deploy InfiniBand readiness check script
+  copy:
+    src: "{{ role_path }}/../common/files/check-ib-ready.sh"
+    dest: "{{ IB_CHECK_SCRIPT | default('/root/dingofs/script/check/check-ib-ready.sh') }}"
+    mode: "0755"
+  when: IB_CHECK_ENABLED | default(true) | bool
+
 # --- Copy binary from control node ---
 # notify, like the conf/unit/start-script tasks below: without it a rebuilt
 # binary landed on disk and the service kept running the old one until the
