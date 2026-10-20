@@ -73,6 +73,24 @@
     success_msg: "client binaries present on the control node"
   run_once: true
 
+# --- InfiniBand readiness check (used by systemd ExecStartPre) ---
+# Deployed once per host, not per mount: every instance on this host uses the
+# same script. It auto-detects RDMA devices at runtime, so HCA/IPoIB names
+# never need to be configured.
+- name: Create InfiniBand check script directory (client hosts)
+  file:
+    path: "{{ IB_CHECK_SCRIPT | default('/root/dingofs/script/check/check-ib-ready.sh') | dirname }}"
+    state: directory
+    mode: "0755"
+  when: IB_CHECK_ENABLED | default(true) | bool
+
+- name: Deploy InfiniBand readiness check script (client hosts)
+  copy:
+    src: "{{ role_path }}/../common/files/check-ib-ready.sh"
+    dest: "{{ IB_CHECK_SCRIPT | default('/root/dingofs/script/check/check-ib-ready.sh') }}"
+    mode: "0755"
+  when: IB_CHECK_ENABLED | default(true) | bool
+
 # --- CPU pinning host setup (v5.2+, once per host, before the instance loop) ---
 # The detect script and the claim seed are host-scoped: every mount on the host
 # (alayanew, manila, ...) draws from the same free-CPU pool, so seeding happens

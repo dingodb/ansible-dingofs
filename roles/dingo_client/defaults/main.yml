@@ -93,3 +93,12 @@ dingo_client_service_name: "dingofs-mount-{{ dingo_client_fsname }}"
 # true            = restart unconditionally, interrupting whatever is reading or
 #                   writing the mountpoint. Use with care.
 dingo_client_force_restart: false
+
+# --- InfiniBand network readiness (systemd ExecStartPre) ---
+# Configure these globally in inventory/group_vars/all.yml; these values are
+# standalone-role fallbacks. The check script auto-detects every RDMA device,
+# so no per-host HCA/IPoIB name is needed.
+IB_CHECK_ENABLED: true
+IB_CHECK_SCRIPT: /root/dingofs/script/check/check-ib-ready.sh
+IB_IP_PREFIX: "192.168."
+IB_WAIT_TIMEOUT: 60
