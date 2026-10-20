@@ -3,6 +3,8 @@
 # DingoFS Ansible - Global Variables
 # ============================================================
 
+dingofs_site_version: v5.2
+
 # --- User & Access ---
 dingofs_user: dingofs
 dingofs_password: dingofsPassword
@@ -122,6 +124,16 @@ IB_CHECK_ENABLED: true
 IB_CHECK_SCRIPT: /root/dingofs/script/check/check-ib-ready.sh
 IB_IP_PREFIX: "192.168."
 IB_WAIT_TIMEOUT: 60
+
+# --- Dingo client mountpoint usage check ---
+# Before touching an instance, dingofs_mount_usage_check.sh verifies that the
+# mountpoint is unused: host processes (fuser), other mount namespaces
+# (bind mounts / container hostPath sharing st_dev), and running containers.
+# A busy mountpoint skips that instance only; other mounts on the host proceed.
+# strict=false inspects containers in 'cci-*' namespaces; true inspects all.
+dingo_client_mount_check_enabled: true
+dingo_client_mount_check_strict: false
+dingo_client_mount_check_script: /root/dingofs/script/check/dingofs_mount_usage_check.sh
 
 # ============================================================
 # Dingo Cache

@@ -91,6 +91,24 @@
     mode: "0755"
   when: IB_CHECK_ENABLED | default(true) | bool
 
+# --- Mountpoint usage check (per instance, before any service change) ---
+# Mirrors a manual `bash dingofs_mount_usage_check.sh <mount> --dry-run`:
+# host processes, other mount namespaces, and crictl hostPaths. Deployed once
+# per host; instance.yml runs it for every mountpoint.
+- name: Create mountpoint check script directory (client hosts)
+  file:
+    path: "{{ dingo_client_mount_check_script | default('/root/dingofs/script/check/dingofs_mount_usage_check.sh') | dirname }}"
+    state: directory
+    mode: "0755"
+  when: dingo_client_mount_check_enabled | default(true) | bool
+
+- name: Deploy mountpoint usage check script (client hosts)
+  copy:
+    src: "{{ role_path }}/../common/files/dingofs_mount_usage_check.sh"
+    dest: "{{ dingo_client_mount_check_script | default('/root/dingofs/script/check/dingofs_mount_usage_check.sh') }}"
+    mode: "0755"
+  when: dingo_client_mount_check_enabled | default(true) | bool
+
 # --- CPU pinning host setup (v5.2+, once per host, before the instance loop) ---
 # The detect script and the claim seed are host-scoped: every mount on the host
 # (alayanew, manila, ...) draws from the same free-CPU pool, so seeding happens

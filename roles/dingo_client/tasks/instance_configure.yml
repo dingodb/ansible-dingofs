@@ -1,0 +1,498 @@
+---
+# ============================================================
+# Role: dingo_client - Deploy dingo-client (FUSE mount) service
+# ============================================================
+
+# --- Retire the previous unit when its name changed ---
+# The check maps the mountpoint back to the unit that owns it (unit names do
+# not always match the mount path). When the unit being deployed has a
+# different name — e.g. v5.1 `dingofs-mount-manila` vs v5.2
+# `dingofs-mount-manila-v5.2` — stop and disable the old one first. When the
+# name is unchanged, the normal restart logic further down handles it.
+- name: "Stop and disable previous dingo-client service for {{ dingo_client_fsname }}"
+  systemd:
+    name: "{{ _mount_check_service }}"
+    state: stopped
+    enabled: false
+  when:
+    - (_mount_check_service | default('')) | length > 0
+    - (_mount_check_service | default('') | regex_replace('\\.service$', '')) != (dingo_client_service_name | regex_replace('\\.service$', ''))
+
+# --- Create directories ---
+- name: "Create dingo-client base directory for {{ dingo_client_fsname }}"
+  file:
+    path: "{{ dingo_client_base_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: "Create bin directory for {{ dingo_client_fsname }}"
+  file:
+    path: "{{ dingo_client_base_dir }}/bin"
+    state: directory
+    mode: "0755"
+
+- name: "Create mount point directory for {{ dingo_client_fsname }}"
+  file:
+    path: "{{ dingo_client_mount_point }}"
+    state: directory
+    mode: "0755"
+
+- name: "Create log directory for {{ dingo_client_fsname }}"
+  file:
+    path: "{{ dingo_client_log_dir }}"
+    state: directory
+    mode: "0755"
+
+# --- Copy binaries from control node ---
+#
+# These two are registered because the restart decision further down needs them.
+# The destination is per-fsname (dest includes dingo_client_base_dir), so each
+# mountpoint on a host keeps its own copy -- changing one instance's binary
+# cannot affect another's.
+#
+# src is a path on the CONTROL node (no remote_src), not on the target.
+- name: "Copy dingo-client binary to remote host for {{ dingo_client_fsname }}"
+  copy:
+    src: "{{ dingo_client_bin_local_src }}"
+    dest: "{{ dingo_client_base_dir }}/bin/dingo-client"
+    mode: "0755"
+  register: _client_bin
+
+- name: "Copy dingo CLI binary to remote host for {{ dingo_client_fsname }}"
+  copy:
+    src: "{{ dingo_client_dingo_bin_local_src }}"
+    dest: "{{ dingo_client_base_dir }}/bin/dingo"
+    mode: "0755"
+  register: _dingo_bin
+
+# (v5.2: no numactl binding — the mount script runs unbound; locality comes from
+# the --cpuset CPUs chosen below. The preferred node is decided once per host in
+# main.yml from the RDMA device's NUMA node + memory headroom; each instance
+# only applies its own explicit override, if any.)
+
+# --- CPU set resolution for --pin_cpu/--cpuset (v5.2+, dynamic per host) ---
+# Same rules as the dingo_cache role (claim logic, policy-aware manual-override
+# validation — explicit lists like "37,39,43,46-49,53" allowed, overlap follows
+# dingo_client_cpuset_on_insufficient — keep-across-redeploys, preferred-node
+# with fallback, least-busy forced pick when nothing is free),
+# plus one client-specific rule: PARTITIONING. A host runs several mounts
+# (alayanew, manila, ...), so each instance excludes cpusets already assigned
+# on this host — seeded above from deployed mount scripts, appended below as
+# this loop assigns — and never shares shards with a sibling mount.
+- name: "Resolve cpuset for {{ dingo_client_fsname }}"
+  block:
+    - name: "Set per-instance pinning vars for {{ dingo_client_fsname }}"
+      set_fact:
+        _client_shards: "{{ client_instance.shards | default(dingo_client_shards | default(8)) }}"
+        _client_cpuset_manual: "{{ client_instance.cpuset | default(dingo_client_cpuset | default('')) }}"
+        _client_cpuset_explicit_node: "{{ client_instance.cpuset_numa_node | default(dingo_client_cpuset_numa_node | default('')) | string | trim }}"
+        _client_cpuset_forced: false
+
+    - name: "Select preferred NUMA node for {{ dingo_client_fsname }}"
+      set_fact:
+        _client_cpuset_node: "{{ _client_cpuset_explicit_node if (_client_cpuset_explicit_node | length > 0) else (_client_ib_preferred_node | default('')) }}"
+        _client_cpuset_node_source: "{{ 'explicit override' if (_client_cpuset_explicit_node | length > 0) else ('host IB/memory decision' if (_client_ib_preferred_node | default('') | length > 0) else 'auto (detector picks best node)') }}"
+
+    - name: "Collect cpusets from other active mount scripts on host for {{ dingo_client_fsname }}"
+      shell: |
+        self_sh="{{ dingo_client_base_dir }}/dingofs-mount.sh"
+        done_list=" {{ dingo_client_scripts_processed | default([]) | join(' ') }} "
+        parent_dir="$(dirname '{{ dingo_client_base_dir }}')"
+        for sh in "$parent_dir"/*/dingofs-mount.sh /root/dingofs/dingo-client/*/dingofs-mount.sh; do
+          [ -r "$sh" ] || continue
+          [ "$sh" = "$self_sh" ] && continue
+          case "$done_list" in *" $sh "*) continue ;; esac
+          done_list="$done_list $sh "
+          mnt=$(awk -F'\"' '/^g_mnt=/{print $2; exit}' "$sh")
+          [ -n "$mnt" ] && mountpoint -q "$mnt" 2>/dev/null || continue
+          grep -oE -- '--cpuset=[^ ]+' "$sh" 2>/dev/null | head -1 | sed 's/^--cpuset=//'
+        done
+      register: _client_other_mounted_cpusets
+      changed_when: false
+
+    - name: "Build sibling mount cpuset exclusion list for {{ dingo_client_fsname }}"
+      set_fact:
+        _client_sibling_cpusets: "{{ ((dingo_client_cpusets_claimed | default([])) + (_client_other_mounted_cpusets.stdout_lines | default([]))) | select() | unique | list }}"
+
+    - name: "Validate manually configured cpuset for {{ dingo_client_fsname }}"
+      shell: |
+        bash /tmp/dingo-cpuset-detect.sh --no-busy -S dingo-client \
+          -s {{ _client_shards | int }} \
+          -b {{ dingo_client_cpuset_busy_pct | int }} \
+          -x "{{ _client_sibling_cpusets | default([]) | join(',') }}" \
+          -c "{{ _client_cpuset_manual }}"
+      register: _client_cpuset_check
+      changed_when: false
+      failed_when: false
+      when: (_client_cpuset_manual | default('')) | length > 0
+
+    - name: "Fail on offline CPUs in manual cpuset for {{ dingo_client_fsname }}"
+      assert:
+        that:
+          - "'NOT-ONLINE' not in (_client_cpuset_check.stdout | default(''))"
+        fail_msg: >-
+          --cpuset={{ _client_cpuset_manual }} for {{ dingo_client_fsname }} on
+          {{ inventory_hostname }} contains CPUs that are not even online:
+          {{ _client_cpuset_check.stdout_lines | default([]) | join('; ') }}.
+          Fix the cpuset: on the dingo_clients entry (or dingo_client_cpuset)
+          to online CPUs only (compare with /sys/devices/system/cpu/online).
+      when: (_client_cpuset_manual | default('')) | length > 0
+
+    - name: "Fail on overlapping manual cpuset for {{ dingo_client_fsname }}"
+      assert:
+        that:
+          - _client_cpuset_check.rc is defined and _client_cpuset_check.rc == 0
+        fail_msg: >-
+          --cpuset={{ _client_cpuset_manual }} for {{ dingo_client_fsname }} on
+          {{ inventory_hostname }} overlaps CPUs already claimed elsewhere:
+          {{ _client_cpuset_check.stdout_lines | default([]) | join('; ') }}.
+          Either clear it (auto-detect partitions free CPUs per mount), choose
+          a free range — re-run /tmp/dingo-cpuset-detect.sh on the host — or
+          keep this exact list deliberately via
+          dingo_client_cpuset_on_insufficient=force (warns LOUDLY, pins anyway).
+      when:
+        - (_client_cpuset_manual | default('')) | length > 0
+        - (dingo_client_cpuset_on_insufficient | default('fail')) == 'fail'
+
+    - name: "Warn and keep overlapping manual cpuset for {{ dingo_client_fsname }} (force policy)"
+      debug:
+        msg: >-
+          WARNING: --cpuset={{ _client_cpuset_manual }} for
+          {{ dingo_client_fsname }} on {{ inventory_hostname }} overlaps
+          already-claimed CPUs
+          ({{ _client_cpuset_check.stdout_lines | default([]) | join('; ') }}),
+          but dingo_client_cpuset_on_insufficient=force — deploying PINNED onto
+          this explicit list anyway (e.g. idle-but-pinned CPUs like
+          37,39,43,46-49,53). Shards WILL contend with whatever holds those
+          CPUs until they free up.
+      when:
+        - (_client_cpuset_manual | default('')) | length > 0
+        - _client_cpuset_check.rc is defined and _client_cpuset_check.rc != 0
+        - "'NOT-ONLINE' not in (_client_cpuset_check.stdout | default(''))"
+        - (dingo_client_cpuset_on_insufficient | default('fail')) == 'force'
+
+    - name: "Warn that overlapping manual cpuset is dropped for {{ dingo_client_fsname }} (warn policy)"
+      debug:
+        msg: >-
+          WARNING: --cpuset={{ _client_cpuset_manual }} for
+          {{ dingo_client_fsname }} on {{ inventory_hostname }} overlaps
+          already-claimed CPUs
+          ({{ _client_cpuset_check.stdout_lines | default([]) | join('; ') }}),
+          and dingo_client_cpuset_on_insufficient=warn — dropping the manual
+          list and falling back to auto-detect (may deploy unpinned). Use
+          =force to pin onto this explicit list anyway.
+      when:
+        - (_client_cpuset_manual | default('')) | length > 0
+        - _client_cpuset_check.rc is defined and _client_cpuset_check.rc != 0
+        - "'NOT-ONLINE' not in (_client_cpuset_check.stdout | default(''))"
+        - (dingo_client_cpuset_on_insufficient | default('fail')) == 'warn'
+
+    - name: "Drop overlapping manual cpuset for {{ dingo_client_fsname }} (warn policy)"
+      set_fact:
+        _client_cpuset_manual: ""
+      when:
+        - (_client_cpuset_manual | default('')) | length > 0
+        - _client_cpuset_check.rc is defined and _client_cpuset_check.rc != 0
+        - "'NOT-ONLINE' not in (_client_cpuset_check.stdout | default(''))"
+        - (dingo_client_cpuset_on_insufficient | default('fail')) == 'warn'
+
+    - name: "Read cpuset from existing mount script for {{ dingo_client_fsname }}"
+      shell: "grep -oE -- '--cpuset=[^ ]+' '{{ dingo_client_base_dir }}/dingofs-mount.sh' 2>/dev/null | head -1 | cut -d= -f2- || true"
+      register: _client_cpuset_existing
+      changed_when: false
+      when: (_client_cpuset_manual | default('')) | length == 0
+
+    - name: "Re-validate existing cpuset for {{ dingo_client_fsname }}"
+      shell: |
+        bash /tmp/dingo-cpuset-detect.sh --no-busy -S dingo-client \
+          -b {{ dingo_client_cpuset_busy_pct | int }} \
+          -x "{{ _client_sibling_cpusets | default([]) | join(',') }}" \
+          -c "{{ _client_cpuset_existing.stdout | trim }}"
+      register: _client_cpuset_recheck
+      changed_when: false
+      failed_when: false
+      when:
+        - (_client_cpuset_manual | default('')) | length == 0
+        - _client_cpuset_existing.stdout is defined and (_client_cpuset_existing.stdout | trim) | length > 0
+
+    - name: "Set whether existing cpuset can be kept for {{ dingo_client_fsname }}"
+      set_fact:
+        _client_keep_existing_cpuset: >-
+          {{ (_client_cpuset_manual | default('')) | length == 0
+             and _client_cpuset_recheck.rc is defined
+             and _client_cpuset_recheck.rc == 0 }}
+
+    - name: "Keep existing cpuset for {{ dingo_client_fsname }} when it still validates"
+      set_fact:
+        dingo_client_cpuset_effective: "{{ _client_cpuset_existing.stdout | trim }}"
+        dingo_client_numa_cpunode_effective: "{{ ((_client_cpuset_recheck.stdout_lines | select('match', '^NODES=') | first | default('') | regex_replace('^NODES=', '') | trim | regex_replace(' .*', '')) or (_client_cpuset_node | default(''))) }}"
+        _client_cpuset_source: "kept from existing mount script"
+      when: _client_keep_existing_cpuset | default(false) | bool
+
+    - name: "Auto-detect free cpuset for {{ dingo_client_fsname }} on preferred NUMA node"
+      shell: |
+        bash /tmp/dingo-cpuset-detect.sh -S dingo-client \
+          -s {{ _client_shards | int }} \
+          {{ ('-n ' + (_client_cpuset_node | string)) if (_client_cpuset_node | default('') | string | trim | length > 0) else '' }} \
+          -b {{ dingo_client_cpuset_busy_pct | int }} \
+          -x "{{ _client_sibling_cpusets | default([]) | join(',') }}" \
+          {{ '--siblings' if dingo_client_cpuset_include_siblings | default(false) | bool else '' }}
+      register: _client_cpuset_preferred
+      changed_when: false
+      failed_when: false
+      when:
+        - (_client_cpuset_manual | default('')) | length == 0
+        - not (_client_keep_existing_cpuset | default(false) | bool)
+
+    - name: "Auto-detect free cpuset for {{ dingo_client_fsname }} on best NUMA node (fallback)"
+      shell: |
+        bash /tmp/dingo-cpuset-detect.sh -S dingo-client \
+          -s {{ _client_shards | int }} \
+          -b {{ dingo_client_cpuset_busy_pct | int }} \
+          -x "{{ _client_sibling_cpusets | default([]) | join(',') }}" \
+          {{ '--siblings' if dingo_client_cpuset_include_siblings | default(false) | bool else '' }}
+      register: _client_cpuset_fallback
+      changed_when: false
+      failed_when: false
+      when:
+        - (_client_cpuset_manual | default('')) | length == 0
+        - not (_client_keep_existing_cpuset | default(false) | bool)
+        - _client_cpuset_preferred.rc is defined and _client_cpuset_preferred.rc != 0
+
+    - name: "Select winning cpuset detection result for {{ dingo_client_fsname }}"
+      set_fact:
+        _client_cpuset_winner: "{{ _client_cpuset_preferred if _client_cpuset_preferred.rc == 0 else _client_cpuset_fallback }}"
+        _client_cpuset_source: "{{ 'preferred NUMA node ' + (_client_cpuset_node | string) + ' (' + (_client_cpuset_node_source | default('unknown')) + ')' if _client_cpuset_preferred.rc == 0 else 'fallback NUMA node ' + (_client_cpuset_fallback.stdout_lines | select('match', '^NODE=') | first | default('NODE=?') | regex_replace('^NODE=', '')) }}"
+      when:
+        - (_client_cpuset_manual | default('')) | length == 0
+        - not (_client_keep_existing_cpuset | default(false) | bool)
+
+    - name: "Fail when no NUMA node offers enough free cores for {{ dingo_client_fsname }}"
+      assert:
+        that:
+          - _client_cpuset_winner.rc == 0
+        fail_msg: >-
+          No {{ _client_shards }} free whole cores left for {{ dingo_client_fsname }}
+          on {{ inventory_hostname }} (other mounts on this host already hold
+          [{{ _client_sibling_cpusets | default([]) | join(', ') }}]):
+          preferred node {{ _client_cpuset_node }}
+          gave [{{ _client_cpuset_preferred.stdout_lines | default([]) | join(' ') }}],
+          best-of-rest gave
+          [{{ _client_cpuset_fallback.stdout_lines | default(['(preferred node already had enough — fallback never ran)']) | join(' ') }}].
+          Either free CPUs on this host, lower the shards for this mount
+          (shards: on the dingo_clients entry), set
+          dingo_client_cpuset_on_insufficient=warn to deploy unpinned, or =force
+          to pin onto occupied CPUs anyway (mount starts, shards contend).
+      when:
+        - (_client_cpuset_manual | default('')) | length == 0
+        - not (_client_keep_existing_cpuset | default(false) | bool)
+        - (dingo_client_cpuset_on_insufficient | default('fail')) == 'fail'
+
+    - name: "Warn when deploying {{ dingo_client_fsname }} without a cpuset"
+      debug:
+        msg: >-
+          WARNING: no {{ _client_shards }} free whole cores left for
+          {{ dingo_client_fsname }} on {{ inventory_hostname }} — deploying
+          WITHOUT --cpuset (unpinned).
+          Detector said: {{ _client_cpuset_winner.stdout_lines | default([]) | join(' ') }}
+      when:
+        - (_client_cpuset_manual | default('')) | length == 0
+        - not (_client_keep_existing_cpuset | default(false) | bool)
+        - (dingo_client_cpuset_on_insufficient | default('fail')) == 'warn'
+        - _client_cpuset_winner.rc is defined and _client_cpuset_winner.rc != 0
+
+    - name: "Force best-effort cpuset for {{ dingo_client_fsname }} from occupied CPUs"
+      set_fact:
+        dingo_client_cpuset_effective: "{{ _client_cpuset_winner.stdout_lines | select('match', '^FORCED=') | first | default('FORCED=NONE') | regex_replace('^FORCED=', '') | trim }}"
+        dingo_client_numa_cpunode_effective: "{{ ((_client_cpuset_winner.stdout_lines | select('match', '^FORCED_NODE=') | first | default('') | regex_replace('^FORCED_NODE=', '') | trim) or (_client_cpuset_node | default(''))) }}"
+        _client_cpuset_source: "FORCED overlap — no free CPUs left on this host, shards WILL contend with whatever runs there. Free CPUs or add capacity ASAP."
+        _client_cpuset_forced: true
+      when:
+        - (_client_cpuset_manual | default('')) | length == 0
+        - not (_client_keep_existing_cpuset | default(false) | bool)
+        - (dingo_client_cpuset_on_insufficient | default('fail')) == 'force'
+        - _client_cpuset_winner.rc is defined and _client_cpuset_winner.rc != 0
+
+    - name: "Fail when even a forced cpuset is impossible for {{ dingo_client_fsname }}"
+      assert:
+        that:
+          - dingo_client_cpuset_effective not in ['NONE', '']
+        fail_msg: >-
+          {{ inventory_hostname }} has fewer than {{ _client_shards }} usable
+          physical cores in total for {{ dingo_client_fsname }} (after excluding
+          cpusets assigned to sibling mounts) — no cpuset, free or forced, can be
+          built. Lower the shards for this mount or add CPUs.
+      when:
+        - (_client_cpuset_manual | default('')) | length == 0
+        - not (_client_keep_existing_cpuset | default(false) | bool)
+        - (dingo_client_cpuset_on_insufficient | default('fail')) == 'force'
+        - _client_cpuset_winner.rc is defined and _client_cpuset_winner.rc != 0
+
+    - name: "Set effective cpuset and NUMA facts for {{ dingo_client_fsname }}"
+      set_fact:
+        dingo_client_cpuset_effective: >-
+          {{ (_client_cpuset_manual | default('')) if (_client_cpuset_manual | default('')) | length > 0
+             else (_client_cpuset_winner.stdout_lines | select('match', '^SUGGEST=') | first | default('SUGGEST=NONE') | regex_replace('^SUGGEST=', '')) }}
+        dingo_client_numa_cpunode_effective: >-
+          {{ (_client_cpuset_winner.stdout_lines | select('match', '^NODE=') | first | default('') | regex_replace('^NODE=', ''))
+             if (_client_cpuset_manual | default('')) | length == 0 and _client_cpuset_winner.rc == 0
+             else (_client_cpuset_node | default('')) }}
+      when:
+        - not (_client_keep_existing_cpuset | default(false) | bool)
+        - (_client_cpuset_forced | default(false)) == false
+
+    - name: "Reserve this cpuset for later mounts on the host"
+      set_fact:
+        dingo_client_cpusets_claimed: "{{ ((dingo_client_cpusets_claimed | default([])) + ([dingo_client_cpuset_effective] if (dingo_client_cpuset_effective is defined and dingo_client_cpuset_effective not in ['NONE', '']) else [])) | unique | list }}"
+        dingo_client_scripts_processed: "{{ ((dingo_client_scripts_processed | default([])) + [dingo_client_base_dir ~ '/dingofs-mount.sh']) | unique | list }}"
+
+    - name: "Warn when the effective NUMA node is short on free memory for {{ dingo_client_fsname }}"
+      debug:
+        msg: >-
+          WARNING: NUMA node {{ dingo_client_numa_cpunode_effective }} for
+          {{ dingo_client_fsname }} on {{ inventory_hostname }} is
+          {{ (_client_node_mem | default({})).get(dingo_client_numa_cpunode_effective | string, 'n/a') }}%
+          memory-used (threshold {{ _client_mem_thr | default(50) }}%) — bootstrap
+          OOM risk. Free memory on this node or pin this mount to a cooler node
+          via cpuset_numa_node: on its dingo_clients entry.
+      when:
+        - (_client_cpuset_manual | default('')) | length == 0
+        - dingo_client_cpuset_effective is defined and dingo_client_cpuset_effective not in ['NONE', '']
+        - dingo_client_numa_cpunode_effective is defined
+        - ((_client_node_mem | default({})).get(dingo_client_numa_cpunode_effective | string, 0) | int) > (_client_mem_thr | default(50) | int)
+
+    - name: "Log forced-pick CPU usage for {{ dingo_client_fsname }}"
+      debug:
+        msg: >-
+          {{ dingo_client_fsname }}: FORCED least-busy pick on
+          {{ inventory_hostname }}: cpuset=
+          {{ dingo_client_cpuset_effective }} (node
+          {{ dingo_client_numa_cpunode_effective }}) — sampled 1s /proc/stat
+          usage % per CPU
+          [{{ _client_cpuset_winner.stdout_lines | select('match', '^FORCED_USAGE=') | first | default('FORCED_USAGE=') | regex_replace('^FORCED_USAGE=', '') }}].
+          These CPUs ARE claimed or busy elsewhere, so shards WILL contend with
+          whatever holds them until CPUs free up.
+      when:
+        - (_client_cpuset_forced | default(false)) == true
+        - _client_cpuset_winner.stdout_lines is defined
+
+    - name: "Log cpuset selection for {{ dingo_client_fsname }}"
+      debug:
+        msg: >-
+          {{ dingo_client_fsname }}: cpuset={{ dingo_client_cpuset_effective | default('NONE (unpinned)') }}
+          ({{ 'manual override' if (_client_cpuset_manual | default('')) | length > 0 else ('auto-detected on ' + (_client_cpuset_source | default('unknown node'))) }},
+          shards={{ _client_shards | default(dingo_client_shards | default(8)) }},
+          no numactl in v5.2 — locality is the cpuset's node)
+  when: dingo_client_pin_cpu | default(true) | bool
+
+# --- Deploy mount script ---
+- name: "Deploy dingofs-mount.sh for {{ dingo_client_fsname }}"
+  template:
+    src: dingofs-mount.sh.j2
+    dest: "{{ dingo_client_base_dir }}/dingofs-mount.sh"
+    mode: "0755"
+  register: _mount_sh
+
+# --- Deploy systemd service ---
+- name: "Deploy dingo-client systemd service for {{ dingo_client_fsname }}"
+  template:
+    src: dingofs-mount.service.j2
+    dest: "/etc/systemd/system/{{ dingo_client_service_name }}.service"
+    mode: "0644"
+  register: _mount_service
+
+- name: "Reload systemd daemon"
+  systemd:
+    daemon_reload: true
+  when: _mount_service.changed
+
+# --- Restart: first decide WHETHER, then decide WHETHER IT IS SAFE ---
+#
+# 1) Whether a restart is needed.
+#    This used to look only at _mount_sh / _mount_service, so swapping just the
+#    binary (mount script and unit unchanged) did not restart anything: the new
+#    dingo-client was on disk while the old one kept running. Nothing looks wrong
+#    at the time; the problem surfaces at the next reboot, or when the process
+#    dies and Restart=always brings up the new binary. Very hard to diagnose by
+#    then. And the trigger is mundane: bumping the client version changes
+#    dingo_client_bin_local_src while the mount-script template stays identical.
+#    => the two copy results must be part of the condition.
+#
+# 2) Whether it is safe to restart right now.
+#    Do NOT just systemctl restart: this mountpoint is very likely in use by a
+#    training job, and restarting tears the FUSE mount out from under it. Check
+#    with `fuser -m` and SKIP with a loud warning when it is busy -- the same
+#    approach as roles/dingo_client_upgrade's dingofs_restart_check.sh (the
+#    proven path for upgrades).
+#    Escape hatch: -e dingo_client_force_restart=true skips the check.
+- name: "Set whether a restart is needed for {{ dingo_client_fsname }}"
+  set_fact:
+    _restart_needed: >-
+      {{ _mount_sh.changed or _mount_service.changed
+         or _client_bin.changed or _dingo_bin.changed }}
+
+- name: "Check whether {{ dingo_client_mount_point }} is in use"
+  shell: >-
+    if ! mountpoint -q {{ dingo_client_mount_point }} 2>/dev/null; then echo idle;
+    elif ! command -v fuser >/dev/null 2>&1; then echo nofuser;
+    elif fuser -m {{ dingo_client_mount_point }} >/dev/null 2>&1; then echo busy;
+    else echo idle; fi
+  args:
+    executable: /bin/bash
+  register: _mount_in_use
+  changed_when: false
+  failed_when: false
+  when: _restart_needed | bool
+
+- name: "Restart dingo-client service for {{ dingo_client_fsname }}"
+  systemd:
+    name: "{{ dingo_client_service_name }}"
+    state: restarted
+  when: >-
+    _restart_needed | bool
+    and ( dingo_client_force_restart | default(false) | bool
+          or _mount_in_use.stdout | default('idle') == 'idle' )
+
+- name: "Warn that the restart was skipped because {{ dingo_client_mount_point }} is in use"
+  debug:
+    msg: >-
+      Skipped the restart of {{ dingo_client_service_name }}:
+      {{ dingo_client_mount_point }} is in use (fuser -m hit; "nofuser" means
+      psmisc is not installed and the check could not run).
+      The config/binary IS already updated on disk, but the running process is
+      still the old one. Once the mountpoint is idle, restart it by hand
+      (`systemctl restart {{ dingo_client_service_name }}`), or run
+      playbooks/client_07_upgrade.yml (which checks each mountpoint), or force it
+      with -e dingo_client_force_restart=true.
+  when: >-
+    _restart_needed | bool
+    and not ( dingo_client_force_restart | default(false) | bool )
+    and _mount_in_use.stdout | default('idle') != 'idle'
+
+- name: "Enable and start dingo-client service for {{ dingo_client_fsname }}"
+  systemd:
+    name: "{{ dingo_client_service_name }}"
+    enabled: true
+    state: started
+
+# --- Verify ---
+- name: "Wait for mount point to be active for {{ dingo_client_fsname }}"
+  command: mountpoint -q {{ dingo_client_mount_point }}
+  register: mount_check
+  retries: 10
+  delay: 3
+  until: mount_check.rc == 0
+
+- name: "Display dingo-client service status for {{ dingo_client_fsname }}"
+  shell: systemctl is-active {{ dingo_client_service_name }}
+  register: service_status
+  changed_when: false
+
+- name: "Show deployment summary for {{ dingo_client_fsname }}"
+  debug:
+    msg:
+      - "Service: {{ dingo_client_service_name }}"
+      - "Status: {{ service_status.stdout }}"
+      - "Mount: {{ dingo_client_mount_point }}"
+      - "Filesystem: {{ dingo_client_fsname }}"
+      - "MDS: {{ dingo_client_mds_addrs }}"
