@@ -102,3 +102,13 @@ IB_CHECK_ENABLED: true
 IB_CHECK_SCRIPT: /root/dingofs/script/check/check-ib-ready.sh
 IB_IP_PREFIX: "192.168."
 IB_WAIT_TIMEOUT: 60
+
+# --- Mountpoint usage check (before stopping/reconfiguring an instance) ---
+# When a mountpoint is in use (host process, another mount namespace, or a
+# container hostPath), that instance is skipped entirely. Deployed once per
+# host; see roles/common/files/dingofs_mount_usage_check.sh.
+dingo_client_mount_check_enabled: true
+# false (default) = inspect containers in 'cci-*' namespaces only.
+# true            = inspect every namespace (slower, more intrusive).
+dingo_client_mount_check_strict: false
+dingo_client_mount_check_script: /root/dingofs/script/check/dingofs_mount_usage_check.sh
