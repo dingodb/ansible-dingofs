@@ -290,19 +290,22 @@ dingo_client_cpuset_include_siblings: false
 dingo_client_use_rdma: true
 dingo_client_rdma_device: ib6s200p0
 dingo_client_rdma_port_num: 1
-dingo_client_buffer_pool_mb: 256
-dingo_client_rdma_max_connections: 128
+# buffer_pool_mb / rdma_max_inflight_rpcs / rdma_max_connections are selected
+# per host from total memory (roles/dingo_client/defaults/main.yml,
+# dingo_client_mem_profiles). Set them here only to override the profile.
 
 # MDS addresses (same as dingo_cache_mds_addrs typically)
 dingo_client_mds_addrs: "192.168.0.44:16900,192.168.0.44:16901,192.168.0.44:16902,192.168.0.45:16900,192.168.0.45:16901,192.168.0.45:16902,192.168.0.46:16900,192.168.0.46:16901,192.168.0.46:16902"
 
 # FUSE / VFS tuning
+# read/write/compact buffers and fuse_max_threads come from the per-host
+# memory profile (small < 256 GiB, large >= 256 GiB). Force a profile with
+# dingo_client_tuning_profile: small|large, or override an individual value
+# here to bypass the profile for every host.
+dingo_client_tuning_profile: auto
 dingo_client_cache_store: none
 dingo_client_vfs_read_executor_thread: 32
-dingo_client_vfs_read_buffer_total_mb: 4096
-dingo_client_vfs_write_buffer_total_mb: 4096
 dingo_client_vfs_prefetch_blocks: 0
-dingo_client_fuse_max_threads: 512
 dingo_client_fuse_enable_readdir_cache: "false"
 dingo_client_fuse_attr_cache_timeout_s: 10
 dingo_client_fuse_entry_cache_timeout_s: 10
