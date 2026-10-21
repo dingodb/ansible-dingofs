@@ -67,20 +67,50 @@ dingo_client_cpuset_on_insufficient: fail
 # first-thread ids only, one shard per physical core, no hyperthread sharing.
 dingo_client_cpuset_include_siblings: false
 
-# --- RDMA (v5.2+: --use_rdma/--cache_rdma_device/--cache_rdma_port_num/--buffer_pool_mb/--rdma_max_connections) ---
+# --- Per-host tuning profile, selected from total memory -------------------
+# tasks/main.yml reads /proc/meminfo once per host:
+#   <  dingo_client_mem_threshold_gb  -> "small"
+#   >= dingo_client_mem_threshold_gb  -> "large"
+# and exports dingo_client_tuning_profile_effective for the mount script.
+# Force one profile with dingo_client_tuning_profile: small|large (an
+# unrecognised value behaves like auto). Any single value below can still be
+# overridden from group_vars/host_vars, which beats these role defaults.
+dingo_client_mem_threshold_gb: 256
+dingo_client_tuning_profile: auto
+dingo_client_mem_profiles:
+  small:
+    vfs_read_buffer_total_mb: 256
+    vfs_write_buffer_total_mb: 256
+    vfs_compact_buffer_total_mb: 128
+    fuse_max_threads: 64
+    buffer_pool_mb: 4
+    rdma_max_inflight_rpcs: 128
+    rdma_max_connections: 64
+  large:
+    vfs_read_buffer_total_mb: 4096
+    vfs_write_buffer_total_mb: 4096
+    vfs_compact_buffer_total_mb: 512
+    fuse_max_threads: 512
+    buffer_pool_mb: 1024
+    rdma_max_inflight_rpcs: 256
+    rdma_max_connections: 128
+
+# --- RDMA (v5.2+: --use_rdma/--cache_rdma_device/--cache_rdma_port_num/--buffer_pool_mb/--rdma_max_inflight_rpcs/--rdma_max_connections) ---
 dingo_client_use_rdma: true
 dingo_client_rdma_device: ib6s200p0
 dingo_client_rdma_port_num: 1
-dingo_client_buffer_pool_mb: 1024
-dingo_client_rdma_max_connections: 128
+dingo_client_buffer_pool_mb: "{{ dingo_client_mem_profiles[dingo_client_tuning_profile_effective | default('small')].buffer_pool_mb }}"
+dingo_client_rdma_max_inflight_rpcs: "{{ dingo_client_mem_profiles[dingo_client_tuning_profile_effective | default('small')].rdma_max_inflight_rpcs }}"
+dingo_client_rdma_max_connections: "{{ dingo_client_mem_profiles[dingo_client_tuning_profile_effective | default('small')].rdma_max_connections }}"
 
 # FUSE / VFS tuning
 dingo_client_cache_store: none
 dingo_client_vfs_read_executor_thread: 32
-dingo_client_vfs_read_buffer_total_mb: 8000
-dingo_client_vfs_write_buffer_total_mb: 8192
+dingo_client_vfs_read_buffer_total_mb: "{{ dingo_client_mem_profiles[dingo_client_tuning_profile_effective | default('small')].vfs_read_buffer_total_mb }}"
+dingo_client_vfs_write_buffer_total_mb: "{{ dingo_client_mem_profiles[dingo_client_tuning_profile_effective | default('small')].vfs_write_buffer_total_mb }}"
+dingo_client_vfs_compact_buffer_total_mb: "{{ dingo_client_mem_profiles[dingo_client_tuning_profile_effective | default('small')].vfs_compact_buffer_total_mb }}"
 dingo_client_vfs_prefetch_blocks: 0
-dingo_client_fuse_max_threads: 512
+dingo_client_fuse_max_threads: "{{ dingo_client_mem_profiles[dingo_client_tuning_profile_effective | default('small')].fuse_max_threads }}"
 dingo_client_fuse_enable_readdir_cache: "false"
 dingo_client_fuse_attr_cache_timeout_s: 10
 dingo_client_fuse_entry_cache_timeout_s: 10

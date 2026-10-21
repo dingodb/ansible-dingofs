@@ -73,6 +73,45 @@
     success_msg: "client binaries present on the control node"
   run_once: true
 
+# --- Tuning profile: size buffers to the host (once per host) ---
+# The mount script reserves VFS/RDMA buffers in the dingo-client process, so a
+# 128-256 GB box cannot carry the same numbers as a 1 TB one. The "small"
+# profile (< dingo_client_mem_threshold_gb) keeps headroom; "large" uses the
+# full buffers. Read MemTotal directly instead of relying on gathered facts,
+# so this still works when the play runs with gather_facts: false.
+- name: Read total memory on client hosts
+  command: awk '/^MemTotal:/ {print int($2 / 1024)}' /proc/meminfo
+  register: _client_memtotal_mb
+  changed_when: false
+  failed_when: false
+
+- name: Select the client tuning profile from host memory
+  set_fact:
+    dingo_client_mem_total_mb: "{{ _client_memtotal_mb.stdout | default('') | trim | int }}"
+    dingo_client_mem_total_gb: >-
+      {{ (((_client_memtotal_mb.stdout | default('') | trim | int) / 1024)
+          | round(0, 'common')) | int }}
+    dingo_client_tuning_profile_effective: >-
+      {{ (dingo_client_tuning_profile | default('auto'))
+         if (dingo_client_tuning_profile | default('auto')) in ['small', 'large']
+         else ('large'
+               if ((((_client_memtotal_mb.stdout | default('') | trim | int) / 1024)
+                    | round(0, 'common') | int) >= (dingo_client_mem_threshold_gb | default(256) | int))
+               else 'small') }}
+
+- name: Log the client tuning profile
+  debug:
+    msg: >-
+      Host memory {{ dingo_client_mem_total_gb }} GiB -> profile
+      '{{ dingo_client_tuning_profile_effective }}'
+      (threshold {{ dingo_client_mem_threshold_gb }} GiB; force it with
+      dingo_client_tuning_profile: small|large). read/write/compact
+      {{ dingo_client_mem_profiles[dingo_client_tuning_profile_effective].vfs_read_buffer_total_mb }}/{{ dingo_client_mem_profiles[dingo_client_tuning_profile_effective].vfs_write_buffer_total_mb }}/{{ dingo_client_mem_profiles[dingo_client_tuning_profile_effective].vfs_compact_buffer_total_mb }} MB,
+      fuse_threads {{ dingo_client_mem_profiles[dingo_client_tuning_profile_effective].fuse_max_threads }},
+      pool {{ dingo_client_mem_profiles[dingo_client_tuning_profile_effective].buffer_pool_mb }} MB,
+      inflight {{ dingo_client_mem_profiles[dingo_client_tuning_profile_effective].rdma_max_inflight_rpcs }},
+      connections {{ dingo_client_mem_profiles[dingo_client_tuning_profile_effective].rdma_max_connections }}.
+
 # --- InfiniBand readiness check (used by systemd ExecStartPre) ---
 # Deployed once per host, not per mount: every instance on this host uses the
 # same script. It auto-detects RDMA devices at runtime, so HCA/IPoIB names
