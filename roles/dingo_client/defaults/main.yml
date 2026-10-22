@@ -28,10 +28,24 @@ dingo_client_log_dir: "/mnt/disk1/dingofs/logs/{{ dingo_client_fsname }}"
 dingo_client_log_level: ERROR
 dingo_client_log_v: 0
 dingo_client_ld_preload: /usr/local/lib/libjemalloc.so.2
-# (v5.2: no numactl binding — the mount script runs unbound; locality comes
-# from the --cpuset CPUs. No static NUMA fallback: the preferred node is the
-# RDMA device's node / coolest / lowest-memory node, and when none of those
-# exist the detector picks the best node itself.)
+
+# --- NUMA binding (numactl, prepended to the client start line) ---
+# dingo-client allocates its heap (jemalloc) and its RDMA buffer pool without
+# NUMA awareness, so on a multi-socket host those pages can land on the socket
+# opposite the RDMA device and every transfer crosses the interconnect. When a
+# node is known, the mount script starts the client as
+#   numactl --cpunodebind=<node> --membind=<node>
+# <node> defaults to the NUMA node this instance's --cpuset was chosen on (the
+# existing NUMA logic below: RDMA device's node, memory permitting). Set
+# dingo_client_numactl_node to force a specific node independently of that —
+# needed when CPU pinning is off, since then there is no cpuset node and
+# nothing would be bound.
+dingo_client_numactl_enabled: true
+dingo_client_numactl_node: ""
+# true (default) = --membind=<node>: strict, allocation FAILS if the node is
+#                  exhausted (the client then crash-loops under Restart=always).
+# false          = --preferred=<node>: prefer the node, spill instead of fail.
+dingo_client_numactl_membind: true
 
 # --- CPU pinning (v5.2+: --shards/--pin_cpu/--cpuset; same rules as dingo_cache) ---
 dingo_client_shards: 8

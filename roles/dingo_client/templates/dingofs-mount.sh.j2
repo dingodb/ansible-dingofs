@@ -39,10 +39,20 @@ else
     fi
 fi
 
-# v5.2: no numactl binding — locality comes from pinning --cpuset CPUs on the
-# right NUMA node (the RDMA device's node, memory permitting) at deploy time.
+# NUMA binding: bind the whole process (and therefore the jemalloc heap and the
+# RDMA buffers) to one NUMA node. The node is dingo_client_numactl_node when
+# set, otherwise the node this instance's --cpuset lives on (that cpuset is
+# itself a subset of the node, so --cpunodebind never takes CPUs away from it).
+# Without a node — pin_cpu off and no explicit override — nothing is bound.
+{% set _numactl_node = dingo_client_numactl_node_effective | default('') | string | trim %}
+{% set _numactl_mem = '--membind=' if dingo_client_numactl_membind | default(true) | bool else '--preferred=' %}
+{% set _numactl = ('numactl --cpunodebind=' ~ _numactl_node ~ ' ' ~ _numactl_mem ~ _numactl_node)
+     if (dingo_client_numactl_enabled | default(true) | bool and (_numactl_node | length) > 0) else '' %}
+# Both commands sit on the same continued line on purpose: Ansible trims the
+# newline right after a template tag, so an if-block here would glue the lines
+# together without a working backslash continuation.
 LD_PRELOAD={{ dingo_client_ld_preload }} \
-    ${g_fuse} "mds://${g_mdsaddr}/${g_fsname}" "${g_mnt}" \
+    {{ (_numactl ~ ' ') if (_numactl | length) > 0 else '' }}${g_fuse} "mds://${g_mdsaddr}/${g_fsname}" "${g_mnt}" \
     --log_dir=${g_log} \
     --log_level={{ dingo_client_log_level }} \
     --log_v={{ dingo_client_log_v }} \
