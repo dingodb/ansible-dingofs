@@ -254,6 +254,18 @@ dingo_client_log_level: ERROR
 dingo_client_log_v: 0
 dingo_client_ld_preload: /usr/local/lib/libjemalloc.so.2
 
+# NUMA binding: start the client under
+#   numactl --cpunodebind=<node> --membind=<node>
+# so the jemalloc heap and the RDMA buffer pool stay on the socket the RDMA
+# device sits on. <node> = the node this instance's --cpuset was chosen on
+# (auto-selected below); set dingo_client_numactl_node to force a node
+# independently of that — required when dingo_client_pin_cpu is false, since
+# then no cpuset node exists. dingo_client_numactl_membind=false swaps
+# --membind for --preferred (spill instead of failing on a full node).
+dingo_client_numactl_enabled: true
+dingo_client_numactl_node: ""
+dingo_client_numactl_membind: true
+
 # Version suffix appended to every loop-built service unit, base dir and log
 # dir (e.g. "-v5.2" -> dingofs-mount-<fs>-v5.2, .../<fs>-v5.2). Empty = unversioned.
 # NOTE: do NOT version by templating dingo_client_service_name/base_dir/

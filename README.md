@@ -450,6 +450,8 @@ See `inventory/group_vars/all.yml` for all configurable variables.
 | `dingo_client_mds_addrs` | *(must set)* | Comma-separated MDS addresses |
 | `dingo_client_cache_group` | `dingofs-group` | Cache group name |
 | `dingo_client_fuse_max_threads` | `512` | FUSE max threads |
+| `dingo_client_numactl_enabled` | `true` | Start the client under `numactl --cpunodebind=<node> --membind=<node>` |
+| `dingo_client_numactl_node` | `""` | Force the numactl NUMA node; empty = the instance's cpuset node |
 
 ## Standalone Playbooks
 

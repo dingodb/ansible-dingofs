@@ -25,6 +25,46 @@
     state: present
   when: ansible_os_family == "Debian"
 
+# --- Pre-flight: numactl (mount script binds the client to the RDMA's NUMA node) ---
+#
+# The mount script prefixes the client with `numactl --cpunodebind=<node>
+# --membind=<node>`. Without the binary the service fails at start, and systemd
+# only reports a bare "status=127" — so check here and name the package.
+- name: Ensure numactl is installed (client hosts)
+  package:
+    name: numactl
+    state: present
+  when:
+    - dingo_client_numactl_enabled | default(true) | bool
+    - ansible_os_family == "RedHat"
+
+- name: Ensure numactl is installed (client hosts)
+  package:
+    name: numactl
+    state: present
+  when:
+    - dingo_client_numactl_enabled | default(true) | bool
+    - ansible_os_family == "Debian"
+
+- name: Check the numactl binary is available (client hosts)
+  shell: "command -v numactl"
+  register: _client_numactl_bin
+  changed_when: false
+  failed_when: false
+  when: dingo_client_numactl_enabled | default(true) | bool
+
+- name: Fail when numactl is enabled but unavailable (client hosts)
+  assert:
+    that:
+      - _client_numactl_bin.rc | default(1) | int == 0
+    fail_msg: >-
+      dingo_client_numactl_enabled=true but numactl was not found on
+      {{ inventory_hostname }} ({{ _client_numactl_bin.stdout | default('') | trim
+      }}{{ _client_numactl_bin.stderr | default('') | trim }}).
+      Install the numactl package, or set dingo_client_numactl_enabled=false to
+      deploy without NUMA binding.
+  when: dingo_client_numactl_enabled | default(true) | bool
+
 # --- Pre-flight: the binaries must exist on the control node ---
 #
 # dingo_client_bin_local_src / dingo_client_dingo_bin_local_src are paths on the
@@ -177,7 +217,7 @@
       CPUs anyway so the mount still starts (overlap WILL contend).
   when: dingo_client_pin_cpu | default(true) | bool
 
-# --- Preferred NUMA node: IB device + memory aware (v5.2, no numactl, once per host) ---
+# --- Preferred NUMA node: IB device + memory aware (once per host) ---
 # Same rule as dingo_cache: the RDMA device's NUMA node first, unless it is hot
 # on memory (> dingo_client_ib_node_mem_max_pct, default 50%) — then the
 # lowest-memory node under the threshold. Computed once here; every mount on
