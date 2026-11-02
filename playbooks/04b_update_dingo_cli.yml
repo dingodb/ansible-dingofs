@@ -1,0 +1,17 @@
+---
+# Existing hosts: update the executable only, preserving shared CLI configuration.
+- name: Validate and update the shared Dingo CLI executable
+  hosts: admin
+  gather_facts: false
+  become: true
+  any_errors_fatal: true
+  roles:
+    - role: dingo_cli
+      vars:
+        dingo_cli_update_existing: true
+      when: not ansible_check_mode
+  tasks:
+    - name: Explain shared CLI update check mode
+      debug:
+        msg: "Check mode: executable download/update skipped; run without --check to validate, back up and update the shared CLI."
+      when: ansible_check_mode

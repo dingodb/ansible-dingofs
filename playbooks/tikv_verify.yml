@@ -26,10 +26,12 @@
 - name: TiKV pre-flight
   hosts: "{{ tikv_verify_hosts | default('meta_servers') }}"
   gather_facts: false
+  check_mode: false
+  any_errors_fatal: true
 
   vars:
-    tikv_cluster_name: dingofs-tikv
-    tikv_min_stores: 3
+    _tikv_cluster_name: "{{ tikv_cluster_name | default('dingofs-tikv') }}"
+    _tikv_min_stores: "{{ tikv_min_stores | default(3) }}"
 
   tasks:
     # --- locate tiup ---------------------------------------------------------
@@ -68,10 +70,10 @@
     - name: Fail when the TiKV cluster is not registered with tiup
       assert:
         that:
-          - tikv_cluster_name in _tiup_list.stdout
+          - _tikv_cluster_name in _tiup_list.stdout
         fail_msg: >-
           tiup on {{ inventory_hostname }} has no cluster named
-          "{{ tikv_cluster_name }}". Nothing to verify -- deploy it first
+          "{{ _tikv_cluster_name }}". Nothing to verify -- deploy it first
           (tiup cluster deploy), or set -e tikv_cluster_name=<name>.
           Known clusters:
           {{ _tiup_list.stdout }}
@@ -79,7 +81,7 @@
 
     # --- every component is Up ----------------------------------------------
     - name: Display the cluster
-      command: "{{ _tiup }} cluster display {{ tikv_cluster_name }}"
+      command: "{{ _tiup }} cluster display {{ _tikv_cluster_name }}"
       register: _tiup_display
       changed_when: false
       run_once: true
@@ -87,10 +89,7 @@
     - name: Fail when any TiKV component is not Up
       assert:
         that:
-          - "'Down' not in _tiup_display.stdout"
-          - "'Tombstone' not in _tiup_display.stdout"
-          - "'Offline' not in _tiup_display.stdout"
-          - "'N/A' not in _tiup_display.stdout"
+          - (_tiup_display.stdout | tiup_cluster_health).healthy
         fail_msg: >-
           Some TiKV components are not Up -- fix the TiKV cluster before
           deploying a TiKV-backed MDS. Full display output:
@@ -115,11 +114,11 @@
         _not_up: "{{ _stores | map(attribute='store.state_name') | reject('eq', 'Up') | list }}"
       assert:
         that:
-          - (_stores | length) >= (tikv_min_stores | int)
+          - (_stores | length) >= (_tikv_min_stores | int)
           - _not_up | length == 0
         fail_msg: >-
           PD reports {{ _stores | length }} store(s), expected at least
-          {{ tikv_min_stores }}; not-Up: {{ _not_up | default([]) }}.
+          {{ _tikv_min_stores }}; not-Up: {{ _not_up | default([]) }}.
           A TiKV-backed MDS cannot be deployed until every store is Up.
       run_once: true
 
@@ -142,10 +141,10 @@
         _version: "{{ (_tiup_display.stdout_lines | select('match', '^Cluster version:') | list | first | default('Cluster version: ?')).split(':')[1] | trim }}"
       debug:
         msg:
-          - "TiKV cluster : {{ tikv_cluster_name }}  ({{ _version }})"
-          - "Components   : {{ _comp_lines | length }} 个，全部 Up（上文已断言无 Down/Tombstone/Offline/N-A）"
+          - "TiKV cluster : {{ _tikv_cluster_name }}  ({{ _version }})"
+          - "Components   : {{ _comp_lines | length }} 个，全部 Up（已逐行检查组件状态）"
           - "               角色：{{ _roles | join('  ') }}"
-          - "Stores       : {{ _stores | length }} 个 Up（下限 {{ tikv_min_stores }}）"
+          - "Stores       : {{ _stores | length }} 个 Up（下限 {{ _tikv_min_stores }}）"
           - "PD endpoints : {{ _pd_addrs | join('  ') }}"
           - "↓ 照抄进区配置的 group_vars（dingofs_cluster 会渲染进 MDS 拓扑）："
           - "  dingofs_mds_storage_engine: tikv"

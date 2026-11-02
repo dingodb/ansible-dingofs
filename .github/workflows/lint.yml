@@ -37,6 +37,9 @@ jobs:
       - name: Install ansible
         run: pip install ansible
 
+      - name: Regression tests for read-only checks and additional-cluster deployment
+        run: python3 -m unittest discover -s tests -v
+
       # Plain YAML parsing first: its errors are more direct than ansible's.
       # This is what catches a plain (unquoted) scalar containing ": " --
       # the mistake that made every client playbook fail at parse time via

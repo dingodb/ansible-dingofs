@@ -181,6 +181,44 @@ Notes:
   a broken playbook.
 - Step (c) is idempotent; re-run it freely.
 
+### Existing hosts: add another cluster
+
+`meta_site.yml` is the first-install workflow. When hosts already run another
+DingoFS cluster, use `meta_add_cluster.yml` instead. In the new site's inventory,
+set `dingofs_meta_existing_hosts: true`, list the existing data mounts in
+`dingofs_existing_mounts`, and use independent service ports, paths and cluster name.
+The additional-cluster workflow requires the full meta inventory and one admin.
+
+```bash
+INV=../ansible-dingofs-env/bj09/v5.2-tikv/hosts-meta.yml
+ansible-playbook -i "$INV" playbooks/meta_add_cluster.yml --check
+ansible-playbook -i "$INV" playbooks/meta_add_cluster.yml
+```
+
+This checks the existing users, mounts, container engine, reserved/listening ports
+and TiKV dependency, then updates the shared CLI and deploys only the new cluster.
+It does not recreate users, initialize disks/RQLite, rewrite Podman settings,
+run system tuning, deploy monitors, replace host registrations or select a new
+shared default cluster. It verifies the old topologies and default selection
+after the operation. A healthy, matching existing target is verified without
+reinitialization; configuration drift, partial deployment and query failures stop
+the run for inspection rather than triggering another initial deploy.
+
+The CLI update downloads the latest executable from the configured main/latest
+URL, validates its version, backs up a changed executable under `.dingo/bin/backups/dingo-<sha256>`,
+and replaces it atomically. It preserves `dingocli.cfg` and restores the previous
+binary if a post-install validation fails. The update can also run separately:
+
+```bash
+ansible-playbook -i "$INV" playbooks/04b_update_dingo_cli.yml
+```
+
+This is an Ansible-managed executable update; keep `dingo_cli_auto_upgrade: false`
+so CLI invocations do not independently upgrade a shared installation. An optional
+`dingo_cli_download_checksum` pins the candidate checksum. Check mode runs the
+read-only prerequisites and skips CLI/image downloads, registration and deployment;
+it does not prove the release image is available in the registry.
+
 ### 4. Run individual phases
 
 ```bash
@@ -229,11 +267,10 @@ reports every store `Up`, then prints the PD endpoints and the exact
 writes anything, so it is safe before any deploy and on a live cluster.
 Sites whose metadata lives in dingo-store or rqlite do not need it.
 
-Note: the current `topology.yaml.j2` always renders coordinator/store/executor
-sections and does not render `mds_storage_engine` / `storage_url`, so a
-TiKV-backed cluster whose topology is MDS-only (no dingo-store, no executor)
-is deployed from a standalone topology file with `dingo cluster add -f`
-rather than through `05_deploy_cluster.yml`.
+The topology template supports both dingo-store and TiKV-backed, MDS-only
+clusters. On existing hosts, `meta_add_cluster.yml` runs this read-only TiKV
+verification on the admin before updating the CLI or deploying MDS. TiUP remains
+responsible for PD/TiKV/TiDB lifecycle operations.
 
 ## DingoFS Cache Deployment
 

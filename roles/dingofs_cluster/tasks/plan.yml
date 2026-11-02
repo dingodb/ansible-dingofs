@@ -1,0 +1,14 @@
+---
+- import_role:
+    name: version_guard
+
+- name: Validate the additional cluster name and topology
+  assert:
+    that:
+      - dingofs_cluster_name is match('^[A-Za-z0-9][A-Za-z0-9_.-]*$')
+      - (lookup('template', 'topology.yaml.j2') | from_yaml) is mapping
+
+- name: Build the additional cluster plan without writing files
+  set_fact:
+    _dingo_add_topology: "{{ lookup('template', 'topology.yaml.j2') | from_yaml }}"
+    _dingo_add_plan: "{{ (lookup('template', 'topology.yaml.j2') | from_yaml) | dingo_cluster_plan }}"

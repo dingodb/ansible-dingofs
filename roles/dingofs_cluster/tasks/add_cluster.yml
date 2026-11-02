@@ -1,0 +1,287 @@
+---
+# Existing-host path: scoped commands only, no checkout or config commit.
+- import_tasks: plan.yml
+
+- name: Read the existing cluster registrations
+  become_user: "{{ dingofs_user }}"
+  command:
+    argv: ["{{ dingo_cli_bin_dir }}/dingo", cluster, list]
+  environment:
+    DINGO_CLUSTER: ""
+    dingo_cluster: ""
+  register: _dingo_add_clusters_before
+  changed_when: false
+
+- name: Save the existing cluster names and default selection
+  set_fact:
+    _dingo_add_before: "{{ _dingo_add_clusters_before.stdout | dingo_cluster_list }}"
+
+- name: Require existing infrastructure and explicit mounted filesystems
+  assert:
+    that:
+      - _dingo_add_before.names | length > 0
+      - dingofs_existing_mounts | length > 0
+      - dingofs_dir_list | length > 0
+    fail_msg: "Additional-cluster deployment requires existing registrations and explicit mounted filesystems/directories."
+
+- name: Read existing host registrations without committing a replacement
+  become_user: "{{ dingofs_user }}"
+  command:
+    argv: ["{{ dingo_cli_bin_dir }}/dingo", hosts, list]
+  environment:
+    DINGO_CLUSTER: ""
+    dingo_cluster: ""
+  register: _dingo_add_hosts
+  changed_when: false
+
+- name: Check existing host registrations match this inventory
+  vars:
+    _registered: "{{ _dingo_add_hosts.stdout | dingo_hosts_list }}"
+  assert:
+    that:
+      - item in _registered
+      - _registered[item].address == (hostvars[item].ansible_host | default(item))
+      - _registered[item].user == dingofs_user
+    fail_msg: >-
+      Existing CLI registration for {{ item }} does not match this inventory.
+      No hosts commit was performed; reconcile this host explicitly before deployment.
+  loop: "{{ groups['meta_servers'] }}"
+
+- name: Read every existing topology as a preservation baseline
+  become_user: "{{ dingofs_user }}"
+  command:
+    argv: ["{{ dingo_cli_bin_dir }}/dingo", config, show]
+  environment:
+    DINGO_CLUSTER: "{{ item }}"
+    dingo_cluster: "{{ item }}"
+  loop: "{{ _dingo_add_before.names }}"
+  register: _dingo_add_topologies_before
+  changed_when: false
+
+- name: Require an existing target topology to match instead of overwriting it
+  assert:
+    that: (item.stdout | from_yaml) == _dingo_add_topology
+    fail_msg: >-
+      Cluster {{ dingofs_cluster_name }} is already registered with a different
+      topology. Nothing was committed or redeployed. Use a reviewed configuration
+      change/upgrade workflow instead of re-running initial deployment.
+  loop: "{{ _dingo_add_topologies_before.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: item.item == dingofs_cluster_name
+
+- name: Require independent ports and service paths from other registered clusters
+  vars:
+    _conflicts: "{{ _dingo_add_plan | dingo_plan_conflicts((item.stdout | from_yaml) | dingo_cluster_plan) }}"
+  assert:
+    that: _conflicts.compatible
+    fail_msg: >-
+      Target conflicts with {{ item.item }}. Ports: {{ _conflicts.ports }};
+      paths: {{ _conflicts.paths }}. Stopped before creating services.
+  loop: "{{ _dingo_add_topologies_before.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: item.item != dingofs_cluster_name
+
+- name: Inspect the already registered target without reinitializing it
+  become_user: "{{ dingofs_user }}"
+  command:
+    argv: ["{{ dingo_cli_bin_dir }}/dingo", cluster, status, -s, -v]
+  environment:
+    DINGO_CLUSTER: "{{ dingofs_cluster_name }}"
+    dingo_cluster: "{{ dingofs_cluster_name }}"
+  register: _dingo_add_existing_status
+  changed_when: false
+  when: dingofs_cluster_name in _dingo_add_before.names
+
+- name: Refuse automatic initialization of an incomplete or unhealthy registered target
+  assert:
+    that: (_dingo_add_existing_status.stdout | dingo_cluster_status(_dingo_add_plan, dingofs_cluster_name)).healthy
+    fail_msg: >-
+      The target is already registered but is not fully running. Initial deployment
+      was not retried: it may already have initialized metadata. Inspect the scoped
+      cluster status/logs and resume the failed operation explicitly; do not remove
+      the cluster or repeat table initialization blindly.
+  when: dingofs_cluster_name in _dingo_add_before.names
+
+- name: Deploy the new target and verify preservation of existing clusters
+  block:
+    - name: Prepare and deploy a previously absent cluster
+      when: dingofs_cluster_name not in _dingo_add_before.names
+      block:
+        - name: Confirm existing filesystems before creating service directories
+          command:
+            argv: [mountpoint, -q, "{{ item.1 }}"]
+          delegate_to: "{{ item.0 }}"
+          loop: "{{ groups['meta_servers'] | product(dingofs_existing_mounts) | list }}"
+          changed_when: false
+
+        - name: Require service directories on the declared data mounts
+          assert:
+            that:
+              - item | dingo_managed_directory(dingofs_existing_mounts, _dingo_add_plan)
+            fail_msg: "Directory {{ item }} is not a planned service path on a declared mount; shared core directories are not managed here."
+          loop: "{{ dingofs_dir_list }}"
+
+        - name: Recheck current service listeners before the first deployment
+          command:
+            argv: [ss, -H, -lnt]
+          delegate_to: "{{ item }}"
+          loop: "{{ groups['meta_servers'] }}"
+          register: _dingo_add_listeners
+          changed_when: false
+
+        - name: Require the target service ports to remain unused
+          assert:
+            that: >-
+              (_dingo_add_listeners.results
+               | selectattr('item', 'equalto', item.0.key) | first).stdout
+               is not search(':' ~ (item.1 | string) ~ '[ ]')
+            fail_msg: "Port {{ item.1 }} is already occupied on {{ item.0.key }}; no existing process was stopped."
+          loop: "{{ _dingo_add_plan.ports | dict2items | subelements('value') }}"
+
+        - name: Create only the additional cluster's service directories
+          file:
+            path: "{{ item.1 }}"
+            state: directory
+            owner: "{{ dingofs_user }}"
+            group: "{{ dingofs_group | default(dingofs_user) }}"
+            mode: "0755"
+          delegate_to: "{{ item.0 }}"
+          loop: "{{ groups['meta_servers'] | product(dingofs_dir_list) | list }}"
+
+        - name: Pull only images required by the additional cluster
+          become_user: "{{ dingofs_user }}"
+          shell: |
+            if {{ container_engine | quote }} images -q {{ item.1 | quote }} | grep -q .; then
+              echo present
+            else
+              {{ container_engine | quote }} pull {{ item.1 | quote }}
+            fi
+          args:
+            executable: /bin/bash
+          delegate_to: "{{ item.0 }}"
+          loop: >-
+            {{ groups['meta_servers'] | product(
+                 [dingofs_container_image]
+                 + ([dingofs_store_image] if dingofs_mds_storage_engine != 'tikv' else [])
+               ) | list }}
+          register: _dingo_add_images
+          changed_when: "'present' not in _dingo_add_images.stdout"
+
+        - name: Pull the new executor image on the admin only
+          become_user: "{{ dingofs_user }}"
+          delegate_to: "{{ _dingo_add_plan.instances.get('executor', {}).keys() | list | first | default(inventory_hostname) }}"
+          shell: |
+            if {{ container_engine | quote }} images -q {{ dingofs_executor_image | quote }} | grep -q .; then
+              echo present
+            else
+              {{ container_engine | quote }} pull {{ dingofs_executor_image | quote }}
+            fi
+          args:
+            executable: /bin/bash
+          register: _dingo_add_executor
+          changed_when: "'present' not in _dingo_add_executor.stdout"
+          when: dingofs_mds_storage_engine != 'tikv'
+
+        - name: Create a cluster-specific configuration directory
+          file:
+            path: "{{ dingofs_home }}/cluster-config/{{ dingofs_cluster_name }}"
+            state: directory
+            owner: "{{ dingofs_user }}"
+            group: "{{ dingofs_group | default(dingofs_user) }}"
+            mode: "0755"
+
+        - name: Render the new cluster topology without overwriting other clusters
+          template:
+            src: topology.yaml.j2
+            dest: "{{ dingofs_home }}/cluster-config/{{ dingofs_cluster_name }}/topology.yaml"
+            owner: "{{ dingofs_user }}"
+            group: "{{ dingofs_group | default(dingofs_user) }}"
+            mode: "0644"
+
+        - name: Register the new cluster with its topology
+          become_user: "{{ dingofs_user }}"
+          command:
+            argv:
+              - "{{ dingo_cli_bin_dir }}/dingo"
+              - cluster
+              - add
+              - "{{ dingofs_cluster_name }}"
+              - -f
+              - "{{ dingofs_home }}/cluster-config/{{ dingofs_cluster_name }}/topology.yaml"
+          environment:
+            DINGO_CLUSTER: ""
+            dingo_cluster: ""
+
+        - name: Initialize and deploy only the newly registered cluster
+          become_user: "{{ dingofs_user }}"
+          command:
+            argv: >-
+              {{ [dingo_cli_bin_dir ~ '/dingo', 'cluster', 'deploy', '--local']
+                 + (['-k'] if dingofs_deploy_skip_cli_checks | bool else []) }}
+          environment:
+            DINGO_CLUSTER: "{{ dingofs_cluster_name }}"
+            dingo_cluster: "{{ dingofs_cluster_name }}"
+          register: _dingo_add_deploy
+
+        - name: Read the deployed target status
+          become_user: "{{ dingofs_user }}"
+          command:
+            argv: ["{{ dingo_cli_bin_dir }}/dingo", cluster, status, -s, -v]
+          environment:
+            DINGO_CLUSTER: "{{ dingofs_cluster_name }}"
+            dingo_cluster: "{{ dingofs_cluster_name }}"
+          register: _dingo_add_deployed_status
+          changed_when: false
+
+        - name: Require every planned instance to be running
+          assert:
+            that: (_dingo_add_deployed_status.stdout | dingo_cluster_status(_dingo_add_plan, dingofs_cluster_name)).healthy
+            fail_msg: "Deployment did not produce all expected running instances. Preserve logs/registration and inspect; do not repeat initialization."
+
+    - name: Report additional-cluster deployment outcome
+      debug:
+        msg: >-
+          {{ dingofs_cluster_name }} is fully running.
+          {{ 'Existing matching cluster verified; initialization skipped.'
+             if dingofs_cluster_name in _dingo_add_before.names else 'New cluster deployed.' }}
+
+  always:
+    - name: Verify the shared default selection and old registrations were preserved
+      become_user: "{{ dingofs_user }}"
+      command:
+        argv: ["{{ dingo_cli_bin_dir }}/dingo", cluster, list]
+      environment:
+        DINGO_CLUSTER: ""
+        dingo_cluster: ""
+      register: _dingo_add_clusters_after
+      changed_when: false
+
+    - name: Require the original default cluster and old names to remain unchanged
+      vars:
+        _after: "{{ _dingo_add_clusters_after.stdout | dingo_cluster_list }}"
+      assert:
+        that:
+          - _after.current == _dingo_add_before.current
+          - (_dingo_add_before.names | difference(_after.names)) | length == 0
+
+    - name: Re-read old topologies without changing their selection
+      become_user: "{{ dingofs_user }}"
+      command:
+        argv: ["{{ dingo_cli_bin_dir }}/dingo", config, show]
+      environment:
+        DINGO_CLUSTER: "{{ item.item }}"
+        dingo_cluster: "{{ item.item }}"
+      loop: "{{ _dingo_add_topologies_before.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      register: _dingo_add_topologies_after
+      changed_when: false
+
+    - name: Require each original topology to be semantically unchanged
+      assert:
+        that: (item.stdout | from_yaml) == (item.item.stdout | from_yaml)
+      loop: "{{ _dingo_add_topologies_after.results }}"
+      loop_control:
+        label: "{{ item.item.item }}"

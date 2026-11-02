@@ -1,5 +1,14 @@
 ---
 # Playbook: Install Podman on all nodes, then Dingo CLI on admin node
+- name: Guard shared installations before configuring Podman or CLI
+  hosts: meta_servers
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - assert:
+        that: not (dingofs_meta_existing_hosts | default(false) | bool)
+        fail_msg: "Use 04b_update_dingo_cli.yml to update a shared CLI without rewriting Podman or dingocli.cfg."
+
 - name: Install Podman container engine on all nodes
   hosts: meta_servers
   become: true
