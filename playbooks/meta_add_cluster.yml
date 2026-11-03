@@ -1,0 +1,112 @@
+---
+# Add a DingoFS cluster to hosts that already run another cluster.
+# Never imports preparation, LVM, RQLite, Podman configuration, tuning or monitor deployment.
+- name: Read-only preflight on every existing meta host
+  hosts: meta_servers
+  gather_facts: false
+  become: true
+  any_errors_fatal: true
+  tasks:
+    - name: Require explicit existing-host configuration and the full meta inventory
+      assert:
+        that:
+          - dingofs_meta_existing_hosts | default(false) | bool
+          - groups['admin'] | length == 1
+          - groups['admin'][0] in groups['meta_servers']
+          - (ansible_play_hosts_all | sort) == (groups['meta_servers'] | sort)
+          - dingofs_existing_mounts | default([]) | length > 0
+        fail_msg: >-
+          Set dingofs_meta_existing_hosts=true and list the mounted filesystems in
+          dingofs_existing_mounts. The inventory must contain every meta server
+          and exactly one admin; do not --limit away meta nodes for a cluster deploy.
+
+    - name: Render the additional cluster plan
+      import_role:
+        name: dingofs_cluster
+        tasks_from: plan
+
+    - name: Check the existing service user
+      command:
+        argv: [getent, passwd, "{{ dingofs_user }}"]
+      register: _dingo_existing_user
+      changed_when: false
+      check_mode: false
+
+    - name: Require the existing user's home directory to match
+      assert:
+        that:
+          - _dingo_existing_user.stdout.split(':')[5] == dingofs_home
+        fail_msg: "Existing service user/home differs from this inventory; this workflow never recreates users or changes UIDs."
+
+    - name: Check all required filesystems are already mounted
+      command:
+        argv: [mountpoint, -q, "{{ item }}"]
+      loop: "{{ dingofs_existing_mounts }}"
+      changed_when: false
+      check_mode: false
+
+    - name: Check the existing rootless container engine
+      become_user: "{{ dingofs_user }}"
+      command:
+        argv: ["{{ container_engine | default('podman') }}", ps, -a]
+      changed_when: false
+      check_mode: false
+
+    - name: Read existing clusters without changing the default selection
+      become_user: "{{ dingofs_user }}"
+      command:
+        argv: ["{{ dingo_cli_bin_dir | default(dingofs_home ~ '/.dingo/bin') }}/dingo", cluster, list]
+      delegate_to: "{{ groups['admin'][0] }}"
+      environment:
+        DINGO_CLUSTER: ""
+        dingo_cluster: ""
+      register: _dingo_existing_clusters
+      run_once: true
+      changed_when: false
+      check_mode: false
+
+    - name: Require at least one previously registered cluster
+      assert:
+        that: (_dingo_existing_clusters.stdout | dingo_cluster_list).names | length > 0
+        fail_msg: "No existing cluster found; use the first-install workflow for new infrastructure."
+
+    - name: Inspect listeners on existing hosts
+      command:
+        argv: [ss, -H, -lnt]
+      register: _dingo_existing_listeners
+      changed_when: false
+      check_mode: false
+
+    - name: Require new service ports to be free before the first deployment
+      assert:
+        that: >-
+          (_dingo_existing_listeners.stdout_lines
+           | select('search', ':' ~ (item | string) ~ '[ ]') | list | length) == 0
+        fail_msg: "New cluster port {{ item }} is already listening on {{ inventory_hostname }}. No existing service was stopped."
+      loop: "{{ _dingo_add_plan.ports.get(inventory_hostname, []) }}"
+      when: dingofs_cluster_name not in (_dingo_existing_clusters.stdout | dingo_cluster_list).names
+
+    - name: Report the scope of the additional deployment
+      debug:
+        msg:
+          - "Target: {{ dingofs_cluster_name }}; ports on this host: {{ _dingo_add_plan.ports.get(inventory_hostname, []) }}"
+          - "Check mode runs read-only prerequisites only; it does not download CLI/images or register/deploy services."
+          - "Existing users, disks, RQLite, Podman settings, tuning, monitors and client mounts are not redeployed."
+
+- name: Verify the existing TiKV dependency
+  import_playbook: tikv_verify.yml
+  vars:
+    tikv_verify_hosts: admin
+  when: dingofs_mds_storage_engine | default('dingo-store') == 'tikv'
+
+- name: Update the existing shared CLI
+  import_playbook: 04b_update_dingo_cli.yml
+
+- name: Deploy only the additional DingoFS cluster
+  hosts: admin
+  gather_facts: false
+  become: true
+  any_errors_fatal: true
+  roles:
+    - role: dingofs_cluster
+      when: not ansible_check_mode

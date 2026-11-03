@@ -1,4 +1,11 @@
 ---
+# Existing hosts use the additive path; full machine preparation remains a
+# separate first-install workflow.
+dingofs_meta_existing_hosts: false
+dingofs_existing_mounts: []
+# Keep CLI checks enabled. A documented CLI defect can be worked around with
+# this explicit override after independent preflight checks have passed.
+dingofs_deploy_skip_cli_checks: false
 # --- Cluster shape ----------------------------------------------------------
 # dingo-store (the default, unchanged): coordinator + store + mds + executor,
 # with local data_dir/raft_dir on every meta server.

@@ -1,0 +1,171 @@
+---
+# Existing installations share this executable and config between clusters.
+# The main/latest executable is shared across supported DingoFS versions.
+# Download, validate --version, back up and replace only the executable.
+- name: Inspect the installed shared CLI
+  stat:
+    path: "{{ dingo_cli_bin_dir }}/dingo"
+    checksum_algorithm: sha256
+  register: _dingo_cli_old
+
+- name: Inspect the existing CLI configuration
+  stat:
+    path: "{{ dingofs_home }}/.dingo/dingocli.cfg"
+    checksum_algorithm: sha256
+  register: _dingo_cli_config
+
+- name: Require an existing CLI installation and configuration
+  assert:
+    that:
+      - _dingo_cli_old.stat.isreg | default(false)
+      - _dingo_cli_config.stat.isreg | default(false)
+    fail_msg: "CLI update requires an existing executable and dingocli.cfg; use the first-install workflow on new hosts."
+
+- name: Read existing CLI settings without displaying credentials
+  slurp:
+    src: "{{ dingofs_home }}/.dingo/dingocli.cfg"
+  register: _dingo_cli_config_data
+  no_log: true
+
+- name: Validate existing shared CLI settings
+  set_fact:
+    _dingo_cli_config_check: >-
+      {{ (_dingo_cli_config_data.content | b64decode)
+         | dingo_cli_config(dingo_cli_db_url, dingo_cli_engine) }}
+  no_log: true
+
+- name: Require compatible settings without rewriting dingocli.cfg
+  assert:
+    that: _dingo_cli_config_check.valid
+    fail_msg: >-
+      Shared CLI settings do not match this inventory:
+      {{ _dingo_cli_config_check.errors | join(', ') }}.
+      Existing configuration was not changed.
+
+- name: Validate and install a candidate CLI
+  block:
+    - name: Allocate a candidate executable beside the installed CLI
+      tempfile:
+        state: file
+        path: "{{ dingo_cli_bin_dir }}"
+        prefix: .dingo-update-
+      register: _dingo_cli_candidate
+      changed_when: false
+
+    - name: Download the candidate CLI without overwriting the installed binary
+      get_url:
+        url: "{{ dingo_cli_download_url }}"
+        dest: "{{ _dingo_cli_candidate.path }}"
+        force: true
+        checksum: "{{ dingo_cli_download_checksum if dingo_cli_download_checksum | length > 0 else omit }}"
+        owner: "{{ dingofs_user }}"
+        group: "{{ dingofs_group | default(dingofs_user) }}"
+        mode: "0755"
+      changed_when: false
+
+    - name: Read candidate CLI version using the existing configuration
+      become_user: "{{ dingofs_user }}"
+      command:
+        argv: ["{{ _dingo_cli_candidate.path }}", --version]
+      environment:
+        DINGO_CLUSTER: ""
+        dingo_cluster: ""
+      register: _dingo_cli_candidate_version
+      changed_when: false
+
+    - name: Inspect candidate content
+      stat:
+        path: "{{ _dingo_cli_candidate.path }}"
+        checksum_algorithm: sha256
+      register: _dingo_cli_candidate_stat
+
+    - name: Back up and replace a changed CLI
+      when: _dingo_cli_candidate_stat.stat.checksum != _dingo_cli_old.stat.checksum
+      block:
+        - name: Create the shared CLI backup directory
+          file:
+            path: "{{ dingo_cli_bin_dir }}/backups"
+            state: directory
+            owner: "{{ dingofs_user }}"
+            group: "{{ dingofs_group | default(dingofs_user) }}"
+            mode: "0700"
+
+        - name: Preserve the old binary by content checksum
+          copy:
+            src: "{{ dingo_cli_bin_dir }}/dingo"
+            dest: "{{ dingo_cli_bin_dir }}/backups/dingo-{{ _dingo_cli_old.stat.checksum }}"
+            remote_src: true
+            force: false
+            owner: "{{ dingofs_user }}"
+            group: "{{ dingofs_group | default(dingofs_user) }}"
+            mode: "0755"
+
+        - name: Verify the rollback binary
+          stat:
+            path: "{{ dingo_cli_bin_dir }}/backups/dingo-{{ _dingo_cli_old.stat.checksum }}"
+            checksum_algorithm: sha256
+          register: _dingo_cli_backup
+
+        - name: Require an intact rollback binary before replacing the CLI
+          assert:
+            that: _dingo_cli_backup.stat.checksum == _dingo_cli_old.stat.checksum
+
+        - name: Atomically install the validated CLI
+          copy:
+            src: "{{ _dingo_cli_candidate.path }}"
+            dest: "{{ dingo_cli_bin_dir }}/dingo"
+            remote_src: true
+            owner: "{{ dingofs_user }}"
+            group: "{{ dingofs_group | default(dingofs_user) }}"
+            mode: "0755"
+          register: _dingo_cli_install
+
+    - name: Verify the installed CLI version
+      become_user: "{{ dingofs_user }}"
+      command:
+        argv: ["{{ dingo_cli_bin_dir }}/dingo", --version]
+      environment:
+        DINGO_CLUSTER: ""
+        dingo_cluster: ""
+      register: _dingo_cli_installed_version
+      changed_when: false
+
+    - name: Check the shared CLI configuration was preserved
+      stat:
+        path: "{{ dingofs_home }}/.dingo/dingocli.cfg"
+        checksum_algorithm: sha256
+      register: _dingo_cli_config_after
+
+    - name: Verify configuration preservation
+      assert:
+        that:
+          - _dingo_cli_config_after.stat.checksum == _dingo_cli_config.stat.checksum
+
+    - name: Report the validated shared CLI version
+      debug:
+        msg: "{{ _dingo_cli_candidate_version.stdout_lines }}"
+
+  rescue:
+    - name: Restore the previous executable after a failed post-install check
+      copy:
+        src: "{{ dingo_cli_bin_dir }}/backups/dingo-{{ _dingo_cli_old.stat.checksum }}"
+        dest: "{{ dingo_cli_bin_dir }}/dingo"
+        remote_src: true
+        owner: "{{ dingofs_user }}"
+        group: "{{ dingofs_group | default(dingofs_user) }}"
+        mode: "0755"
+      when: _dingo_cli_install.changed | default(false)
+
+    - name: Stop after the failed shared CLI update
+      fail:
+        msg: >-
+          Shared CLI update failed. If the executable was replaced, it was restored
+          from its checksum-named backup. dingocli.cfg was not rewritten.
+          Review the failed task before deploying the additional cluster.
+  always:
+    - name: Remove the temporary candidate CLI
+      file:
+        path: "{{ _dingo_cli_candidate.path }}"
+        state: absent
+      when: _dingo_cli_candidate.path is defined
+      changed_when: false

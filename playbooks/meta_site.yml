@@ -9,6 +9,15 @@
 #   5. DingoFS cluster deployment
 #   6. Monitor stack (node_exporter, prometheus, grafana, monitor_sync)
 
+- name: Guard the first-install workflow on existing multi-cluster hosts
+  hosts: meta_servers
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - assert:
+        that: not (dingofs_meta_existing_hosts | default(false) | bool)
+        fail_msg: "This inventory uses existing hosts. Run meta_add_cluster.yml; meta_site.yml would reconfigure shared infrastructure."
+
 - name: "Phase 0: SELinux"
   import_playbook: config_selinux.yml
   vars:
