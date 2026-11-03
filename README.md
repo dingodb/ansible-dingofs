@@ -466,7 +466,33 @@ See `inventory/group_vars/all.yml` for all configurable variables.
 | `dingo_cache_cache_size_mb` | `3145728` | Cache size in MB (3TB) |
 | `dingo_cache_mds_addrs` | *(must set)* | Comma-separated MDS addresses |
 | `dingo_cache_ip_pattern` | `192.168.` | Network prefix for listen IP detection |
+| `dingo_cache_rdma_max_connections` | `256` | Maximum RDMA connections per shard |
+| `dingo_cache_rdma_heartbeat_interval_s` | `2` | RDMA heartbeat interval in seconds |
+| `dingo_cache_rdma_idle_timeout_s` | `10` | RDMA idle timeout in seconds; at least 3 times the heartbeat interval |
 | `jemalloc_version` | `5.3.0` | Jemalloc version to compile |
+
+Configure Cache RDMA settings in the site's `group_vars/all.yml` or in
+`host_vars`, rather than editing `dingo-cache.conf.j2`:
+
+```yaml
+dingo_cache_rdma_max_connections: 256
+dingo_cache_rdma_heartbeat_interval_s: 2
+dingo_cache_rdma_idle_timeout_s: 10
+```
+
+The role checks positive uint32 values and the timeout/heartbeat constraint
+before changing host files. When `dingo_cache_use_rdma: false`, these checks
+are skipped and RDMA-specific flags are omitted. These are Cache settings;
+Client connection limits are configured separately. The connection limit is
+per shard and affects the RDMA message-pool memory budget.
+
+For an existing Cache deployment, apply configuration with
+`cache_05_deploy.yml --limit <canary-host>` during the chosen rollout window;
+changes notify a service restart. Verify the updated service and its membership
+in the intended MDS cache group after the run, then continue in small batches.
+`cache_06_upgrade.yml` only updates the binary and does not apply new settings.
+When replacing a local template hotfix with this version, preserve any other
+local changes and carry the intended values into site variables.
 
 ## Client Deployment Phases
 

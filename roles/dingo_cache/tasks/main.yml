@@ -8,6 +8,9 @@
 - import_role:
     name: version_guard
 
+# Validate before probing the host or changing any files/services.
+- import_tasks: validate_rdma.yml
+
 # --- Determine listen IP ---
 - name: Detect listen IP from network interface
   shell: ip route | awk '/{{ dingo_cache_ip_pattern }}/ && /src/ { for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}'

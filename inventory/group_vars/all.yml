@@ -210,7 +210,9 @@ dingo_cache_use_rdma: true
 dingo_cache_rdma_device: ib6s200p0
 dingo_cache_rdma_port_num: 1
 dingo_cache_buffer_pool_mb: 512
-dingo_cache_rdma_idle_timeout_s: 300
+dingo_cache_rdma_max_connections: 256
+dingo_cache_rdma_heartbeat_interval_s: 2
+dingo_cache_rdma_idle_timeout_s: 10
 # --- Poll mode (v5.2; needs pin_cpu + free cpuset, else it burns shared CPUs) ---
 dingo_cache_poll_mode: true
 dingo_cache_log_level: INFO

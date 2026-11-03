@@ -21,6 +21,8 @@
 --cache_rdma_device={{ dingo_cache_rdma_device | default('ib6s200p0') }}
 --cache_rdma_port_num={{ dingo_cache_rdma_port_num | default(1) }}
 --buffer_pool_mb={{ dingo_cache_buffer_pool_mb | default(1024) }}
---rdma_idle_timeout_s={{ dingo_cache_rdma_idle_timeout_s | default(300) }}
+--rdma_max_connections={{ dingo_cache_rdma_max_connections | default(256) }}
+--rdma_heartbeat_interval_s={{ dingo_cache_rdma_heartbeat_interval_s | default(2) }}
+--rdma_idle_timeout_s={{ dingo_cache_rdma_idle_timeout_s | default(10) }}
 {% endif %}
 --poll_mode={{ 'true' if dingo_cache_poll_mode | default(true) | bool else 'false' }}
