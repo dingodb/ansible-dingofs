@@ -1,97 +1,30 @@
 ---
+# Configuration sections follow the same order across sites.
+# Values and per-host exceptions are maintained in this file.
+
 # ============================================================
-# DingoFS Ansible - Global Variables
+# 01. Site version and deployment mode
 # ============================================================
 
 dingofs_site_version: v5.2
 
-# --- User & Access ---
+# ============================================================
+# 02. Accounts, SSH and shared paths
+# ============================================================
+
 dingofs_user: dingofs
 dingofs_home: /home/dingofs
 dingofs_pkg_dir: /home/dingofs/pkg
 dingofs_script_dir: /home/dingofs/script
-
-# --- SSH ---
+ansible_python_interpreter: /usr/bin/python3
 dingofs_ssh_key_type: rsa
 dingofs_ssh_key_bits: 4096
-ansible_python_interpreter: /usr/bin/python3
 
-# --- Package URLs (offline: set to local paths; online: set to URLs) ---
-rqlite_use_local_pkg: false
-rqlite_version: "v9.4.5"
-rqlite_tarball: "rqlite-{{ rqlite_version }}-linux-amd64.tar.gz"
-rqlite_download_url: "https://github.com/rqlite/rqlite/releases/download/{{ rqlite_version }}/{{ rqlite_tarball }}"
-rqlite_local_src: "/root/dingofs/pkg/{{ rqlite_tarball }}"
+# ============================================================
+# 03. Container engine and rootless storage
+# ============================================================
 
-dingo_cli_download_url: "https://www.dingodb.com/dingocli/branches/main/latest/dingo"
-
-# --- RQLite ---
-rqlite_http_port: 4001
-rqlite_raft_port: 4002
-rqlite_node_dir: /root/rqlite/node
-rqlite_master_host: "{{ hostvars[groups['rqlite_master'][0]]['ansible_host'] }}"
-
-# --- Dingo CLI ---
-dingo_cli_log_level: error
-dingo_cli_timeout: 300
-dingo_cli_auto_upgrade: false
-dingo_cli_engine: podman
-dingo_cli_ssh_retries: 3
-dingo_cli_ssh_timeout: 10
-dingo_cli_db_url: "rqlite://{{ rqlite_master_host }}:{{ rqlite_http_port }}"
-
-# --- Container Engine ---
 container_engine: podman
-
-# --- DingoFS Cluster ---
-dingofs_cluster_name: v5.2
-dingofs_cluster_id: 1
-dingofs_container_image: ""  # Required: select the matching versioned image
-dingofs_store_image: "harbor.zetyun.cn/dingodb/dingo-store:90b2885"
-dingofs_executor_image: "harbor.zetyun.cn/dingodb/dingo:develop-latest"
-
-dingofs_data_dir: "/mnt/data${service_replica_sequence}/dingofs-v5.2/data/${service_role}"
-dingofs_log_dir: "/mnt/data${service_replica_sequence}/dingofs-v5.2/logs/${service_role}"
-dingofs_raft_dir: "/mnt/data${service_replica_sequence}/dingofs-v5.2/raft/${service_role}"
-dingofs_core_dir: "/mnt/data/corefiles/core-%e-%p-%t"
-dingofs_default_replica_num: 3
-
-# Coordinator service
-coordinator_server_port: 6500
-coordinator_raft_port: 7500
-
-# Store service
-store_server_port: 6600
-store_raft_port: 7600
-store_block_cache_size: 21474836480
-store_mount_volumes: "/nas/dingofs/v5.2"
-
-# MDS service
-mds_base_port: 690
-mds_replicas: 3
-mds_compact_chunk_enable: true
-
-# Executor service
-executor_port: 18765
-executor_mysql_port: 13307
-executor_java_xms: 256m
-executor_java_xmx: 1g
-executor_java_soft_max_heap: 512m
-executor_java_max_direct_memory: 256m
-
-# --- Performance Tuning ---
-tune_hugepages: 1024
-tune_swappiness: 10
-tune_max_map_count: 655360
-tune_dirty_ratio: 40
-tune_dirty_background_ratio: 10
-tune_core_pattern: "/mnt/disk1/corefiles/core-%e-%p-%t"
-tune_thp_mode: madvise
-tune_cpupower_idle_disable: 3
-
-# ============================================================
-# Rootless Podman
-# ============================================================
 podman_rootless_user: "{{ dingofs_user }}"
 podman_rootless_group: "{{ podman_rootless_user }}"
 podman_rootless_home: "{{ '/root' if podman_rootless_user == 'root' else '/home/' ~ podman_rootless_user }}"
@@ -103,49 +36,17 @@ podman_rootless_storage_conf: "{{ '/etc/containers/storage.conf' if podman_rootl
 podman_rootless_xdg_runtime_dir: "/run/user/${UID}"
 
 # ============================================================
-# Cron Log Cleanup
-# ============================================================
-cron_cleanup_script_path: /root/dingofs/script/cron/cleanup_and_compression.sh
-cron_cleanup_delete_days: 3
-cron_cleanup_compress_days: 2
-cron_cleanup_protected_files: []
-cron_cleanup_directories:
-  - "{{ dingo_cache_log_dir | default('/mnt/disk1/dingofs/logs/dingo-cache') }}"
-  - /mnt/disk1/dingofs/logs/alayanew
-  - /mnt/disk1/dingofs/logs/manila
-
-# --- InfiniBand network readiness (dingo-cache / dingo-client ExecStartPre) ---
-# Both services wait for an ACTIVE RDMA port AND an IPv4 address starting with
-# IB_IP_PREFIX on an UP interface before starting, for up to IB_WAIT_TIMEOUT
-# seconds. HCA/IPoIB device names differ per machine, so the check auto-detects
-# every RDMA device instead of naming one.
-IB_CHECK_ENABLED: true
-IB_CHECK_SCRIPT: /root/dingofs/script/check/check-ib-ready.sh
-IB_IP_PREFIX: "192.168."
-IB_WAIT_TIMEOUT: 60
-
-# --- Dingo client mountpoint usage check ---
-# Before touching an instance, dingofs_mount_usage_check.sh verifies that the
-# mountpoint is unused: host processes (fuser), other mount namespaces
-# (bind mounts / container hostPath sharing st_dev), and running containers.
-# A busy mountpoint skips that instance only; other mounts on the host proceed.
-# strict=false inspects containers in 'cci-*' namespaces; true inspects all.
-dingo_client_mount_check_enabled: true
-dingo_client_mount_check_strict: true
-dingo_client_mount_check_script: /root/dingofs/script/check/dingofs_mount_usage_check.sh
-
-# ============================================================
-# Dingo Cache
+# 04. Disk provisioning (LVM)
 # ============================================================
 
-# --- LVM ---
+
+# --- 04.2 Cache data and auxiliary disks ---
 lvm_skip_vg_names:
   - csi-lvm
 lvm_vg_prefix: dingo_cache
 lvm_lv_name: lv
 lvm_fs_type: xfs
 lvm_mount_prefix: /mnt/disk
-
 # Devices smaller than lvm_min_cache_disk_gb (decimal GB) are aux disks:
 # combined into one VG (lvm_aux_vg_name) mounted at lvm_aux_mount for
 # logs/corefiles, never used as cache. When all NVMe disks are >= the
@@ -154,19 +55,122 @@ lvm_min_cache_disk_gb: 1000
 lvm_aux_vg_name: dingo_cache_aux
 lvm_aux_mount: /mnt/aux
 
-# --- Jemalloc ---
+# ============================================================
+# 05. Host tuning and allocator
+# ============================================================
+
+
+# --- 05.1 System tuning ---
+tune_hugepages: 1024
+tune_swappiness: 10
+tune_max_map_count: 655360
+tune_dirty_ratio: 40
+tune_dirty_background_ratio: 10
+tune_core_pattern: "/mnt/disk1/corefiles/core-%e-%p-%t"
+tune_thp_mode: madvise
+tune_cpupower_idle_disable: 3
+
+# --- 05.2 Jemalloc ---
 jemalloc_version: "5.3.0"
 jemalloc_local_src: "/root/dingofs/pkg/jemalloc-5.3.0.tar.bz2"
 
-# --- Dingo Cache Service ---
+# ============================================================
+# 06. RQLite configuration store
+# ============================================================
+
+rqlite_version: "v9.4.5"
+rqlite_use_local_pkg: false
+rqlite_tarball: "rqlite-{{ rqlite_version }}-linux-amd64.tar.gz"
+rqlite_download_url: "https://github.com/rqlite/rqlite/releases/download/{{ rqlite_version }}/{{ rqlite_tarball }}"
+rqlite_local_src: "/root/dingofs/pkg/{{ rqlite_tarball }}"
+rqlite_node_dir: /root/rqlite/node
+rqlite_http_port: 4001
+rqlite_raft_port: 4002
+rqlite_master_host: "{{ hostvars[groups['rqlite_master'][0]]['ansible_host'] }}"
+
+# ============================================================
+# 07. Dingo administration CLI
+# ============================================================
+
+dingo_cli_download_url: "https://www.dingodb.com/dingocli/branches/main/latest/dingo"
+dingo_cli_engine: podman
+dingo_cli_db_url: "rqlite://{{ rqlite_master_host }}:{{ rqlite_http_port }}"
+dingo_cli_log_level: error
+dingo_cli_timeout: 300
+dingo_cli_auto_upgrade: false
+dingo_cli_ssh_retries: 3
+dingo_cli_ssh_timeout: 10
+
+# ============================================================
+# 08. Meta cluster and metadata backend
+# ============================================================
+
+
+# --- 08.1 Cluster identity, images and paths ---
+dingofs_cluster_name: v5.2
+dingofs_cluster_id: 1
+dingofs_container_image: ""  # Required: select the matching versioned image
+dingofs_store_image: "harbor.zetyun.cn/dingodb/dingo-store:90b2885"
+dingofs_executor_image: "harbor.zetyun.cn/dingodb/dingo:develop-latest"
+dingofs_default_replica_num: 3
+dingofs_data_dir: "/mnt/data${service_replica_sequence}/dingofs-v5.2/data/${service_role}"
+dingofs_log_dir: "/mnt/data${service_replica_sequence}/dingofs-v5.2/logs/${service_role}"
+dingofs_raft_dir: "/mnt/data${service_replica_sequence}/dingofs-v5.2/raft/${service_role}"
+dingofs_core_dir: "/mnt/data/corefiles/core-%e-%p-%t"
+
+# --- 08.2 MDS and shared TiKV ---
+mds_base_port: 690
+mds_replicas: 3
+mds_compact_chunk_enable: true
+
+# --- 08.3 Coordinator ---
+coordinator_server_port: 6500
+coordinator_raft_port: 7500
+
+# --- 08.4 Store ---
+store_server_port: 6600
+store_raft_port: 7600
+store_block_cache_size: 21474836480
+store_mount_volumes: "/nas/dingofs/v5.2"
+
+# --- 08.5 Executor ---
+executor_port: 18765
+executor_mysql_port: 13307
+executor_java_xms: 256m
+executor_java_xmx: 1g
+executor_java_soft_max_heap: 512m
+executor_java_max_direct_memory: 256m
+
+# ============================================================
+# 09. Cache service
+# ============================================================
+
+
+# --- 09.1 Version, service and binaries ---
 dingo_cache_version: v5.2
 dingo_cache_service_name: dingo-cache-{{ dingo_cache_version }}
 dingo_cache_base_dir: "/root/dingofs/dingo-cache/{{ dingo_cache_version }}"
 dingo_cache_bin_name: dingo-cache
 dingo_cache_bin_local_src: "/root/dingofs/pkg/dingo-cache"
+dingo_cache_ld_preload: /usr/local/lib/libjemalloc.so.2
+
+# --- 09.2 Network, MDS and cache group ---
+dingo_cache_ip_pattern: "192.168."
 dingo_cache_listen_port: 11000
+# MDS addresses (host:port pairs, comma-separated)
+dingo_cache_mds_addrs: "192.168.0.44:16900,192.168.0.44:16901,192.168.0.44:16902,192.168.0.45:16900,192.168.0.45:16901,192.168.0.45:16902,192.168.0.46:16900,192.168.0.46:16901,192.168.0.46:16902"
 dingo_cache_group_name: dingofs-group
 dingo_cache_group_weight: 100
+
+# --- 09.3 Data disks, capacity and log paths ---
+dingo_cache_data_prefix: "/mnt/disk"
+dingo_cache_log_prefix: "/mnt/aux"
+dingo_cache_data_subdir: "dingofs/dingo-cache-v5.2"
+dingo_cache_log_subdir: "dingofs/logs/dingo-cache-v5.2"
+# NOTE: dingo_cache_log_dir is DERIVED every deploy by the prefix rule
+# (log prefix else /mnt/disk1, + dingo_cache_log_subdir) — do not pin it here.
+# With the values above this yields /mnt/aux/dingofs/logs/dingo-cache-v5.2.
+
 # Note: dingo_cache_cache_dirs and dingo_cache_cache_size_mb are dynamically
 # auto-discovered at runtime from the actual LVM mount points created by lvm_cache.
 # The static values below serve ONLY as fallback when lvm_cache has NOT been run yet.
@@ -179,7 +183,9 @@ dingo_cache_disk_usage_ratio: 0.80
 dingo_cache_cache_size_mb: 3145728   # FALLBACK only; auto-computed per-disk total × ratio overrides when LVM mounts exist
 dingo_cache_free_space_ratio: "0.01"
 dingo_cache_iodepth: 1024
-# --- CPU pinning (v5.2; cpuset auto-detected per host at deploy time) ---
+
+# --- 09.4 CPU and NUMA ---
+# CPU pinning (v5.2; cpuset auto-detected per host at deploy time)
 # Leave dingo_cache_cpuset empty so each node gets the SHARDS free whole cores
 # on its own best NUMA node (RDMA device's node when its memory is cooler than
 # the threshold, else the coolest node; fails over to the freest node when the
@@ -204,7 +210,11 @@ dingo_cache_cpuset_busy_pct: 30
 # refuse to deploy. Only a host with fewer physical cores than shards still fails.
 dingo_cache_cpuset_on_insufficient: force
 dingo_cache_cpuset_include_siblings: false
-# --- RDMA (v5.2; override dingo_cache_rdma_device per host in host_vars if HCA names differ) ---
+# Poll mode (v5.2; needs pin_cpu + free cpuset, else it burns shared CPUs)
+dingo_cache_poll_mode: true
+
+# --- 09.5 RDMA ---
+# RDMA (v5.2; override dingo_cache_rdma_device per host in host_vars if HCA names differ)
 dingo_cache_use_rdma: true
 dingo_cache_rdma_device: ib6s200p0
 dingo_cache_rdma_port_num: 1
@@ -212,29 +222,17 @@ dingo_cache_buffer_pool_mb: 512
 dingo_cache_rdma_max_connections: 256
 dingo_cache_rdma_heartbeat_interval_s: 2
 dingo_cache_rdma_idle_timeout_s: 10
-# --- Poll mode (v5.2; needs pin_cpu + free cpuset, else it burns shared CPUs) ---
-dingo_cache_poll_mode: true
+
+# --- 09.6 Logging ---
 dingo_cache_log_level: INFO
 dingo_cache_log_v: 0
-dingo_cache_ld_preload: /usr/local/lib/libjemalloc.so.2
-dingo_cache_ip_pattern: "192.168."
-
-dingo_cache_data_prefix: "/mnt/disk"
-dingo_cache_log_prefix: "/mnt/aux"
-dingo_cache_data_subdir: "dingofs/dingo-cache-v5.2"
-dingo_cache_log_subdir: "dingofs/logs/dingo-cache-v5.2"
-
-# NOTE: dingo_cache_log_dir is DERIVED every deploy by the prefix rule
-# (log prefix else /mnt/disk1, + dingo_cache_log_subdir) — do not pin it here.
-# With the values above this yields /mnt/aux/dingofs/logs/dingo-cache-v5.2.
-
-# MDS addresses (host:port pairs, comma-separated)
-dingo_cache_mds_addrs: "192.168.0.44:16900,192.168.0.44:16901,192.168.0.44:16902,192.168.0.45:16900,192.168.0.45:16901,192.168.0.45:16902,192.168.0.46:16900,192.168.0.46:16901,192.168.0.46:16902"
 
 # ============================================================
-# Dingo Client
+# 10. Client mounts
 # ============================================================
 
+
+# --- 10.1 Mount instances ---
 # Define multiple clients to deploy on the same host
 dingo_clients:
   - fsname: alayanew
@@ -244,29 +242,7 @@ dingo_clients:
     mount_point: /dingofs/manila
     port: 13000
 
-# Fallback/default single instance configurations if dingo_clients is not defined
-dingo_client_service_name: "dingofs-mount-{{ dingo_client_fsname }}"
-dingo_client_base_dir: "/root/dingofs/dingo-client/{{ dingo_client_fsname }}"
-dingo_client_bin_local_src: /root/dingofs/pkg/dingo-client
-dingo_client_dingo_bin_local_src: /root/dingofs/pkg/dingo
-dingo_client_cache_group: dingofs-group
-dingo_client_log_dir: "/mnt/disk1/dingofs/logs/{{ dingo_client_fsname }}"
-dingo_client_log_level: ERROR
-dingo_client_log_v: 0
-dingo_client_ld_preload: /usr/local/lib/libjemalloc.so.2
-
-# NUMA binding: start the client under
-#   numactl --cpunodebind=<node> --membind=<node>
-# so the jemalloc heap and the RDMA buffer pool stay on the socket the RDMA
-# device sits on. <node> = the node this instance's --cpuset was chosen on
-# (auto-selected below); set dingo_client_numactl_node to force a node
-# independently of that — required when dingo_client_pin_cpu is false, since
-# then no cpuset node exists. dingo_client_numactl_membind=false swaps
-# --membind for --preferred (spill instead of failing on a full node).
-dingo_client_numactl_enabled: true
-dingo_client_numactl_node: ""
-dingo_client_numactl_membind: true
-
+# --- 10.2 Service, binaries and paths ---
 # Version suffix appended to every loop-built service unit, base dir and log
 # dir (e.g. "-v5.2" -> dingofs-mount-<fs>-v5.2, .../<fs>-v5.2). Empty = unversioned.
 # NOTE: do NOT version by templating dingo_client_service_name/base_dir/
@@ -274,8 +250,38 @@ dingo_client_numactl_membind: true
 # (their braces arrive RAW and are never re-rendered; systemd then fails on a
 # name with literal braces). This suffix is the supported knob.
 dingo_client_version_suffix: "-v5.2"
+# Fallback/default single instance configurations if dingo_clients is not defined
+dingo_client_service_name: "dingofs-mount-{{ dingo_client_fsname }}"
+dingo_client_base_dir: "/root/dingofs/dingo-client/{{ dingo_client_fsname }}"
+dingo_client_bin_local_src: /root/dingofs/pkg/dingo-client
+dingo_client_dingo_bin_local_src: /root/dingofs/pkg/dingo
+dingo_client_log_dir: "/mnt/disk1/dingofs/logs/{{ dingo_client_fsname }}"
+dingo_client_ld_preload: /usr/local/lib/libjemalloc.so.2
 
-# --- CPU pinning / RDMA (v5.2; same rules as dingo-cache: cpuset auto-detected per host) ---
+# --- 10.3 MDS and cache access ---
+# buffer_pool_mb / rdma_max_inflight_rpcs / rdma_max_connections are selected
+# per host from total memory (roles/dingo_client/defaults/main.yml,
+# dingo_client_mem_profiles). Set them here only to override the profile.
+
+# MDS addresses (same as dingo_cache_mds_addrs typically)
+dingo_client_mds_addrs: "192.168.0.44:16900,192.168.0.44:16901,192.168.0.44:16902,192.168.0.45:16900,192.168.0.45:16901,192.168.0.45:16902,192.168.0.46:16900,192.168.0.46:16901,192.168.0.46:16902"
+dingo_client_cache_group: dingofs-group
+dingo_client_cache_store: none
+
+# --- 10.4 Memory, VFS and FUSE ---
+# read/write/compact buffers and fuse_max_threads come from the per-host
+# memory profile (small < 256 GiB, large >= 256 GiB). Force a profile with
+# dingo_client_tuning_profile: small|large, or override an individual value
+# here to bypass the profile for every host.
+dingo_client_tuning_profile: auto
+dingo_client_fuse_attr_cache_timeout_s: 10
+dingo_client_fuse_enable_readdir_cache: "false"
+dingo_client_fuse_entry_cache_timeout_s: 10
+dingo_client_vfs_prefetch_blocks: 0
+dingo_client_vfs_read_executor_thread: 32
+
+# --- 10.5 CPU and NUMA ---
+# CPU pinning / RDMA (v5.2; same rules as dingo-cache: cpuset auto-detected per host)
 # Leave dingo_client_cpuset empty: each mount gets SHARDS free whole cores, and
 # mounts on the same host never share (alayanew's pick is excluded from manila's).
 # Per-mount override (shards:/cpuset:/cpuset_numa_node:) on a dingo_clients entry
@@ -300,44 +306,74 @@ dingo_client_cpuset_busy_pct: 30
 # until CPUs are freed; the deploy log marks forced mounts LOUDLY.
 dingo_client_cpuset_on_insufficient: force
 dingo_client_cpuset_include_siblings: false
+# NUMA binding: start the client under
+#   numactl --cpunodebind=<node> --membind=<node>
+# so the jemalloc heap and the RDMA buffer pool stay on the socket the RDMA
+# device sits on. <node> = the node this instance's --cpuset was chosen on
+# (auto-selected below); set dingo_client_numactl_node to force a node
+# independently of that — required when dingo_client_pin_cpu is false, since
+# then no cpuset node exists. dingo_client_numactl_membind=false swaps
+# --membind for --preferred (spill instead of failing on a full node).
+dingo_client_numactl_enabled: true
+dingo_client_numactl_node: ""
+dingo_client_numactl_membind: true
+
+# --- 10.6 RDMA ---
 dingo_client_use_rdma: true
 dingo_client_rdma_device: ib6s200p0
 dingo_client_rdma_port_num: 1
-# buffer_pool_mb / rdma_max_inflight_rpcs / rdma_max_connections are selected
-# per host from total memory (roles/dingo_client/defaults/main.yml,
-# dingo_client_mem_profiles). Set them here only to override the profile.
 
-# MDS addresses (same as dingo_cache_mds_addrs typically)
-dingo_client_mds_addrs: "192.168.0.44:16900,192.168.0.44:16901,192.168.0.44:16902,192.168.0.45:16900,192.168.0.45:16901,192.168.0.45:16902,192.168.0.46:16900,192.168.0.46:16901,192.168.0.46:16902"
+# --- 10.7 Mount safety and restart policy ---
+# Before touching an instance, dingofs_mount_usage_check.sh verifies that the
+# mountpoint is unused: host processes (fuser), other mount namespaces
+# (bind mounts / container hostPath sharing st_dev), and running containers.
+# A busy mountpoint skips that instance only; other mounts on the host proceed.
+# strict=false inspects containers in 'cci-*' namespaces; true inspects all.
+dingo_client_mount_check_enabled: true
+dingo_client_mount_check_strict: true
+dingo_client_mount_check_script: /root/dingofs/script/check/dingofs_mount_usage_check.sh
 
-# FUSE / VFS tuning
-# read/write/compact buffers and fuse_max_threads come from the per-host
-# memory profile (small < 256 GiB, large >= 256 GiB). Force a profile with
-# dingo_client_tuning_profile: small|large, or override an individual value
-# here to bypass the profile for every host.
-dingo_client_tuning_profile: auto
-dingo_client_cache_store: none
-dingo_client_vfs_read_executor_thread: 32
-dingo_client_vfs_prefetch_blocks: 0
-dingo_client_fuse_enable_readdir_cache: "false"
-dingo_client_fuse_attr_cache_timeout_s: 10
-dingo_client_fuse_entry_cache_timeout_s: 10
+# --- 10.8 Logging ---
+dingo_client_log_level: ERROR
+dingo_client_log_v: 0
 
-# --- Dingo command environment (~/.dingo/dingo.yaml) ---
+# ============================================================
+# 11. Shared RDMA readiness checks
+# ============================================================
+
+# InfiniBand network readiness (dingo-cache / dingo-client ExecStartPre)
+# Both services wait for an ACTIVE RDMA port AND an IPv4 address starting with
+# IB_IP_PREFIX on an UP interface before starting, for up to IB_WAIT_TIMEOUT
+# seconds. HCA/IPoIB device names differ per machine, so the check auto-detects
+# every RDMA device instead of naming one.
+IB_CHECK_ENABLED: true
+IB_CHECK_SCRIPT: /root/dingofs/script/check/check-ib-ready.sh
+IB_IP_PREFIX: "192.168."
+IB_WAIT_TIMEOUT: 60
+
+# ============================================================
+# 12. Dingo command environment and filesystem backend
+# ============================================================
+
+
+# --- 12.1 CLI home and RPC defaults ---
+# Dingo command environment (~/.dingo/dingo.yaml)
 # mdsaddr is mandatory; reuses dingo_client_mds_addrs above.
 dingo_env_mdsaddr: "{{ dingo_client_mds_addrs }}"
-dingo_env_storagetype: s3          # s3 or rados
-dingo_env_rpctimeout: 30s
 dingo_env_rpcretrytimes: 5
+dingo_env_rpctimeout: 30s
 
+# --- 12.2 Storage type and S3 ---
+dingo_env_storagetype: s3          # s3 or rados
+dingo_env_s3_endpoint: ""
+dingo_env_s3_bucketname: ""
 # S3 backend (fill in for storagetype: s3)
 dingo_env_s3_ak: ""
 dingo_env_s3_sk: ""
-dingo_env_s3_endpoint: ""
-dingo_env_s3_bucketname: ""
 dingo_env_s3_blocksize: 4 mib
 dingo_env_s3_chunksize: 64 mib
 
+# --- 12.3 RADOS ---
 # Rados backend (fill in for storagetype: rados)
 dingo_env_rados_username: ""
 dingo_env_rados_key: ""
@@ -345,3 +381,16 @@ dingo_env_rados_mon: ""
 dingo_env_rados_poolname: ""
 dingo_env_rados_blocksize: 4 mib
 dingo_env_rados_chunksize: 64 mib
+
+# ============================================================
+# 14. Log cleanup
+# ============================================================
+
+cron_cleanup_script_path: /root/dingofs/script/cron/cleanup_and_compression.sh
+cron_cleanup_directories:
+  - "{{ dingo_cache_log_dir | default('/mnt/disk1/dingofs/logs/dingo-cache') }}"
+  - /mnt/disk1/dingofs/logs/alayanew
+  - /mnt/disk1/dingofs/logs/manila
+cron_cleanup_delete_days: 3
+cron_cleanup_compress_days: 2
+cron_cleanup_protected_files: []
