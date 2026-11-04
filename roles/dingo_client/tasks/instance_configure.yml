@@ -3,6 +3,13 @@
 # Role: dingo_client - Deploy dingo-client (FUSE mount) service
 # ============================================================
 
+- name: Record that client configuration is being applied
+  import_tasks: ../../common/tasks/client_report.yml
+  vars:
+    client_report_stage: configure
+    client_report_status: started
+    client_report_reason: configuring_instance
+
 # --- Retire the previous unit when its name changed ---
 # The check maps the mountpoint back to the unit that owns it (unit names do
 # not always match the mount path). When the unit being deployed has a
@@ -497,6 +504,16 @@
       {{ _mount_sh.changed or _mount_service.changed
          or _client_bin.changed or _dingo_bin.changed }}
 
+- name: Record the last usage check before a required restart
+  import_tasks: ../../common/tasks/client_report.yml
+  vars:
+    client_report_stage: restart_check
+    client_report_status: started
+    client_report_reason: checking_mount_before_restart
+    client_report_changed_on_disk: true
+    client_report_pending_restart: true
+  when: _restart_needed | bool
+
 - name: "Check whether {{ dingo_client_mount_point }} is in use"
   shell: >-
     if ! mountpoint -q {{ dingo_client_mount_point }} 2>/dev/null; then echo idle;
@@ -510,14 +527,41 @@
   failed_when: false
   when: _restart_needed | bool
 
-- name: "Restart dingo-client service for {{ dingo_client_fsname }}"
-  systemd:
-    name: "{{ dingo_client_service_name }}"
-    state: restarted
+- name: Record the attempt to restart this client
+  import_tasks: ../../common/tasks/client_report.yml
+  vars:
+    client_report_stage: restart
+    client_report_status: started
+    client_report_reason: restarting_service
+    client_report_changed_on_disk: true
+    client_report_pending_restart: true
   when: >-
     _restart_needed | bool
     and ( dingo_client_force_restart | default(false) | bool
           or _mount_in_use.stdout | default('idle') == 'idle' )
+
+- name: "Restart dingo-client service for {{ dingo_client_fsname }}"
+  systemd:
+    name: "{{ dingo_client_service_name }}"
+    state: restarted
+  register: _client_restart_result
+  when: >-
+    _restart_needed | bool
+    and ( dingo_client_force_restart | default(false) | bool
+          or _mount_in_use.stdout | default('idle') == 'idle' )
+
+- name: Record a deferred restart after files were updated
+  import_tasks: ../../common/tasks/client_report.yml
+  vars:
+    client_report_stage: restart_check
+    client_report_status: "{{ 'dry_run' if ansible_check_mode else ('restart_deferred_busy' if _mount_in_use.stdout | default('') == 'busy' else 'restart_deferred_unknown') }}"
+    client_report_reason: "{{ 'check_mode' if ansible_check_mode else ('mount_in_use' if _mount_in_use.stdout | default('') == 'busy' else 'mount_usage_not_verified') }}"
+    client_report_changed_on_disk: "{{ not ansible_check_mode }}"
+    client_report_pending_restart: true
+  when: >-
+    _restart_needed | bool
+    and not ( dingo_client_force_restart | default(false) | bool )
+    and _mount_in_use.stdout | default('idle') != 'idle'
 
 - name: "Warn that the restart was skipped because {{ dingo_client_mount_point }} is in use"
   debug:
@@ -534,6 +578,15 @@
     _restart_needed | bool
     and not ( dingo_client_force_restart | default(false) | bool )
     and _mount_in_use.stdout | default('idle') != 'idle'
+
+- name: Record the start of client service verification
+  import_tasks: ../../common/tasks/client_report.yml
+  vars:
+    client_report_stage: verify
+    client_report_status: started
+    client_report_reason: verifying_service_and_mount
+    client_report_changed_on_disk: "{{ _restart_needed | bool and not ansible_check_mode }}"
+    client_report_pending_restart: "{{ _restart_needed | bool and not (_client_restart_result.changed | default(false) | bool) }}"
 
 - name: "Enable and start dingo-client service for {{ dingo_client_fsname }}"
   systemd:
@@ -553,6 +606,23 @@
   shell: systemctl is-active {{ dingo_client_service_name }}
   register: service_status
   changed_when: false
+
+- name: Record the final result for this client deployment
+  import_tasks: ../../common/tasks/client_report.yml
+  vars:
+    client_report_stage: complete
+    client_report_status: >-
+      {{ 'dry_run' if ansible_check_mode else
+         (('restart_deferred_busy' if _mount_in_use.stdout | default('') == 'busy' else 'restart_deferred_unknown')
+          if (_restart_needed | bool and not (_client_restart_result.changed | default(false) | bool))
+          else 'completed') }}
+    client_report_reason: >-
+      {{ 'check_mode' if ansible_check_mode else
+         (('mount_in_use' if _mount_in_use.stdout | default('') == 'busy' else 'mount_usage_not_verified')
+          if (_restart_needed | bool and not (_client_restart_result.changed | default(false) | bool))
+          else ('restarted' if _client_restart_result.changed | default(false) | bool else 'unchanged')) }}
+    client_report_changed_on_disk: "{{ _restart_needed | bool and not ansible_check_mode }}"
+    client_report_pending_restart: "{{ _restart_needed | bool and not (_client_restart_result.changed | default(false) | bool) }}"
 
 - name: "Show deployment summary for {{ dingo_client_fsname }}"
   debug:

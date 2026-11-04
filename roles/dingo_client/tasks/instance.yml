@@ -14,6 +14,22 @@
 #   0 = IDLE    -> configure this instance
 #   1 = BUSY    -> skip this instance, leave the mountpoint alone
 #   2 = error   -> fail loudly instead of guessing
+- name: Set client report identity for this deployment instance
+  set_fact:
+    _dingofs_client_report_context:
+      operation: deploy
+      fsname: "{{ dingo_client_fsname }}"
+      mount_point: "{{ dingo_client_mount_point }}"
+      service: "{{ dingo_client_service_name }}"
+
+- name: Record the start of this client deployment
+  import_tasks: ../../common/tasks/client_report.yml
+  vars:
+    client_report_stage: precheck
+    client_report_status: started
+    client_report_reason: checking_mount_usage
+    client_report_changed_on_disk: false
+
 - name: "Check whether {{ dingo_client_mount_point }} is in use for {{ dingo_client_fsname }}"
   command: >-
     bash "{{ dingo_client_mount_check_script | default('/root/dingofs/script/check/dingofs_mount_usage_check.sh') }}"
@@ -23,6 +39,17 @@
   changed_when: false
   failed_when: false
   when: dingo_client_mount_check_enabled | default(true) | bool
+
+- name: Record an unavailable mount usage check
+  import_tasks: ../../common/tasks/client_report.yml
+  vars:
+    client_report_stage: precheck
+    client_report_status: "{{ 'dry_run' if ansible_check_mode else 'check_failed' }}"
+    client_report_reason: "{{ 'check_mode_not_executed' if ansible_check_mode else 'mount_usage_check_failed' }}"
+    client_report_changed_on_disk: false
+  when:
+    - dingo_client_mount_check_enabled | default(true) | bool
+    - (_mount_usage.rc | default(2) | int) not in [0, 1]
 
 - name: "Fail when the mountpoint check cannot run for {{ dingo_client_fsname }}"
   assert:
@@ -51,6 +78,17 @@
          | map('regex_replace', '^.*Detected service: *', '')
          | map('regex_replace', '\\.service$', '')
          | map('trim') | list | first | default('') }}
+
+- name: Record this busy instance as unchanged
+  import_tasks: ../../common/tasks/client_report.yml
+  vars:
+    client_report_stage: precheck
+    client_report_status: skipped_busy_before_change
+    client_report_reason: mount_in_use
+    client_report_changed_on_disk: false
+  when:
+    - dingo_client_mount_check_enabled | default(true) | bool
+    - (_mount_usage.rc | default(-1) | int) == 1
 
 - name: "Skip {{ dingo_client_fsname }} because {{ dingo_client_mount_point }} is in use"
   debug:

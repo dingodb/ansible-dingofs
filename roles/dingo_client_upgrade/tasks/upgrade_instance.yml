@@ -8,6 +8,22 @@
     _bak_path: "{{ (client_instance.base_dir | default('/root/dingofs/dingo-client/' ~ client_instance.fsname ~ (dingo_client_version_suffix | default('')))) }}/bin/dingo-client.bak"
     _upgrade_unit: "{{ client_instance.service_name | default('dingofs-mount-' ~ client_instance.fsname ~ (dingo_client_version_suffix | default(''))) }}"
 
+- name: Set client report identity for this upgrade instance
+  set_fact:
+    _dingofs_client_report_context:
+      operation: upgrade
+      fsname: "{{ client_instance.fsname }}"
+      mount_point: "{{ client_instance.mount_point }}"
+      service: "{{ _upgrade_unit }}"
+
+- name: Record the start of this client upgrade
+  import_tasks: ../../common/tasks/client_report.yml
+  vars:
+    client_report_stage: precheck
+    client_report_status: started
+    client_report_reason: checking_mount_usage
+    client_report_changed_on_disk: false
+
 - name: Check mount usage before upgrading this instance
   command:
     argv: [bash, "{{ dingo_client_mount_check_script }}", "{{ client_instance.mount_point }}", --dry-run, --strict]
@@ -19,6 +35,26 @@
   debug:
     msg: "{{ client_instance.fsname }} is busy; retry after its users have drained."
   when: _upgrade_usage.rc == 1
+
+- name: Record this busy upgrade as unchanged
+  import_tasks: ../../common/tasks/client_report.yml
+  vars:
+    client_report_stage: precheck
+    client_report_status: skipped_busy_before_change
+    client_report_reason: mount_in_use
+    client_report_changed_on_disk: false
+  when: _upgrade_usage.rc | default(-1) | int == 1
+
+- name: Record an upgrade dry run
+  import_tasks: ../../common/tasks/client_report.yml
+  vars:
+    client_report_stage: precheck
+    client_report_status: dry_run
+    client_report_reason: upgrade_dry_run
+    client_report_changed_on_disk: false
+  when:
+    - _upgrade_usage.rc | default(-1) | int == 0
+    - dingo_client_upgrade_dry_run | bool
 
 - name: Upgrade only this idle client instance
   include_tasks: upgrade_idle.yml

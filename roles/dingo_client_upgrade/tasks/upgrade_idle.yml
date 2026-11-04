@@ -1,4 +1,11 @@
 ---
+- name: Record that this idle client binary is being upgraded
+  import_tasks: ../../common/tasks/client_report.yml
+  vars:
+    client_report_stage: configure
+    client_report_status: started
+    client_report_reason: upgrading_binary
+
 # --- Step 1: Backup current binary ---
 - name: "Check if current binary exists for {{ client_instance.fsname }}"
   stat:
@@ -45,6 +52,7 @@
     src: "{{ dingo_client_upgrade_bin_src }}"
     dest: "{{ _bin_path }}"
     mode: "0755"
+  register: _upgrade_copy
 
 - name: Check for an outstanding restart
   stat:
@@ -54,15 +62,42 @@
 - name: Apply the outstanding restart
   when: _upgrade_pending.stat.exists
   block:
+    - name: Record the last usage check before upgrade restart
+      import_tasks: ../../common/tasks/client_report.yml
+      vars:
+        client_report_stage: restart_check
+        client_report_status: started
+        client_report_reason: checking_mount_before_restart
+        client_report_changed_on_disk: "{{ _upgrade_copy.changed | bool and not ansible_check_mode }}"
+        client_report_pending_restart: true
+
     - name: Recheck mount usage immediately before restart
       command:
         argv: [bash, "{{ dingo_client_mount_check_script }}", "{{ client_instance.mount_point }}", --dry-run, --strict]
       changed_when: false
 
+    - name: Record the upgrade restart attempt
+      import_tasks: ../../common/tasks/client_report.yml
+      vars:
+        client_report_stage: restart
+        client_report_status: started
+        client_report_reason: restarting_service
+        client_report_changed_on_disk: "{{ _upgrade_copy.changed | bool and not ansible_check_mode }}"
+        client_report_pending_restart: true
+
     - name: Restart this client service
       systemd:
         name: "{{ _upgrade_unit }}"
         state: restarted
+
+    - name: Record the start of upgraded mount verification
+      import_tasks: ../../common/tasks/client_report.yml
+      vars:
+        client_report_stage: verify
+        client_report_status: started
+        client_report_reason: verifying_restarted_mount
+        client_report_changed_on_disk: "{{ _upgrade_copy.changed | bool and not ansible_check_mode }}"
+        client_report_pending_restart: true
 
     - name: Verify the restarted mount
       command:
@@ -77,3 +112,12 @@
       file:
         path: "{{ _base_dir }}/.restart-required"
         state: absent
+
+- name: Record the completed client upgrade
+  import_tasks: ../../common/tasks/client_report.yml
+  vars:
+    client_report_stage: complete
+    client_report_status: "{{ 'dry_run' if ansible_check_mode else 'completed' }}"
+    client_report_reason: "{{ 'check_mode' if ansible_check_mode else ('restarted' if _upgrade_pending.stat.exists else 'unchanged') }}"
+    client_report_changed_on_disk: "{{ _upgrade_copy.changed | bool and not ansible_check_mode }}"
+    client_report_pending_restart: false
