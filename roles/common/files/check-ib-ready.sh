@@ -71,7 +71,11 @@ def main():
         return 0
     name = os.environ.get('RDMA_DEVICE', '')
     port = int(os.environ.get('RDMA_PORT_NUM', '1'))
-    deadline = time.monotonic() + int(os.environ.get('IB_WAIT_TIMEOUT', '60'))
+    timeout_value = os.environ.get('IB_WAIT_TIMEOUT', '60')
+    timeout = int(timeout_value) if timeout_value.isdigit() else 60
+    interval_value = os.environ.get('IB_POLL_INTERVAL', '2')
+    interval = max(1, int(interval_value)) if interval_value.isdigit() else 2
+    deadline = time.monotonic() + timeout
     prefix = os.environ.get('IB_IP_PREFIX', '192.168.')
     while True:
         try:
@@ -106,7 +110,7 @@ def main():
         if time.monotonic() >= deadline:
             print(reason, file=sys.stderr)
             return 1
-        time.sleep(min(2, max(0, deadline - time.monotonic())))
+        time.sleep(min(interval, max(0, deadline - time.monotonic())))
 
 
 if __name__ == '__main__':
