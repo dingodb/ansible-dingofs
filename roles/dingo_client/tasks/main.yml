@@ -222,15 +222,40 @@
 # on memory (> dingo_client_ib_node_mem_max_pct, default 50%) — then the
 # lowest-memory node under the threshold. Computed once here; every mount on
 # the host shares the decision (partitioning still gives each its own CPUs).
-- name: Read NUMA node of the RDMA device (client hosts)
-  shell: "cat '/sys/class/net/{{ dingo_client_rdma_device | default('ib6s200p0') }}/device/numa_node' 2>/dev/null || echo unknown"
-  register: _client_ib_numa_raw
+- name: Create RDMA helper directory
+  file:
+    path: "{{ IB_CHECK_SCRIPT | dirname }}"
+    state: directory
+    mode: "0755"
+  when: dingo_client_use_rdma | default(true) | bool
+
+- name: Install RDMA discovery and readiness helper
+  copy:
+    src: "{{ role_path }}/../common/files/check-ib-ready.sh"
+    dest: "{{ IB_CHECK_SCRIPT }}"
+    mode: "0755"
+  when: dingo_client_use_rdma | default(true) | bool
+
+- name: Resolve configured RDMA device and NUMA topology
+  command:
+    argv: [bash, "{{ IB_CHECK_SCRIPT }}", --resolve, "{{ dingo_client_rdma_device }}", "{{ dingo_client_rdma_port_num }}"]
+  register: _client_rdma_mapping
   changed_when: false
-  failed_when: false
+  when: dingo_client_use_rdma | default(true) | bool
+
+- name: Apply resolved RDMA topology
+  set_fact:
+    dingo_client_rdma_device_effective: "{{ (_client_rdma_mapping.stdout | from_json).device }}"
+    _client_ib_numa_raw:
+      stdout: "{{ (_client_rdma_mapping.stdout | from_json).numa_node if (_client_rdma_mapping.stdout | from_json).numa_node is not none else 'unknown' }}"
+  when: dingo_client_use_rdma | default(true) | bool
+
+- name: Report missing RDMA NUMA information
+  debug:
+    msg: "The selected RDMA device has no valid NUMA node. CPU/memory fallback policy will be used."
   when:
-    - dingo_client_pin_cpu | default(true) | bool
     - dingo_client_use_rdma | default(true) | bool
-    - (dingo_client_rdma_device | default('ib6s200p0')) | length > 0
+    - (_client_rdma_mapping.stdout | from_json).numa_node is none
 
 - name: Sample per-NUMA-node memory usage (client hosts)
   shell: |
@@ -291,7 +316,7 @@
 # --- RDMA device validation (v5.2+, once per host, only when RDMA is on) ---
 # Same rule as dingo_cache: the IB device name comes from the host's HCA layout.
 - name: Check RDMA device exists (client hosts)
-  shell: "ibv_devices 2>/dev/null | awk '{print $1}' | grep -qx '{{ dingo_client_rdma_device | default('ib6s200p0') }}' && echo present || echo missing"
+  shell: "ibv_devices 2>/dev/null | awk '{print $1}' | grep -qx '{{ dingo_client_rdma_device_effective | default(dingo_client_rdma_device) }}' && echo present || echo missing"
   register: _client_rdma_dev_check
   changed_when: false
   failed_when: false

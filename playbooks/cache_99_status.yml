@@ -28,7 +28,7 @@
     - name: Check dingo-cache listen port
       wait_for:
         port: "{{ dingo_cache_listen_port }}"
-        host: "{{ listen_ip_conf.stdout | default('127.0.0.1') }}"
+        host: "{{ listen_ip_conf.stdout | default('127.0.0.1', true) }}"
         timeout: 5
       register: port_check
       ignore_errors: true
@@ -65,3 +65,10 @@
     - name: Display cache disks
       debug:
         msg: "{{ cache_disks.stdout_lines }}"
+
+    - name: Require a healthy cache service
+      assert:
+        that:
+          - service_info.status.ActiveState | default('unknown') == 'active'
+          - listen_ip_conf.stdout | trim | length > 0
+          - port_check is succeeded

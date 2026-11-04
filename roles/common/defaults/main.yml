@@ -1,6 +1,10 @@
 ---
 dingofs_user: dingofs
-dingofs_password: dingofs123
+# SSH-only by default. Supply a vaulted hash to enable password authentication.
+dingofs_password_hash: "!"
+dingofs_controller_public_key: ""
+dingofs_controller_public_key_file: "{{ lookup('env', 'HOME') }}/.ssh/id_rsa.pub"
+dingofs_install_controller_key: true
 dingofs_home: /home/dingofs
 dingofs_pkg_dir: /home/dingofs/pkg
 dingofs_script_dir: /home/dingofs/script

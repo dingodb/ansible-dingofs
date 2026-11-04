@@ -7,7 +7,6 @@ dingofs_site_version: v5.2
 
 # --- User & Access ---
 dingofs_user: dingofs
-dingofs_password: dingofsPassword
 dingofs_home: /home/dingofs
 dingofs_pkg_dir: /home/dingofs/pkg
 dingofs_script_dir: /home/dingofs/script
@@ -29,7 +28,7 @@ dingo_cli_download_url: "https://www.dingodb.com/dingocli/branches/main/latest/d
 # --- RQLite ---
 rqlite_http_port: 4001
 rqlite_raft_port: 4002
-rqlite_node_dir: ~/rqlite/node
+rqlite_node_dir: /root/rqlite/node
 rqlite_master_host: "{{ hostvars[groups['rqlite_master'][0]]['ansible_host'] }}"
 
 # --- Dingo CLI ---
@@ -45,15 +44,15 @@ dingo_cli_db_url: "rqlite://{{ rqlite_master_host }}:{{ rqlite_http_port }}"
 container_engine: podman
 
 # --- DingoFS Cluster ---
-dingofs_cluster_name: v5.1
+dingofs_cluster_name: v5.2
 dingofs_cluster_id: 1
-dingofs_container_image: "harbor.zetyun.cn/dingofs/dingofs:v5.1-b484ef2"
+dingofs_container_image: ""  # Required: select the matching versioned image
 dingofs_store_image: "harbor.zetyun.cn/dingodb/dingo-store:90b2885"
 dingofs_executor_image: "harbor.zetyun.cn/dingodb/dingo:develop-latest"
 
-dingofs_data_dir: "/mnt/data${service_replica_sequence}/dingofs-v5.1/data/${service_role}"
-dingofs_log_dir: "/mnt/data${service_replica_sequence}/dingofs-v5.1/logs/${service_role}"
-dingofs_raft_dir: "/mnt/data${service_replica_sequence}/dingofs-v5.1/raft/${service_role}"
+dingofs_data_dir: "/mnt/data${service_replica_sequence}/dingofs-v5.2/data/${service_role}"
+dingofs_log_dir: "/mnt/data${service_replica_sequence}/dingofs-v5.2/logs/${service_role}"
+dingofs_raft_dir: "/mnt/data${service_replica_sequence}/dingofs-v5.2/raft/${service_role}"
 dingofs_core_dir: "/mnt/data/corefiles/core-%e-%p-%t"
 dingofs_default_replica_num: 3
 
@@ -65,7 +64,7 @@ coordinator_raft_port: 7500
 store_server_port: 6600
 store_raft_port: 7600
 store_block_cache_size: 21474836480
-store_mount_volumes: "/nas/dingofs/v5.1"
+store_mount_volumes: "/nas/dingofs/v5.2"
 
 # MDS service
 mds_base_port: 690
@@ -111,7 +110,7 @@ cron_cleanup_delete_days: 3
 cron_cleanup_compress_days: 2
 cron_cleanup_protected_files: []
 cron_cleanup_directories:
-  - "{{ dingo_cache_log_dir }}"
+  - "{{ dingo_cache_log_dir | default('/mnt/disk1/dingofs/logs/dingo-cache') }}"
   - /mnt/disk1/dingofs/logs/alayanew
   - /mnt/disk1/dingofs/logs/manila
 
@@ -132,7 +131,7 @@ IB_WAIT_TIMEOUT: 60
 # A busy mountpoint skips that instance only; other mounts on the host proceed.
 # strict=false inspects containers in 'cci-*' namespaces; true inspects all.
 dingo_client_mount_check_enabled: true
-dingo_client_mount_check_strict: false
+dingo_client_mount_check_strict: true
 dingo_client_mount_check_script: /root/dingofs/script/check/dingofs_mount_usage_check.sh
 
 # ============================================================

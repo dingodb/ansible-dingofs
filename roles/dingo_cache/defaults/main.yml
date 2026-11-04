@@ -1,5 +1,5 @@
 ---
-dingo_cache_version: v5.1
+dingo_cache_version: v5.2
 dingo_cache_base_dir: "/root/dingofs/dingo-cache/{{ dingo_cache_version }}"
 dingo_cache_bin_name: dingo-cache
 dingo_cache_bin_local_src: "/root/dingofs/pkg/dingo-cache"

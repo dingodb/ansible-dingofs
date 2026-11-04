@@ -6,36 +6,22 @@
     _base_dir: "{{ client_instance.base_dir | default('/root/dingofs/dingo-client/' ~ client_instance.fsname ~ (dingo_client_version_suffix | default(''))) }}"
     _bin_path: "{{ (client_instance.base_dir | default('/root/dingofs/dingo-client/' ~ client_instance.fsname ~ (dingo_client_version_suffix | default('')))) }}/bin/dingo-client"
     _bak_path: "{{ (client_instance.base_dir | default('/root/dingofs/dingo-client/' ~ client_instance.fsname ~ (dingo_client_version_suffix | default('')))) }}/bin/dingo-client.bak"
+    _upgrade_unit: "{{ client_instance.service_name | default('dingofs-mount-' ~ client_instance.fsname ~ (dingo_client_version_suffix | default(''))) }}"
 
-# --- Step 1: Backup current binary ---
-- name: "Check if current binary exists for {{ client_instance.fsname }}"
-  stat:
-    path: "{{ _bin_path }}"
-  register: _bin_stat
+- name: Check mount usage before upgrading this instance
+  command:
+    argv: [bash, "{{ dingo_client_mount_check_script }}", "{{ client_instance.mount_point }}", --dry-run, --strict]
+  register: _upgrade_usage
+  changed_when: false
+  failed_when: _upgrade_usage.rc not in [0, 1]
 
-# cp -p with `creates`, not mv: the backup has to survive a second upgrade.
-# `mv` ran unconditionally, so a second pass moved the freshly deployed binary
-# over .bak -- the known-good rollback copy was silently replaced by the new
-# (possibly broken) one, exactly when you would want it back.
-- name: "Backup current binary for {{ client_instance.fsname }}"
-  command: "cp -p {{ _bin_path }} {{ _bak_path }}"
-  args:
-    creates: "{{ _bak_path }}"
-  when: _bin_stat.stat.exists
-
-# --- Step 2: Copy new binary ---
-- name: "Copy new dingo-client binary for {{ client_instance.fsname }}"
-  copy:
-    src: "{{ dingo_client_upgrade_bin_src }}"
-    dest: "{{ _bin_path }}"
-    mode: "0755"
-
-# --- Step 3: Execute restart-check script ---
-- name: "Run restart check script (dry-run={{ dingo_client_upgrade_dry_run }})"
-  command: "{{ dingo_client_upgrade_script_path }} {{ '--dry-run' if dingo_client_upgrade_dry_run else '' }}"
-  register: _restart_result
-  changed_when: "'restarted successfully' in _restart_result.stdout"
-
-- name: "Show restart check output"
+- name: Report a deferred client upgrade
   debug:
-    var: _restart_result.stdout_lines
+    msg: "{{ client_instance.fsname }} is busy; retry after its users have drained."
+  when: _upgrade_usage.rc == 1
+
+- name: Upgrade only this idle client instance
+  include_tasks: upgrade_idle.yml
+  when:
+    - _upgrade_usage.rc == 0
+    - not (dingo_client_upgrade_dry_run | bool)

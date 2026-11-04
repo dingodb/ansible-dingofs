@@ -139,6 +139,8 @@ if args == ["--version"]:
         sys.exit(13)
     print("dingo Version 3.1 commit: " + VERSION)
 elif args == ["cluster", "list"]:
+    if state.get("fail_list"):
+        sys.exit(17)
     for name in sorted(state["topologies"]):
         print(("* " if name == state["current"] else "  ") + name)
 elif args == ["hosts", "list"]:
@@ -243,6 +245,7 @@ class AdditionalClusterIntegrationTests(unittest.TestCase):
             "dingofs_cluster_name": "new", "dingofs_mds_storage_engine": "tikv",
             "dingofs_mds_storage_url": "list://127.0.0.1:2379",
             "dingofs_container_image": "registry/new:release",
+            "dingofs_container_version": "v5.2",
             "dingofs_log_dir": str(self.mount / "new/logs/${service_role}/${service_replica_sequence}"),
             "dingofs_core_dir": "/mnt/shared/core",
             "dingofs_home_tmp": str(self.mount / "new/work"),
@@ -335,6 +338,25 @@ class AdditionalClusterIntegrationTests(unittest.TestCase):
         self.write_state()
         self.run_role("dingofs_cluster", succeeds=False)
         self.assertFalse(self.calls(["cluster", "add"]))
+
+    def test_first_install_entry_refuses_failed_registration_query(self):
+        self.state["fail_list"] = True
+        self.write_state()
+        self.run_role("dingofs_cluster", {"dingofs_meta_existing_hosts": False}, succeeds=False)
+        self.assertFalse(self.calls(["cluster", "deploy"]))
+        self.assertFalse(self.calls(["cluster", "add"]))
+        self.assertFalse(self.calls(["hosts", "commit"]))
+
+    def test_first_install_entry_verifies_registered_target_without_reinitialization(self):
+        self.run_role("dingofs_cluster")
+        self.run_role("dingofs_cluster", {"dingofs_meta_existing_hosts": False})
+        self.assertEqual(len(self.calls(["cluster", "deploy"])), 1)
+        self.assertFalse(self.calls(["config", "commit"]))
+        self.state = self.read_state()
+        self.state["statuses"]["new"] = "partial"
+        self.write_state()
+        self.run_role("dingofs_cluster", {"dingofs_meta_existing_hosts": False}, succeeds=False)
+        self.assertEqual(len(self.calls(["cluster", "deploy"])), 1)
 
     def serve_candidate(self):
         candidate = self.root / "candidate"

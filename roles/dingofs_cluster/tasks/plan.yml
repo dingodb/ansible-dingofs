@@ -2,6 +2,8 @@
 - import_role:
     name: version_guard
 
+- import_tasks: validate_image.yml
+
 - name: Validate the additional cluster name and topology
   assert:
     that:

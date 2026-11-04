@@ -67,3 +67,29 @@
       loop: "{{ df_info.results }}"
       loop_control:
         label: "{{ item.item.mount_point }}"
+
+    - name: Require every client mount to be present
+      assert:
+        that: item.rc == 0
+        fail_msg: "{{ item.item.mount_point }} is not mounted"
+      loop: "{{ mount_check.results }}"
+
+    - name: Read filesystem identity for each mount
+      command:
+        argv: [findmnt, -J, -o, 'FSTYPE,SOURCE', --mountpoint, "{{ item.mount_point }}"]
+      loop: "{{ dingo_clients }}"
+      register: _client_mount_types
+      changed_when: false
+      failed_when: false
+
+    - name: Require the intended DingoFS filesystem at each mount
+      vars:
+        _mounted: "{{ item.stdout | from_json }}"
+      assert:
+        that:
+          - item.rc == 0
+          - _mounted.filesystems | length == 1
+          - _mounted.filesystems[0].fstype is match('^fuse([.]|$)')
+          - _mounted.filesystems[0].source == 'DingoFS:' ~ item.item.fsname
+        fail_msg: "{{ item.item.mount_point }} does not contain the intended DingoFS filesystem."
+      loop: "{{ _client_mount_types.results }}"

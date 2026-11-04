@@ -4,6 +4,9 @@
   hosts: admin
   become: true
   become_user: "{{ dingofs_user }}"
+  environment:
+    DINGO_CLUSTER: "{{ dingofs_cluster_name }}"
+    dingo_cluster: "{{ dingofs_cluster_name }}"
   tasks:
     - name: Check rqlite cluster status
       uri:
@@ -31,12 +34,26 @@
       register: cluster_status
       changed_when: false
 
+    - name: Require status for the requested cluster
+      assert:
+        that: "cluster_status.stdout is search('cluster name\\s*:\\s*' ~ (dingofs_cluster_name | regex_escape) ~ '(?:\\s|$)')"
+
+    - name: Read the intended cluster topology
+      command: "{{ dingofs_home }}/.dingo/bin/dingo config show"
+      register: _status_topology
+      changed_when: false
+
+    - name: Require every intended service to be healthy
+      assert:
+        that: (cluster_status.stdout | dingo_cluster_status(_status_topology.stdout | from_yaml | dingo_cluster_plan, dingofs_cluster_name)).healthy
+
     - name: Display cluster status
       debug:
         var: cluster_status.stdout_lines
 
     - name: Check podman containers on each node
-      command: podman ps --format "{{ '{{' }}.Names{{ '}}' }} {{ '{{' }}.Status{{ '}}' }}"
+      command: >-
+        {{ container_engine | default('podman') }} ps --format "{{ '{{' }}.Names{{ '}}' }} {{ '{{' }}.Status{{ '}}' }}"
       delegate_to: "{{ item }}"
       loop: "{{ groups['meta_servers'] }}"
       register: containers

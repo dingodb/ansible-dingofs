@@ -416,8 +416,8 @@ All client playbooks connect with `remote_user: root`.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `dingofs_user` | `dingofs` | System user for DingoFS |
-| `dingofs_cluster_name` | `v5.1` | Cluster name identifier |
-| `dingofs_container_image` | `harbor.zetyun.cn/dingofs/dingofs:v5.1-b484ef2` | DingoFS container image |
+| `dingofs_cluster_name` | `v5.2` | Cluster name identifier |
+| `dingofs_container_image` | *(must set)* | DingoFS container image |
 | `rqlite_version` | `v9.4.5` | RQLite version |
 | `container_engine` | `podman` | Container engine |
 | `tune_hugepages` | `1024` | Number of huge pages |
@@ -570,3 +570,30 @@ Failures that are easy to misread:
   invoking the CLI, so re-running `04_dingo_cli.yml` fixes it.
 - **Output full of `…` and `[1A[J`.** The dingo CLI draws a progress spinner even
   when stdout is not a TTY. The deploy and status tasks strip it.
+
+### Deployment safety checks
+
+Set `dingofs_container_image` to the matching versioned server image. Digest or
+custom tags require `dingofs_container_version` from the verified build metadata.
+Registered clusters are checked for matching topology and health before initial
+installation can proceed. Recover incomplete deployments explicitly.
+
+New service accounts use a locked password by default. Set
+`dingofs_password_hash` from a secret store when password authentication is
+required. The controller key can be supplied through
+`dingofs_controller_public_key` or `dingofs_controller_public_key_file`; set
+`dingofs_install_controller_key: false` to disable its installation.
+
+Existing rqlite units containing a literal `~/` data argument require verification
+and migration of the actual database directory before redeployment. Configure an
+absolute `rqlite_node_dir` and retain the database state during that migration.
+
+Mount safety checks cover all Kubernetes namespaces and return 2 when required
+checks cannot complete. Client deployment, upgrade and automatic remount paths
+use this result to prevent changes when usage is busy or unknown. Upgrades retain
+a per-instance restart marker until the new mount has been verified.
+
+CPU detection runs in one Python process. `--self-exe` identifies the instance
+whose existing allocation may be reused; `-S` remains accepted for command-line
+compatibility. Preferred and fallback NUMA selection use one snapshot. Forced
+allocation is computed only with `--force` and preserves sibling exclusions.

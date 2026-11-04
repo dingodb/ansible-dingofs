@@ -403,7 +403,8 @@ for old_mount in "${OLD_MOUNTS[@]}"; do
 
     umount "$old_mount" || {
         echo "Unmount failed for $old_mount."
-        echo "Original fstab is unchanged: $FSTAB"
+        echo "Restoring mounts after partial unmount failure"
+        restore_original_layout
         exit 1
     }
 done

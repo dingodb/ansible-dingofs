@@ -3,6 +3,36 @@
 # Role: rqlite - Deploy rqlite database cluster
 # ============================================================
 
+- name: Require an absolute rqlite data directory
+  assert:
+    that: rqlite_node_dir is match('^/')
+    fail_msg: "Set rqlite_node_dir to the verified absolute data directory before deployment."
+
+- name: Inspect the existing rqlite unit before changing its data path
+  stat:
+    path: /etc/systemd/system/rqlite.service
+  register: _rqlite_unit
+
+- name: Read the existing rqlite unit
+  slurp:
+    src: /etc/systemd/system/rqlite.service
+  register: _rqlite_unit_content
+  when: _rqlite_unit.stat.exists
+
+- name: Require explicit migration of a legacy relative data directory
+  assert:
+    that: "(_rqlite_unit_content.content | b64decode) is not search('[ ]~/')"
+    fail_msg: >-
+      The installed unit uses a literal ~/ data path. Verify and migrate its
+      actual database directory and update the unit before applying this role.
+  when: _rqlite_unit.stat.exists
+
+- name: Require the existing data directory to match the requested directory
+  assert:
+    that: "(_rqlite_unit_content.content | b64decode) is search('(?m)^ExecStart=.*[ ]' ~ (rqlite_node_dir | regex_escape) ~ '$')"
+    fail_msg: "The installed rqlite data path differs. Verify and migrate the database before changing this unit."
+  when: _rqlite_unit.stat.exists
+
 # --- Download & Extract ---
 - name: Prepare rqlite tarball (download first, fallback to local)
   block:
