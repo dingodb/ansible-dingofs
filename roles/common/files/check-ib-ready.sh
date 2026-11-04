@@ -1,129 +1,123 @@
 #!/usr/bin/env bash
-# Ansible-managed: wait until InfiniBand / RDMA networking is healthy.
-#
-# Used as systemd ExecStartPre by dingo-cache and dingo-client. After a reboot
-# (or an HCA reset) the RDMA stack and the cluster IP can come up well after
-# network.target, so starting the service immediately leaves it in a crash loop.
-#
-# Ready means BOTH:
-#   1. at least one InfiniBand/RDMA port reports ACTIVE in sysfs;
-#   2. an IPv4 address matching IB_IP_PREFIX is assigned to an interface whose
-#      administrative state is UP.
-#
-# Device names are deliberately NOT configured: HCA and IPoIB names differ per
-# machine (ib0, ib6s200p0, mlx5_0, ...), so every RDMA device is considered.
-#
-# Environment:
-#   IB_IP_PREFIX     IPv4 prefix that marks the cluster network (default 192.168.)
-#   IB_WAIT_TIMEOUT  seconds to wait for both conditions (default 60, 0 = one check)
-#   IB_POLL_INTERVAL poll interval in seconds (default 2)
-#
-# Exit: 0 = ready, 1 = timed out (systemd fails the start and retries).
+exec python3 - "$@" <<'PYRDMA'
+import errno
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import time
 
-set -u
 
-IB_IP_PREFIX="${IB_IP_PREFIX:-192.168.}"
-IB_WAIT_TIMEOUT="${IB_WAIT_TIMEOUT:-60}"
-IB_POLL_INTERVAL="${IB_POLL_INTERVAL:-2}"
+def resolve(name, port):
+    base = Path('/sys/class/infiniband')
+    matches = []
+    for device in base.iterdir():
+        endpoint = device / 'ports' / str(port)
+        if not endpoint.exists():
+            continue
+        netdevs = set()
+        for attribute in (endpoint / 'gid_attrs/ndevs').glob('*'):
+            try:
+                name_value = attribute.read_text().strip()
+            except OSError as error:
+                # Empty/reserved GID slots are exposed as EINVAL by Linux.
+                if error.errno in (errno.EINVAL, errno.ENOENT, errno.ENODEV):
+                    continue
+                raise
+            if name_value:
+                netdevs.add(name_value)
+        if not netdevs:
+            for netdev in (device / 'device/net').glob('*'):
+                for field in ('dev_port', 'dev_id'):
+                    attribute = netdev / field
+                    if attribute.exists():
+                        if int(attribute.read_text().strip(), 0) == port - 1:
+                            netdevs.add(netdev.name)
+                        break
+                else:
+                    if len(list((device / 'ports').iterdir())) == 1:
+                        netdevs.add(netdev.name)
+        if name == device.name or name in netdevs:
+            matches.append((device, endpoint, sorted(netdevs)))
+    if len(matches) != 1:
+        raise ValueError('RDMA device/port mapping is missing or ambiguous for %s/%s' % (name, port))
+    device, endpoint, netdevs = matches[0]
+    numa = None
+    location = (device / 'device').resolve()
+    for parent in (location, *location.parents):
+        attribute = parent / 'numa_node'
+        if attribute.exists():
+            value = int(attribute.read_text())
+            if value >= 0:
+                numa = value
+                break
+    return {'device': device.name, 'port': port, 'netdevs': netdevs, 'numa_node': numa,
+            'state_path': str(endpoint / 'state')}
 
-normalize_int() {
-    case "$1" in
-        ''|*[!0-9]*) echo "$2" ;;
-        *) echo "$1" ;;
-    esac
-}
 
-IB_WAIT_TIMEOUT="$(normalize_int "$IB_WAIT_TIMEOUT" 60)"
-IB_POLL_INTERVAL="$(normalize_int "$IB_POLL_INTERVAL" 2)"
-[ "$IB_POLL_INTERVAL" -ge 1 ] || IB_POLL_INTERVAL=1
+def ready(mapping, prefix):
+    if Path(mapping['state_path']).read_text().strip().split(':')[0] != '4':
+        return False
+    links = json.loads(subprocess.check_output(['ip', '-j', '-4', 'addr', 'show'], timeout=10))
+    return any(link['ifname'].split('@')[0] in mapping['netdevs'] and 'UP' in link.get('flags', [])
+               and any(address.get('family') == 'inet' and address.get('local', '').startswith(prefix)
+                       for address in link.get('addr_info', [])) for link in links)
 
-has_active_rdma_port() {
-    local state_file
-    for state_file in /sys/class/infiniband/*/ports/*/state; do
-        [ -r "$state_file" ] || continue
-        grep -q 'ACTIVE' "$state_file" 2>/dev/null && return 0
-    done
-    return 1
-}
 
-# Print the interface name of every IPv4 address whose value starts with
-# IB_IP_PREFIX. `ip -o` keeps each address on one line: "2: eth0 inet ...".
-matching_ip_interfaces() {
-    ip -4 -o addr show 2>/dev/null | awk -v prefix="$IB_IP_PREFIX" '
-        $3 == "inet" && index($4, prefix) == 1 {
-            iface = $2
-            sub(/:$/, "", iface)
-            sub(/@.*/, "", iface)
-            print iface
-        }'
-}
+def main():
+    if len(sys.argv) > 1 and sys.argv[1] == '--resolve':
+        print(json.dumps(resolve(sys.argv[2], int(sys.argv[3]))))
+        return 0
+    name = os.environ.get('RDMA_DEVICE', '')
+    port = int(os.environ.get('RDMA_PORT_NUM', '1'))
+    timeout_value = os.environ.get('IB_WAIT_TIMEOUT', '60')
+    timeout = int(timeout_value) if timeout_value.isdigit() else 60
+    interval_value = os.environ.get('IB_POLL_INTERVAL', '2')
+    interval = max(1, int(interval_value)) if interval_value.isdigit() else 2
+    deadline = time.monotonic() + timeout
+    prefix = os.environ.get('IB_IP_PREFIX', '192.168.')
+    while True:
+        try:
+            if name:
+                mapping = resolve(name, port)
+            else:
+                # Older units supplied only the business IP prefix.
+                links = json.loads(subprocess.check_output(['ip', '-j', '-4', 'addr', 'show'], timeout=10))
+                candidates = {}
+                for link in links:
+                    if not any(a.get('local', '').startswith(prefix) for a in link.get('addr_info', [])):
+                        continue
+                    ports = {port}
+                    if 'RDMA_PORT_NUM' not in os.environ:
+                        ports = {int(p.name) for p in Path('/sys/class/infiniband').glob('*/ports/*') if p.name.isdigit()}
+                    for candidate_port in sorted(ports):
+                        try:
+                            candidate = resolve(link['ifname'].split('@')[0], candidate_port)
+                        except ValueError:
+                            continue
+                        if ready(candidate, prefix):
+                            candidates[(candidate['device'], candidate_port)] = candidate
+                if len(candidates) != 1:
+                    raise ValueError('business IP must map to exactly one RDMA device; configure RDMA_DEVICE')
+                mapping = next(iter(candidates.values()))
+            if ready(mapping, prefix):
+                print('RDMA ready ' + json.dumps(mapping))
+                return 0
+            reason = 'configured RDMA port or associated IP interface is not ready'
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
+            reason = str(error)
+        if time.monotonic() >= deadline:
+            print(reason, file=sys.stderr)
+            return 1
+        time.sleep(min(interval, max(0, deadline - time.monotonic())))
 
-is_iface_up() {
-    local iface="$1" flags
-    flags=$(ip -o link show dev "$iface" 2>/dev/null |
-            sed -n 's/.*<\([^>]*\)>.*/\1/p')
-    case ",$flags," in
-        *,UP,*) return 0 ;;
-        *) return 1 ;;
-    esac
-}
 
-ib_ready() {
-    has_active_rdma_port || return 1
+if __name__ == '__main__':
+    try:
+        sys.exit(main())
+    except (OSError, ValueError) as error:
+        print(str(error), file=sys.stderr)
+        sys.exit(1)
 
-    local iface
-    while read -r iface; do
-        [ -n "$iface" ] || continue
-        is_iface_up "$iface" && return 0
-    done < <(matching_ip_interfaces)
-    return 1
-}
-
-diagnose() {
-    echo "InfiniBand not ready after ${IB_WAIT_TIMEOUT}s (IB_IP_PREFIX=${IB_IP_PREFIX})" >&2
-
-    if [ -d /sys/class/infiniband ] && [ -n "$(ls -A /sys/class/infiniband 2>/dev/null)" ]; then
-        local state_file
-        for state_file in /sys/class/infiniband/*/ports/*/state; do
-            [ -r "$state_file" ] || continue
-            echo "  ${state_file} = $(cat "$state_file" 2>/dev/null)" >&2
-        done
-    else
-        echo "  no RDMA devices in /sys/class/infiniband (driver not loaded?)" >&2
-    fi
-
-    echo "  IPv4 addresses matching ${IB_IP_PREFIX}:" >&2
-    local found=0 iface addr flags
-    while read -r iface; do
-        [ -n "$iface" ] || continue
-        found=1
-        addr=$(ip -4 -o addr show dev "$iface" 2>/dev/null |
-               awk '$3 == "inet" { print $4 }')
-        flags=$(ip -o link show dev "$iface" 2>/dev/null |
-                sed -n 's/.*<\([^>]*\)>.*/\1/p')
-        echo "    ${iface}: ${addr:-no inet} flags=${flags:-unknown}" >&2
-    done < <(matching_ip_interfaces)
-    [ "$found" -eq 1 ] || echo "    (none)" >&2
-}
-
-start=$(date +%s)
-deadline=$((start + IB_WAIT_TIMEOUT))
-
-while :; do
-    if ib_ready; then
-        echo "IB ready: ACTIVE RDMA port and ${IB_IP_PREFIX} IPv4 interface is UP" \
-             "(waited $(( $(date +%s) - start ))s)"
-        exit 0
-    fi
-
-    now=$(date +%s)
-    [ "$now" -ge "$deadline" ] && break
-
-    remaining=$((deadline - now))
-    sleep_for=$IB_POLL_INTERVAL
-    [ "$sleep_for" -gt "$remaining" ] && sleep_for=$remaining
-    sleep "$sleep_for"
-done
-
-diagnose
-exit 1
+PYRDMA

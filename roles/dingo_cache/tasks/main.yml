@@ -8,6 +8,9 @@
 - import_role:
     name: version_guard
 
+# Validate before probing the host or changing any files/services.
+- import_tasks: validate_rdma.yml
+
 # --- Determine listen IP ---
 - name: Detect listen IP from network interface
   shell: ip route | awk '/{{ dingo_cache_ip_pattern }}/ && /src/ { for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}'
@@ -96,15 +99,40 @@
 # — your manual numa-mem.sh check). A hot node risks bootstrap OOM, so the
 # lowest-memory node under the threshold wins instead; if every node is hot,
 # the lowest-memory node wins anyway and the deploy warns LOUDLY.
-- name: Read NUMA node of the RDMA device
-  shell: "cat '/sys/class/net/{{ dingo_cache_rdma_device | default('ib6s200p0') }}/device/numa_node' 2>/dev/null || echo unknown"
-  register: _cache_ib_numa_raw
+- name: Create RDMA helper directory
+  file:
+    path: "{{ IB_CHECK_SCRIPT | dirname }}"
+    state: directory
+    mode: "0755"
+  when: dingo_cache_use_rdma | default(true) | bool
+
+- name: Install RDMA discovery and readiness helper
+  copy:
+    src: "{{ role_path }}/../common/files/check-ib-ready.sh"
+    dest: "{{ IB_CHECK_SCRIPT }}"
+    mode: "0755"
+  when: dingo_cache_use_rdma | default(true) | bool
+
+- name: Resolve configured RDMA device and NUMA topology
+  command:
+    argv: [bash, "{{ IB_CHECK_SCRIPT }}", --resolve, "{{ dingo_cache_rdma_device }}", "{{ dingo_cache_rdma_port_num }}"]
+  register: _cache_rdma_mapping
   changed_when: false
-  failed_when: false
+  when: dingo_cache_use_rdma | default(true) | bool
+
+- name: Apply resolved RDMA topology
+  set_fact:
+    dingo_cache_rdma_device_effective: "{{ (_cache_rdma_mapping.stdout | from_json).device }}"
+    _cache_ib_numa_raw:
+      stdout: "{{ (_cache_rdma_mapping.stdout | from_json).numa_node if (_cache_rdma_mapping.stdout | from_json).numa_node is not none else 'unknown' }}"
+  when: dingo_cache_use_rdma | default(true) | bool
+
+- name: Report missing RDMA NUMA information
+  debug:
+    msg: "The selected RDMA device has no valid NUMA node. CPU/memory fallback policy will be used."
   when:
-    - dingo_cache_pin_cpu | default(true) | bool
     - dingo_cache_use_rdma | default(true) | bool
-    - (dingo_cache_rdma_device | default('ib6s200p0')) | length > 0
+    - (_cache_rdma_mapping.stdout | from_json).numa_node is none
 
 - name: Sample per-NUMA-node memory usage
   shell: |
@@ -202,7 +230,7 @@
 
     - name: Validate manually configured cpuset
       shell: |
-        bash /tmp/dingo-cpuset-detect.sh --no-busy -S "{{ dingo_cache_bin_name | default('dingo-cache') }}" \
+        bash /tmp/dingo-cpuset-detect.sh --no-busy -S "{{ dingo_cache_bin_name | default('dingo-cache') }}" --self-exe "{{ dingo_cache_base_dir }}/{{ dingo_cache_bin_name }}" {{ '--force' if dingo_cache_cpuset_on_insufficient == 'force' else '' }} \
           -s {{ dingo_cache_shards | int }} \
           -b {{ dingo_cache_cpuset_busy_pct | int }} \
           -c "{{ dingo_cache_cpuset }}"
@@ -210,6 +238,12 @@
       changed_when: false
       failed_when: false
       when: (dingo_cache_cpuset | default('')) | length > 0
+
+    - name: Require successful CPU ownership collection
+      assert:
+        that: cpuset_check.rc in [0, 1]
+        fail_msg: "CPU ownership is unknown. {{ cpuset_check.stderr | default('') }}"
+      when: cpuset_check.rc is defined
 
     - name: Fail on offline CPUs in manual cpuset
       assert:
@@ -291,7 +325,7 @@
 
     - name: Re-validate existing cpuset
       shell: |
-        bash /tmp/dingo-cpuset-detect.sh --no-busy -S "{{ dingo_cache_bin_name | default('dingo-cache') }}" \
+        bash /tmp/dingo-cpuset-detect.sh --no-busy -S "{{ dingo_cache_bin_name | default('dingo-cache') }}" --self-exe "{{ dingo_cache_base_dir }}/{{ dingo_cache_bin_name }}" {{ '--force' if dingo_cache_cpuset_on_insufficient == 'force' else '' }} \
           -b {{ dingo_cache_cpuset_busy_pct | int }} \
           -c "{{ cpuset_existing.stdout | trim }}"
       register: cpuset_recheck
@@ -300,6 +334,12 @@
       when:
         - (dingo_cache_cpuset | default('')) | length == 0
         - cpuset_existing.stdout is defined and (cpuset_existing.stdout | trim) | length > 0
+
+    - name: Require successful CPU ownership collection
+      assert:
+        that: cpuset_recheck.rc in [0, 1]
+        fail_msg: "CPU ownership is unknown. {{ cpuset_recheck.stderr | default('') }}"
+      when: cpuset_recheck.rc is defined
 
     - name: Set whether existing cpuset can be kept
       set_fact:
@@ -318,7 +358,7 @@
 
     - name: Auto-detect free cpuset on preferred NUMA node
       shell: |
-        bash /tmp/dingo-cpuset-detect.sh -S "{{ dingo_cache_bin_name | default('dingo-cache') }}" \
+        bash /tmp/dingo-cpuset-detect.sh -S "{{ dingo_cache_bin_name | default('dingo-cache') }}" --self-exe "{{ dingo_cache_base_dir }}/{{ dingo_cache_bin_name }}" {{ '--force' if dingo_cache_cpuset_on_insufficient == 'force' else '' }} \
           -s {{ dingo_cache_shards | int }} \
           -n {{ _cache_preferred_node | default(dingo_cache_numa_node | default(0)) }} \
           -b {{ dingo_cache_cpuset_busy_pct | int }} \
@@ -330,24 +370,21 @@
         - (dingo_cache_cpuset | default('')) | length == 0
         - not (_cache_keep_existing_cpuset | default(false) | bool)
 
-    - name: Auto-detect free cpuset on best NUMA node (fallback)
-      shell: |
-        bash /tmp/dingo-cpuset-detect.sh -S "{{ dingo_cache_bin_name | default('dingo-cache') }}" \
-          -s {{ dingo_cache_shards | int }} \
-          -b {{ dingo_cache_cpuset_busy_pct | int }} \
-          {{ '--siblings' if dingo_cache_cpuset_include_siblings | default(false) | bool else '' }}
-      register: cpuset_detect_fallback
-      changed_when: false
-      failed_when: false
-      when:
-        - (dingo_cache_cpuset | default('')) | length == 0
-        - not (_cache_keep_existing_cpuset | default(false) | bool)
-        - cpuset_detect_preferred.rc is defined and cpuset_detect_preferred.rc != 0
+    - name: Require successful CPU ownership collection
+      assert:
+        that: cpuset_detect_preferred.rc in [0, 2]
+        fail_msg: "CPU ownership is unknown. {{ cpuset_detect_preferred.stderr | default('') }}"
+      when: cpuset_detect_preferred.rc is defined
+
+    - name: Reuse the one-pass detection result
+      set_fact:
+        cpuset_detect_fallback: "{{ cpuset_detect_preferred }}"
+      when: cpuset_detect_preferred.rc is defined
 
     - name: Select winning cpuset detection result
       set_fact:
         _cpuset_winner: "{{ cpuset_detect_preferred if cpuset_detect_preferred.rc == 0 else cpuset_detect_fallback }}"
-        _cpuset_source: "{{ 'preferred NUMA node ' + (_cache_preferred_node | default(dingo_cache_numa_node | default(0)) | string) if cpuset_detect_preferred.rc == 0 else 'fallback NUMA node ' + (cpuset_detect_fallback.stdout_lines | select('match', '^NODE=') | first | default('NODE=?') | regex_replace('^NODE=', '')) }}"
+        _cpuset_source: "{{ 'NUMA node ' ~ (cpuset_detect_preferred.stdout_lines | select('match', '^NODE=') | first | default('NODE=?') | regex_replace('^NODE=', '')) ~ ' (one snapshot)' }}"
       when:
         - (dingo_cache_cpuset | default('')) | length == 0
         - not (_cache_keep_existing_cpuset | default(false) | bool)
@@ -465,7 +502,7 @@
 # The IB device name (e.g. ib6s200p0) comes from the host's HCA layout — if it
 # differs per node, override dingo_cache_rdma_device per host in host_vars.
 - name: Check RDMA device exists
-  shell: "ibv_devices 2>/dev/null | awk '{print $1}' | grep -qx '{{ dingo_cache_rdma_device }}' && echo present || echo missing"
+  shell: "ibv_devices 2>/dev/null | awk '{print $1}' | grep -qx '{{ dingo_cache_rdma_device_effective | default(dingo_cache_rdma_device) }}' && echo present || echo missing"
   register: rdma_dev_check
   changed_when: false
   failed_when: false
@@ -770,6 +807,9 @@
     name: "{{ dingo_cache_service_name }}"
     enabled: true
     state: started
+
+- name: Apply pending cache restart before checking readiness
+  meta: flush_handlers
 
 - name: Wait for dingo-cache to be ready
   wait_for:

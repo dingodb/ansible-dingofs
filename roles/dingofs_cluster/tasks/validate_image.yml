@@ -1,0 +1,12 @@
+---
+- name: Require the server image version to match the site
+  vars:
+    _image_versions: "{{ dingofs_container_image | regex_findall(':(v[0-9]+[.][0-9]+)(?:[-.]|$)') }}"
+    _image_version: "{{ _image_versions | first | default(dingofs_container_version | default('')) }}"
+  assert:
+    that:
+      - dingofs_container_image | length > 0
+      - _image_version == dingofs_site_version
+    fail_msg: >-
+      Configure a versioned dingofs_container_image matching dingofs_site_version.
+      For a digest or custom tag, provide its verified dingofs_container_version.

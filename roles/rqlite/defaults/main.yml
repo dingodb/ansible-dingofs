@@ -10,6 +10,6 @@ rqlite_bin_dest: /usr/local/bin/rqlited
 
 rqlite_http_port: 4001
 rqlite_raft_port: 4002
-rqlite_node_dir: ~/rqlite/node
+rqlite_node_dir: /root/rqlite/node
 
 rqlite_master_host: "{{ hostvars[groups['rqlite_master'][0]]['ansible_host'] }}"

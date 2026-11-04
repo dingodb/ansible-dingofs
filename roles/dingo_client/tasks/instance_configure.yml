@@ -120,7 +120,7 @@
 
     - name: "Validate manually configured cpuset for {{ dingo_client_fsname }}"
       shell: |
-        bash /tmp/dingo-cpuset-detect.sh --no-busy -S dingo-client \
+        bash /tmp/dingo-cpuset-detect.sh --no-busy -S dingo-client --self-exe "{{ dingo_client_base_dir }}/bin/dingo-client" {{ '--force' if dingo_client_cpuset_on_insufficient == 'force' else '' }} \
           -s {{ _client_shards | int }} \
           -b {{ dingo_client_cpuset_busy_pct | int }} \
           -x "{{ _client_sibling_cpusets | default([]) | join(',') }}" \
@@ -129,6 +129,12 @@
       changed_when: false
       failed_when: false
       when: (_client_cpuset_manual | default('')) | length > 0
+
+    - name: Require successful CPU ownership collection
+      assert:
+        that: _client_cpuset_check.rc in [0, 1]
+        fail_msg: "CPU ownership is unknown. {{ _client_cpuset_check.stderr | default('') }}"
+      when: _client_cpuset_check.rc is defined
 
     - name: "Fail on offline CPUs in manual cpuset for {{ dingo_client_fsname }}"
       assert:
@@ -221,7 +227,7 @@
 
     - name: "Re-validate existing cpuset for {{ dingo_client_fsname }}"
       shell: |
-        bash /tmp/dingo-cpuset-detect.sh --no-busy -S dingo-client \
+        bash /tmp/dingo-cpuset-detect.sh --no-busy -S dingo-client --self-exe "{{ dingo_client_base_dir }}/bin/dingo-client" {{ '--force' if dingo_client_cpuset_on_insufficient == 'force' else '' }} \
           -b {{ dingo_client_cpuset_busy_pct | int }} \
           -x "{{ _client_sibling_cpusets | default([]) | join(',') }}" \
           -c "{{ _client_cpuset_existing.stdout | trim }}"
@@ -231,6 +237,12 @@
       when:
         - (_client_cpuset_manual | default('')) | length == 0
         - _client_cpuset_existing.stdout is defined and (_client_cpuset_existing.stdout | trim) | length > 0
+
+    - name: Require successful CPU ownership collection
+      assert:
+        that: _client_cpuset_recheck.rc in [0, 1]
+        fail_msg: "CPU ownership is unknown. {{ _client_cpuset_recheck.stderr | default('') }}"
+      when: _client_cpuset_recheck.rc is defined
 
     - name: "Set whether existing cpuset can be kept for {{ dingo_client_fsname }}"
       set_fact:
@@ -258,7 +270,7 @@
 
     - name: "Auto-detect free cpuset for {{ dingo_client_fsname }} on preferred NUMA node"
       shell: |
-        bash /tmp/dingo-cpuset-detect.sh -S dingo-client \
+        bash /tmp/dingo-cpuset-detect.sh -S dingo-client --self-exe "{{ dingo_client_base_dir }}/bin/dingo-client" {{ '--force' if dingo_client_cpuset_on_insufficient == 'force' else '' }} \
           -s {{ _client_shards | int }} \
           {{ ('-n ' + (_client_cpuset_node | string)) if (_client_cpuset_node | default('') | string | trim | length > 0) else '' }} \
           -b {{ dingo_client_cpuset_busy_pct | int }} \
@@ -271,25 +283,21 @@
         - (_client_cpuset_manual | default('')) | length == 0
         - not (_client_keep_existing_cpuset | default(false) | bool)
 
-    - name: "Auto-detect free cpuset for {{ dingo_client_fsname }} on best NUMA node (fallback)"
-      shell: |
-        bash /tmp/dingo-cpuset-detect.sh -S dingo-client \
-          -s {{ _client_shards | int }} \
-          -b {{ dingo_client_cpuset_busy_pct | int }} \
-          -x "{{ _client_sibling_cpusets | default([]) | join(',') }}" \
-          {{ '--siblings' if dingo_client_cpuset_include_siblings | default(false) | bool else '' }}
-      register: _client_cpuset_fallback
-      changed_when: false
-      failed_when: false
-      when:
-        - (_client_cpuset_manual | default('')) | length == 0
-        - not (_client_keep_existing_cpuset | default(false) | bool)
-        - _client_cpuset_preferred.rc is defined and _client_cpuset_preferred.rc != 0
+    - name: Require successful CPU ownership collection
+      assert:
+        that: _client_cpuset_preferred.rc in [0, 2]
+        fail_msg: "CPU ownership is unknown. {{ _client_cpuset_preferred.stderr | default('') }}"
+      when: _client_cpuset_preferred.rc is defined
+
+    - name: Reuse the one-pass client detection result
+      set_fact:
+        _client_cpuset_fallback: "{{ _client_cpuset_preferred }}"
+      when: _client_cpuset_preferred.rc is defined
 
     - name: "Select winning cpuset detection result for {{ dingo_client_fsname }}"
       set_fact:
         _client_cpuset_winner: "{{ _client_cpuset_preferred if _client_cpuset_preferred.rc == 0 else _client_cpuset_fallback }}"
-        _client_cpuset_source: "{{ 'preferred NUMA node ' + (_client_cpuset_node | string) + ' (' + (_client_cpuset_node_source | default('unknown')) + ')' if _client_cpuset_preferred.rc == 0 else 'fallback NUMA node ' + (_client_cpuset_fallback.stdout_lines | select('match', '^NODE=') | first | default('NODE=?') | regex_replace('^NODE=', '')) }}"
+        _client_cpuset_source: "{{ 'NUMA node ' ~ (_client_cpuset_preferred.stdout_lines | select('match', '^NODE=') | first | default('NODE=?') | regex_replace('^NODE=', '')) ~ ' (one snapshot)' }}"
       when:
         - (_client_cpuset_manual | default('')) | length == 0
         - not (_client_keep_existing_cpuset | default(false) | bool)

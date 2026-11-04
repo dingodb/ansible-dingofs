@@ -1,0 +1,31 @@
+---
+- name: Validate cache RDMA parameter types and ranges
+  assert:
+    that:
+      - item.value | string is match('^[0-9]+$')
+      - item.value | int > 0
+      - item.value | int <= 4294967295
+    fail_msg: >-
+      Cache RDMA setting {{ item.name }} must be a positive uint32 integer;
+      got {{ item.value }}. Set it in inventory/group_vars or host_vars.
+  loop:
+    - name: dingo_cache_rdma_max_connections
+      value: "{{ dingo_cache_rdma_max_connections }}"
+    - name: dingo_cache_rdma_heartbeat_interval_s
+      value: "{{ dingo_cache_rdma_heartbeat_interval_s }}"
+    - name: dingo_cache_rdma_idle_timeout_s
+      value: "{{ dingo_cache_rdma_idle_timeout_s }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: dingo_cache_use_rdma | default(true) | bool
+
+- name: Validate cache RDMA idle timeout against heartbeat interval
+  assert:
+    that:
+      - (dingo_cache_rdma_idle_timeout_s | int) >= 3 * (dingo_cache_rdma_heartbeat_interval_s | int)
+    fail_msg: >-
+      Cache RDMA idle timeout ({{ dingo_cache_rdma_idle_timeout_s }}s) must be
+      at least 3 times the heartbeat interval
+      ({{ dingo_cache_rdma_heartbeat_interval_s }}s). No cache files or services
+      have been changed.
+  when: dingo_cache_use_rdma | default(true) | bool

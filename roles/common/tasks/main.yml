@@ -15,6 +15,18 @@
       Please re-run with 'remote_user: root' or '-u root'.
     success_msg: "Running as root - OK"
 
+- name: Resolve and validate the controller public key before host changes
+  vars:
+    _key: "{{ dingofs_controller_public_key if dingofs_controller_public_key | length > 0 else lookup('file', dingofs_controller_public_key_file) }}"
+  set_fact:
+    _controller_public_key: "{{ _key }}"
+  when: dingofs_install_controller_key | bool
+
+- name: Require a nonempty controller public key
+  assert:
+    that: _controller_public_key | trim | length > 0
+  when: dingofs_install_controller_key | bool
+
 # --- /etc/hosts configuration ---
 - name: Configure /etc/hosts with cluster node mappings
   blockinfile:
@@ -30,15 +42,10 @@
     comment: dingofs
     home: "{{ dingofs_home }}"
     shell: /bin/bash
+    password: "{{ dingofs_password_hash }}"
+    update_password: on_create
     create_home: true
     state: present
-  when: dingofs_user != "root"
-
-- name: Set dingofs user password
-  user:
-    name: "{{ dingofs_user }}"
-    password: "{{ dingofs_password | password_hash('sha512') }}"
-    update_password: on_create
   when: dingofs_user != "root"
 
 # --- Sudo access ---
@@ -101,8 +108,9 @@
 - name: Add root's public key to dingofs authorized_keys
   authorized_key:
     user: "{{ dingofs_user }}"
-    key: "{{ lookup('file', '/root/.ssh/id_rsa.pub') }}"
+    key: "{{ _controller_public_key }}"
     state: present
+  when: dingofs_install_controller_key | bool
 
 # --- Install basic packages (CentOS/RHEL/Rocky) ---
 - name: Install kernel-tools for cpupower

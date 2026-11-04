@@ -56,12 +56,17 @@ for mountpoint in "${!MOUNTS[@]}"; do
     continue
   fi
 
-  # fuser -m: exit code 0 = processes found using this filesystem, 1 = none found
-  if fuser -m "$mountpoint" >/dev/null 2>&1; then
-    log "  IN USE: processes are accessing $mountpoint, skipping restart of $service."
-    log "  Details: $(fuser -vm "$mountpoint" 2>&1 | tr '\n' ' ')"
-    any_skipped=true
-    continue
+  if bash "{{ dingo_client_mount_check_script }}" "$mountpoint" --dry-run --strict; then
+    :
+  else
+    check_rc=$?
+    if [ "$check_rc" -eq 1 ]; then
+      log "  IN USE: skipping $service."
+      any_skipped=true
+      continue
+    fi
+    log "  ERROR: usage is unknown for $mountpoint."
+    exit 2
   fi
 
   log "  IDLE: no processes found on $mountpoint."

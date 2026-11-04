@@ -1,0 +1,79 @@
+---
+# --- Step 1: Backup current binary ---
+- name: "Check if current binary exists for {{ client_instance.fsname }}"
+  stat:
+    path: "{{ _bin_path }}"
+  register: _bin_stat
+
+- name: Require an installed client binary
+  assert:
+    that: _bin_stat.stat.isreg | default(false)
+    fail_msg: "Deploy this client instance before using the upgrade entry point."
+
+- name: Inspect the candidate on the controller
+  delegate_to: localhost
+  become: false
+  stat:
+    path: "{{ dingo_client_upgrade_bin_src }}"
+    follow: true
+  register: _upgrade_candidate
+
+- name: Require a readable candidate binary
+  assert:
+    that: _upgrade_candidate.stat.isreg | default(false)
+
+- name: Record the restart obligation before replacing the binary
+  copy:
+    content: "restart required\n"
+    dest: "{{ _base_dir }}/.restart-required"
+    mode: "0600"
+  when: _upgrade_candidate.stat.checksum != _bin_stat.stat.checksum
+
+# cp -p with `creates`, not mv: the backup has to survive a second upgrade.
+# `mv` ran unconditionally, so a second pass moved the freshly deployed binary
+# over .bak -- the known-good rollback copy was silently replaced by the new
+# (possibly broken) one, exactly when you would want it back.
+- name: "Backup current binary for {{ client_instance.fsname }}"
+  command: "cp -p {{ _bin_path }} {{ _bak_path }}"
+  args:
+    creates: "{{ _bak_path }}"
+  when: _bin_stat.stat.exists
+
+# --- Step 2: Copy new binary ---
+- name: "Copy new dingo-client binary for {{ client_instance.fsname }}"
+  copy:
+    src: "{{ dingo_client_upgrade_bin_src }}"
+    dest: "{{ _bin_path }}"
+    mode: "0755"
+
+- name: Check for an outstanding restart
+  stat:
+    path: "{{ _base_dir }}/.restart-required"
+  register: _upgrade_pending
+
+- name: Apply the outstanding restart
+  when: _upgrade_pending.stat.exists
+  block:
+    - name: Recheck mount usage immediately before restart
+      command:
+        argv: [bash, "{{ dingo_client_mount_check_script }}", "{{ client_instance.mount_point }}", --dry-run, --strict]
+      changed_when: false
+
+    - name: Restart this client service
+      systemd:
+        name: "{{ _upgrade_unit }}"
+        state: restarted
+
+    - name: Verify the restarted mount
+      command:
+        argv: [mountpoint, -q, "{{ client_instance.mount_point }}"]
+      register: _upgraded_mount
+      until: _upgraded_mount.rc == 0
+      retries: 10
+      delay: 3
+      changed_when: false
+
+    - name: Clear the completed restart marker
+      file:
+        path: "{{ _base_dir }}/.restart-required"
+        state: absent

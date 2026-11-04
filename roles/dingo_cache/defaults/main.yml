@@ -1,5 +1,5 @@
 ---
-dingo_cache_version: v5.1
+dingo_cache_version: v5.2
 dingo_cache_base_dir: "/root/dingofs/dingo-cache/{{ dingo_cache_version }}"
 dingo_cache_bin_name: dingo-cache
 dingo_cache_bin_local_src: "/root/dingofs/pkg/dingo-cache"
@@ -98,12 +98,17 @@ dingo_cache_cpuset_on_insufficient: fail
 # per physical core with no hyperthread sharing.
 dingo_cache_cpuset_include_siblings: false
 
-# --- RDMA (v5.2+: --use_rdma/--cache_rdma_device/--cache_rdma_port_num/--buffer_pool_mb/--rdma_idle_timeout_s) ---
+# --- RDMA (v5.2+) ---
 dingo_cache_use_rdma: true
 dingo_cache_rdma_device: ib6s200p0
 dingo_cache_rdma_port_num: 1
 dingo_cache_buffer_pool_mb: 1024
-dingo_cache_rdma_idle_timeout_s: 300
+# Connection limit is per shard, not per cache process. Increasing it also
+# increases the RDMA message-pool budget; size it together with shards.
+dingo_cache_rdma_max_connections: 256
+dingo_cache_rdma_heartbeat_interval_s: 2
+# Must be at least 3 * heartbeat_interval_s (also checked by the binary).
+dingo_cache_rdma_idle_timeout_s: 10
 
 # --- Poll mode (v5.2+: --poll_mode) ---
 # Poll mode busy-spins the selected CPUs — only meaningful together with

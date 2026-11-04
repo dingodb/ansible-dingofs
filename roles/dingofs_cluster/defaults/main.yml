@@ -32,9 +32,9 @@ dingofs_dir_list: >-
      + ([dingofs_data_dir, dingofs_raft_dir, store_mount_volumes]
         if dingofs_mds_storage_engine | default('dingo-store') != 'tikv' else []) }}
 
-dingofs_cluster_name: v5.1
+dingofs_cluster_name: v5.2
 dingofs_cluster_id: 1
-dingofs_container_image: "harbor.zetyun.cn/dingofs/dingofs:v5.1-b484ef2"
+dingofs_container_image: ""  # Required: select the matching versioned image
 dingofs_store_image: "harbor.zetyun.cn/dingodb/dingo-store:90b2885"
 dingofs_executor_image: "harbor.zetyun.cn/dingodb/dingo:develop-latest"
 dingo_cli_bin_dir: "{{ dingofs_home }}/.dingo/bin"

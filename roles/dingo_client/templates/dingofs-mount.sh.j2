@@ -17,9 +17,19 @@ if [ ! -d "${g_mnt}" ]; then
     mkdir -p "${g_mnt}"
 fi
 
-# Unmount if already mounted
+# An existing mount must detach normally. A busy or stale mount requires
+# operator recovery before this service can create another mount at the path.
 if mountpoint -q "${g_mnt}" 2>/dev/null; then
-    umount -l "${g_mnt}"
+{% if dingo_client_mount_check_enabled | default(true) | bool %}
+    if ! bash "{{ dingo_client_mount_check_script | default('/root/dingofs/script/check/dingofs_mount_usage_check.sh') }}" "${g_mnt}" --dry-run --strict; then
+        echo "Mount usage is busy or unknown; refusing automatic remount" >&2
+        exit 1
+    fi
+{% endif %}
+    if ! umount "${g_mnt}"; then
+        echo "Cannot unmount ${g_mnt}; refusing to replace an existing mount" >&2
+        exit 1
+    fi
 fi
 
 # Get mountpoint info and umount via dingo CLI
@@ -27,7 +37,6 @@ mnt_info=$(${g_dingo} fs mountpoint --mdsaddr=${g_mdsaddr} | grep "${g_mnt}" | g
 
 if [ -z "$mnt_info" ]; then
     echo "No existing mountpoint on $(hostname), skip umount..."
-    umount -l "${g_mnt}" 2>/dev/null || true
 else
     echo "Umounting existing mountpoint on $(hostname)..."
     metric_port=$(echo "$mnt_info" | awk -F '[:]' '{print $2}')
@@ -74,7 +83,7 @@ LD_PRELOAD={{ dingo_client_ld_preload }} \
     --cpuset={{ dingo_client_cpuset_effective }} \
 {% endif %}
     --use_rdma={{ 'true' if dingo_client_use_rdma | default(true) | bool else 'false' }}{% if dingo_client_use_rdma | default(true) | bool %} \
-    --cache_rdma_device={{ dingo_client_rdma_device | default('ib6s200p0') }} \
+    --cache_rdma_device={{ dingo_client_rdma_device_effective | default(dingo_client_rdma_device | default('ib6s200p0')) }} \
     --cache_rdma_port_num={{ dingo_client_rdma_port_num | default(1) }} \
     --buffer_pool_mb={{ dingo_client_buffer_pool_mb | default(1024) }} \
     --rdma_max_inflight_rpcs={{ dingo_client_rdma_max_inflight_rpcs | default(256) }} \

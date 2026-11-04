@@ -416,8 +416,8 @@ All client playbooks connect with `remote_user: root`.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `dingofs_user` | `dingofs` | System user for DingoFS |
-| `dingofs_cluster_name` | `v5.1` | Cluster name identifier |
-| `dingofs_container_image` | `harbor.zetyun.cn/dingofs/dingofs:v5.1-b484ef2` | DingoFS container image |
+| `dingofs_cluster_name` | `v5.2` | Cluster name identifier |
+| `dingofs_container_image` | *(must set)* | DingoFS container image |
 | `rqlite_version` | `v9.4.5` | RQLite version |
 | `container_engine` | `podman` | Container engine |
 | `tune_hugepages` | `1024` | Number of huge pages |
@@ -466,7 +466,33 @@ See `inventory/group_vars/all.yml` for all configurable variables.
 | `dingo_cache_cache_size_mb` | `3145728` | Cache size in MB (3TB) |
 | `dingo_cache_mds_addrs` | *(must set)* | Comma-separated MDS addresses |
 | `dingo_cache_ip_pattern` | `192.168.` | Network prefix for listen IP detection |
+| `dingo_cache_rdma_max_connections` | `256` | Maximum RDMA connections per shard |
+| `dingo_cache_rdma_heartbeat_interval_s` | `2` | RDMA heartbeat interval in seconds |
+| `dingo_cache_rdma_idle_timeout_s` | `10` | RDMA idle timeout in seconds; at least 3 times the heartbeat interval |
 | `jemalloc_version` | `5.3.0` | Jemalloc version to compile |
+
+Configure Cache RDMA settings in the site's `group_vars/all.yml` or in
+`host_vars`, rather than editing `dingo-cache.conf.j2`:
+
+```yaml
+dingo_cache_rdma_max_connections: 256
+dingo_cache_rdma_heartbeat_interval_s: 2
+dingo_cache_rdma_idle_timeout_s: 10
+```
+
+The role checks positive uint32 values and the timeout/heartbeat constraint
+before changing host files. When `dingo_cache_use_rdma: false`, these checks
+are skipped and RDMA-specific flags are omitted. These are Cache settings;
+Client connection limits are configured separately. The connection limit is
+per shard and affects the RDMA message-pool memory budget.
+
+For an existing Cache deployment, apply configuration with
+`cache_05_deploy.yml --limit <canary-host>` during the chosen rollout window;
+changes notify a service restart. Verify the updated service and its membership
+in the intended MDS cache group after the run, then continue in small batches.
+`cache_06_upgrade.yml` only updates the binary and does not apply new settings.
+When replacing a local template hotfix with this version, preserve any other
+local changes and carry the intended values into site variables.
 
 ## Client Deployment Phases
 
@@ -544,3 +570,30 @@ Failures that are easy to misread:
   invoking the CLI, so re-running `04_dingo_cli.yml` fixes it.
 - **Output full of `…` and `[1A[J`.** The dingo CLI draws a progress spinner even
   when stdout is not a TTY. The deploy and status tasks strip it.
+
+### Deployment safety checks
+
+Set `dingofs_container_image` to the matching versioned server image. Digest or
+custom tags require `dingofs_container_version` from the verified build metadata.
+Registered clusters are checked for matching topology and health before initial
+installation can proceed. Recover incomplete deployments explicitly.
+
+New service accounts use a locked password by default. Set
+`dingofs_password_hash` from a secret store when password authentication is
+required. The controller key can be supplied through
+`dingofs_controller_public_key` or `dingofs_controller_public_key_file`; set
+`dingofs_install_controller_key: false` to disable its installation.
+
+Existing rqlite units containing a literal `~/` data argument require verification
+and migration of the actual database directory before redeployment. Configure an
+absolute `rqlite_node_dir` and retain the database state during that migration.
+
+Mount safety checks cover all Kubernetes namespaces and return 2 when required
+checks cannot complete. Client deployment, upgrade and automatic remount paths
+use this result to prevent changes when usage is busy or unknown. Upgrades retain
+a per-instance restart marker until the new mount has been verified.
+
+CPU detection runs in one Python process. `--self-exe` identifies the instance
+whose existing allocation may be reused; `-S` remains accepted for command-line
+compatibility. Preferred and fallback NUMA selection use one snapshot. Forced
+allocation is computed only with `--force` and preserves sibling exclusions.

@@ -21,8 +21,13 @@
     state: present
   when: ansible_os_family == "Debian"
 
-# --- Deploy the restart-check script ---
-- name: Deploy dingofs restart check script
+- name: Install the shared mount usage checker
+  copy:
+    src: "{{ role_path }}/../common/files/dingofs_mount_usage_check.sh"
+    dest: "{{ dingo_client_mount_check_script }}"
+    mode: "0755"
+
+- name: Update the standalone restart checker for manual use
   template:
     src: dingofs_restart_check.sh.j2
     dest: "{{ dingo_client_upgrade_script_path }}"
