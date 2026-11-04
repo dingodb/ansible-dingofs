@@ -234,22 +234,9 @@
 # =========================
 # CPU idle states (check before setting)
 # =========================
-# cpupower_check is registered once, in the CPU governor section above; the
-# copy that used to sit here ran the same `which cpupower` a second time and
-# threw the first result away.
-- name: Read current CPU idle state config
-  shell: cpupower idle-info 2>/dev/null | grep -c 'DISABLED'
-  register: cpuidle_disabled_count
-  changed_when: false
-  failed_when: false
-  when: cpupower_check.rc == 0
-
-- name: Configure CPU idle states (only if not already disabled)
-  command: cpupower idle-set -D {{ tune_cpupower_idle_disable }}
-  when:
-    - cpupower_check.rc == 0
-    - (cpuidle_disabled_count.stdout | default('0') | int) == 0
-  changed_when: true
+- name: Configure CPU idle states on every online CPU
+  import_tasks: cpu_idle.yml
+  tags: [cpu_idle]
 
 # =========================
 # Core dump directory

@@ -452,8 +452,41 @@ All client playbooks connect with `remote_user: root`.
 | `container_engine` | `podman` | Container engine |
 | `tune_hugepages` | `1024` | Number of huge pages |
 | `tune_swappiness` | `10` | VM swappiness |
+| `tune_cpupower_idle_disable` | `3` | Disable CPU idle states with exit latency >= this many microseconds |
+| `tune_disable_c1e` | `true` | Also disable C1E by state name on every online CPU, including 2 µs variants |
 
 See `inventory/group_vars/all.yml` for all configurable variables.
+
+### CPU idle tuning
+
+The shared `tune` role inspects each online CPU's `cpuidle/state*/name`,
+`latency` and `disable` attributes. It disables C1E by name and states at or
+above the configured exit-latency threshold, writes only enabled target states,
+and verifies the result. It does not depend on a fixed state index or the
+presence of `cpupower`. Already-disabled states are never re-enabled, including
+when `tune_disable_c1e` is set to false.
+
+To run only this part of tuning on a selected cache node:
+
+```bash
+ansible-playbook -i /path/to/site/hosts.py playbooks/cache_03_tune.yml \
+  --limit GPU-HOST --tags cpu_idle --check
+ansible-playbook -i /path/to/site/hosts.py playbooks/cache_03_tune.yml \
+  --limit GPU-HOST --tags cpu_idle
+```
+
+The same tag is available in `02_tune.yml` and `client_02_tune.yml`.
+Check mode reports planned changes without writing CPU idle settings. Missing
+CPUIdle interfaces or a missing named C1E state produce an explicit warning;
+they do not prove that firmware C1E is disabled.
+
+These are runtime OS settings. Reapply and verify them after reboot, CPU
+hotplug or another policy manager resetting the values. BIOS Enhanced Halt/C1E
+and automatic C1 promotion remain firmware-specific checks; this role does not
+write MSRs, change boot arguments or install a boot-time service. The separate
+[`check_performance.py`](scripts/check_performance.py) remains read-only.
+See the [kernel CPUIdle interface](https://docs.kernel.org/admin-guide/pm/cpuidle.html)
+and the [upstream idle-set semantics](https://github.com/torvalds/linux/blob/master/tools/power/cpupower/man/cpupower-idle-set.1).
 
 ### Cluster Architecture
 

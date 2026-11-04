@@ -1,0 +1,5 @@
+---
+- name: Disable C1E and idle states at or above the exit-latency threshold
+  dingofs_cpu_idle:
+    latency_threshold_us: "{{ tune_cpupower_idle_disable }}"
+    disable_c1e: "{{ tune_disable_c1e }}"
