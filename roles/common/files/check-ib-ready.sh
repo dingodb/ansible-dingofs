@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 exec python3 - "$@" <<'PYRDMA'
+import errno
 import json
 import os
 from pathlib import Path
@@ -15,9 +16,28 @@ def resolve(name, port):
         endpoint = device / 'ports' / str(port)
         if not endpoint.exists():
             continue
-        netdevs = {p.read_text().strip() for p in (endpoint / 'gid_attrs/ndevs').glob('*')}
+        netdevs = set()
+        for attribute in (endpoint / 'gid_attrs/ndevs').glob('*'):
+            try:
+                name_value = attribute.read_text().strip()
+            except OSError as error:
+                # Empty/reserved GID slots are exposed as EINVAL by Linux.
+                if error.errno in (errno.EINVAL, errno.ENOENT, errno.ENODEV):
+                    continue
+                raise
+            if name_value:
+                netdevs.add(name_value)
         if not netdevs:
-            netdevs = {p.name for p in (device / 'device/net').glob('*')}
+            for netdev in (device / 'device/net').glob('*'):
+                for field in ('dev_port', 'dev_id'):
+                    attribute = netdev / field
+                    if attribute.exists():
+                        if int(attribute.read_text().strip(), 0) == port - 1:
+                            netdevs.add(netdev.name)
+                        break
+                else:
+                    if len(list((device / 'ports').iterdir())) == 1:
+                        netdevs.add(netdev.name)
         if name == device.name or name in netdevs:
             matches.append((device, endpoint, sorted(netdevs)))
     if len(matches) != 1:

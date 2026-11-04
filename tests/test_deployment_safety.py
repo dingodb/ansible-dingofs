@@ -1,5 +1,6 @@
 """Regression fixtures for mount ownership, CPU allocation and RDMA mapping."""
 import argparse
+import errno
 import json
 import os
 from pathlib import Path
@@ -92,6 +93,7 @@ class RdmaTests(unittest.TestCase):
             port = device / 'ports/1'
             (port / 'gid_attrs/ndevs').mkdir(parents=True)
             (port / 'gid_attrs/ndevs/0').write_text('eth5')
+            (port / 'gid_attrs/ndevs/1').write_text('unused')
             (port / 'state').write_text('4: ACTIVE')
             parent = root / 'sys/devices/pci0'
             (parent / 'sf1').mkdir(parents=True)
@@ -101,7 +103,12 @@ class RdmaTests(unittest.TestCase):
             def mapped(value):
                 value = str(value)
                 return root / value.lstrip('/') if value.startswith('/sys/') else Path(value)
-            with patch.dict(code, Path=mapped):
+            original_read = Path.read_text
+            def read_attribute(path, *args, **kwargs):
+                if path.parent.name == 'ndevs' and path.name == '1':
+                    raise OSError(errno.EINVAL, 'unused GID slot')
+                return original_read(path, *args, **kwargs)
+            with patch.dict(code, Path=mapped), patch.object(Path, 'read_text', read_attribute):
                 mapping = code['resolve']('eth5', 1)
                 self.assertEqual(mapping['device'], 'mlx5_5')
                 self.assertEqual(mapping['numa_node'], 0)
