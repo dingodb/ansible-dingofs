@@ -102,6 +102,36 @@ a meta-only inventory it matches **zero hosts and silently does nothing**. Pass
 applied to `config_podman_rootless.yml`; it no longer matters for meta, because
 `04_dingo_cli.yml` now runs the role directly.)
 
+## Inventory variable layout
+
+`inventory/group_vars/all.yml` keeps the original flat Ansible variable names and
+uses numbered sections aligned with site configuration files. Sections appear
+only when the file defines variables or notes for that category.
+
+| Section | Configuration |
+| --- | --- |
+| 01 | Site version and deployment mode |
+| 02 | Accounts, SSH and shared paths |
+| 03 | Container engine and rootless storage |
+| 04 | Meta/Cache disk provisioning |
+| 05 | Host tuning and jemalloc |
+| 06 | RQLite |
+| 07 | Dingo administration CLI |
+| 08 | Meta cluster, MDS/TiKV, coordinator, store and executor |
+| 09 | Cache service |
+| 10 | Client mounts |
+| 11 | Shared RDMA readiness |
+| 12 | Dingo command environment and filesystem backend |
+| 13 | Monitoring |
+| 14 | Log cleanup |
+| 15 | Site notes and operational records |
+| 16 | Per-host overrides |
+
+Cache and Client sections group their paths, network endpoints, CPU/NUMA,
+RDMA, logging and lifecycle settings. Keep mount instance lists together and
+place `dingofs_host_vars` at the end. Add future overrides beside the related
+role variables, with site-specific explanations next to the relevant settings.
+
 ## DingoFS Meta Deployment
 
 ### 1. Configure inventory
