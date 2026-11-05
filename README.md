@@ -618,6 +618,42 @@ in the intended MDS cache group after the run, then continue in small batches.
 When replacing a local template hotfix with this version, preserve any other
 local changes and carry the intended values into site variables.
 
+## IB NUMA locality
+
+Cache and Client share one switch, enabled by default:
+
+```yaml
+dingofs_numa_require_ib: true
+```
+
+When RDMA is enabled, the IB NUMA node must be known. Automatic CPU selection,
+forced allocation and retained cpusets must all stay on that node. Explicit
+CPU/node overrides that disagree with the IB topology fail, even with `force`.
+An old automatic cpuset on another node is recalculated; a valid local cpuset
+is retained. Sibling mount exclusions and existing CPU ownership checks remain.
+
+Both startup scripts use `numactl --cpunodebind=<node> --preferred=<node>` by
+default, before process initialization. `warn` or `pin_cpu=false` can omit
+per-core pinning, but the process CPU range remains on the IB node. A required
+locality deployment cannot disable numactl. Default memory policy targets the
+same node but may spill; this switch does not guarantee every page is local,
+and application-specific per-buffer memory policies can override the default.
+Set `dingo_cache_numactl_membind` or `dingo_client_numactl_membind` to `true` only
+for an intentionally sized strict local-memory deployment.
+
+`dingo_cache_ib_node_mem_max_pct` and `dingo_client_ib_node_mem_max_pct` default
+to **80**. While IB locality is required, this is an estimated memory-pressure
+alert threshold, not a reason to move CPUs to another NUMA node. Disabling
+`dingofs_numa_require_ib` restores memory-aware node selection and cross-node CPU
+fallback; RDMA-disabled hosts also retain that fallback behavior.
+
+Use a limited `cache_05_deploy.yml` / `client_04_deploy.yml` rollout to apply this
+configuration. Changed startup scripts/cpusets can require service restarts;
+existing client busy-mount checks remain in effect. Binary-only upgrade
+playbooks do not apply this policy. Validate per-thread CPU affinity and actual
+page placement with `/proc/<pid>/numa_maps` or `numastat -p`, not only the allowed
+memory-node mask.
+
 ## Client Deployment Phases
 
 | Phase | Playbook | Description |
@@ -637,8 +673,10 @@ local changes and carry the intended values into site variables.
 | `dingo_client_mds_addrs` | *(must set)* | Comma-separated MDS addresses |
 | `dingo_client_cache_group` | `dingofs-group` | Cache group name |
 | `dingo_client_fuse_max_threads` | `512` | FUSE max threads |
-| `dingo_client_numactl_enabled` | `true` | Start the client under `numactl --cpunodebind=<node> --membind=<node>` |
-| `dingo_client_numactl_node` | `""` | Force the numactl NUMA node; empty = the instance's cpuset node |
+| `dingofs_numa_require_ib` | `true` | Require both Cache and Client CPU / memory-policy targets to use the IB NUMA node |
+| `dingo_client_numactl_enabled` | `true` | Apply process CPU and memory policy before initialization; required in IB-local mode |
+| `dingo_client_numactl_node` | `""` | Follow the IB/cpuset node; an override must agree with IB while locality is required |
+| `dingo_client_numactl_membind` | `false` | Prefer local memory by default; true selects strict membind |
 
 ## Standalone Playbooks
 

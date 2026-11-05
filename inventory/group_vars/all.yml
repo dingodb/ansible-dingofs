@@ -197,6 +197,8 @@ dingo_cache_iodepth: 1024
 # preferred node is fully claimed). Set a cpuset ONLY per
 # host (host_vars) for a hand-picked range such as 32-63 — never one
 # fleet-wide value, free CPUs differ per node.
+# Shared Cache/Client switch: keep CPU and memory-policy targets on IB NUMA.
+dingofs_numa_require_ib: true
 dingo_cache_shards: 8
 dingo_cache_pin_cpu: true
 dingo_cache_cpuset: ""
@@ -208,7 +210,7 @@ dingo_cache_cpuset: ""
 # node under the threshold. Set ONLY per host in host_vars to override.
 dingo_cache_cpuset_numa_node: ""
 # Skip-a-node memory threshold (mirrors the manual numa-mem.sh 50% rule).
-dingo_cache_ib_node_mem_max_pct: 50
+dingo_cache_ib_node_mem_max_pct: 80
 dingo_cache_cpuset_busy_pct: 30
 # force (not fail): shared boxes like hd02-cpu-* have ZERO free CPUs, and the
 # service must still start — pin onto occupied CPUs and contend rather than
@@ -304,7 +306,7 @@ dingo_client_cpuset: ""
 # as dingo-cache). Per-mount cpuset_numa_node: overrides this per mount.
 dingo_client_cpuset_numa_node: ""
 # Skip-a-node memory threshold (mirrors the manual numa-mem.sh 50% rule).
-dingo_client_ib_node_mem_max_pct: 50
+dingo_client_ib_node_mem_max_pct: 80
 dingo_client_cpuset_busy_pct: 30
 # force (not fail): client hosts are fully shared — guarantee the mount starts
 # by pinning onto occupied CPUs when nothing is free. Expect contention noise
@@ -321,7 +323,7 @@ dingo_client_cpuset_include_siblings: false
 # --membind for --preferred (spill instead of failing on a full node).
 dingo_client_numactl_enabled: true
 dingo_client_numactl_node: ""
-dingo_client_numactl_membind: true
+dingo_client_numactl_membind: false
 
 # --- 10.6 RDMA ---
 dingo_client_use_rdma: true

@@ -57,7 +57,16 @@ dingo_cache_log_v: 0
 dingo_cache_ld_preload: /usr/local/lib/libjemalloc.so.2
 dingo_cache_ip_pattern: "192.168."
 
-# NUMA node fallback (v5.2: no numactl binding — the start script runs unbound).
+# One shared switch controls Cache and Client IB locality.
+dingofs_numa_require_ib: true
+
+# Process-wide CPU/memory policy is set before cache initialization. Preferred
+# memory may spill; use membind only with a deliberately sized local budget.
+dingo_cache_numactl_enabled: true
+dingo_cache_numactl_node: ""
+dingo_cache_numactl_membind: false
+
+# NUMA node fallback, only when required IB locality is disabled.
 # Only used as the last-resort preferred node when neither an explicit
 # dingo_cache_cpuset_numa_node nor any per-node memory data exists (e.g. VMs).
 dingo_cache_numa_node: 0
@@ -74,13 +83,12 @@ dingo_cache_pin_cpu: true
 dingo_cache_cpuset: ""
 # Preferred NUMA node for the auto-detected cpuset. Empty (default) = AUTO:
 # the NUMA node of dingo_cache_rdma_device
-# (/sys/class/net/<device>/device/numa_node), unless that node is hotter than
-# dingo_cache_ib_node_mem_max_pct — then the coolest node under the threshold.
-# Set this ONLY to override the IB/memory decision per host or inventory.
+# (/sys/class/net/<device>/device/numa_node). Memory-aware fallback is only used
+# when dingofs_numa_require_ib=false.
+# Overrides must match the IB node while dingofs_numa_require_ib=true.
 dingo_cache_cpuset_numa_node: ""
-# A node more memory-used than this % is skipped as preferred (bootstrap OOM
-# risk); the deploy warns LOUDLY when every node is hotter than this.
-dingo_cache_ib_node_mem_max_pct: 50
+# Alert threshold while IB locality is required; otherwise a fallback trigger.
+dingo_cache_ib_node_mem_max_pct: 80
 # CPUs busier than this % (mpstat 1s sample, skipped when sysstat is absent)
 # are excluded from auto-detection.
 dingo_cache_cpuset_busy_pct: 30

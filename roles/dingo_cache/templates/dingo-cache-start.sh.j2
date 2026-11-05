@@ -8,6 +8,9 @@ if [ ! -f "$CACHE_CONF_FILE" ]; then
     exit 1
 fi
 
-# v5.2: no numactl binding — locality comes from pinning --cpuset CPUs on the
-# right NUMA node (the RDMA device's node, memory permitting) at deploy time.
-LD_PRELOAD={{ dingo_cache_ld_preload }} {{ dingo_cache_base_dir }}/{{ dingo_cache_bin_name }} --flagfile "$CACHE_CONF_FILE"
+# Apply the process policy before worker threads and RDMA buffers are created.
+{% set _node = dingo_cache_numactl_node_effective | default('') | string | trim %}
+{% set _memory = '--membind=' if dingo_cache_numactl_membind | default(false) | bool else '--preferred=' %}
+{% set _numactl = ('numactl --cpunodebind=' ~ _node ~ ' ' ~ _memory ~ _node ~ ' ')
+     if (dingo_cache_numactl_enabled | default(true) | bool and _node | length > 0) else '' %}
+LD_PRELOAD={{ dingo_cache_ld_preload }} {{ _numactl }}{{ dingo_cache_base_dir }}/{{ dingo_cache_bin_name }} --flagfile "$CACHE_CONF_FILE"

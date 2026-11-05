@@ -104,6 +104,16 @@
         _client_cpuset_node: "{{ _client_cpuset_explicit_node if (_client_cpuset_explicit_node | length > 0) else (_client_ib_preferred_node | default('')) }}"
         _client_cpuset_node_source: "{{ 'explicit override' if (_client_cpuset_explicit_node | length > 0) else ('host IB/memory decision' if (_client_ib_preferred_node | default('') | length > 0) else 'auto (detector picks best node)') }}"
 
+    - name: "Require the Client instance NUMA override to match IB for {{ dingo_client_fsname }}"
+      assert:
+        that: _client_cpuset_explicit_node | length == 0 or _client_cpuset_explicit_node == _client_ib_node
+        fail_msg: "Instance {{ dingo_client_fsname }} must use IB NUMA {{ _client_ib_node }} while dingofs_numa_require_ib=true."
+      when: _client_require_ib | bool
+
+    - name: "Build Client detector NUMA arguments for {{ dingo_client_fsname }}"
+      set_fact:
+        _client_cpuset_numa_args: "{{ ('--preferred-only ' if _client_require_ib | bool else '') ~ ('-n ' ~ (_client_cpuset_node | string | quote) if _client_cpuset_node | length > 0 else '') }}"
+
     - name: "Collect cpusets from other active mount scripts on host for {{ dingo_client_fsname }}"
       shell: |
         self_sh="{{ dingo_client_base_dir }}/dingofs-mount.sh"
@@ -128,6 +138,7 @@
     - name: "Validate manually configured cpuset for {{ dingo_client_fsname }}"
       shell: |
         bash /tmp/dingo-cpuset-detect.sh --no-busy -S dingo-client --self-exe "{{ dingo_client_base_dir }}/bin/dingo-client" {{ '--force' if dingo_client_cpuset_on_insufficient == 'force' else '' }} \
+          {{ _client_cpuset_numa_args }} \
           -s {{ _client_shards | int }} \
           -b {{ dingo_client_cpuset_busy_pct | int }} \
           -x "{{ _client_sibling_cpusets | default([]) | join(',') }}" \
@@ -154,6 +165,14 @@
           Fix the cpuset: on the dingo_clients entry (or dingo_client_cpuset)
           to online CPUs only (compare with /sys/devices/system/cpu/online).
       when: (_client_cpuset_manual | default('')) | length > 0
+
+    - name: "Reject a manual Client cpuset outside IB NUMA for {{ dingo_client_fsname }}"
+      assert:
+        that: "'NOT-LOCAL-NUMA' not in (_client_cpuset_check.stdout | default(''))"
+        fail_msg: "Manual Client cpuset must stay on IB NUMA {{ _client_ib_node }}; force/warn cannot override required locality. {{ _client_cpuset_check.stdout | default('') }}"
+      when:
+        - _client_require_ib | bool
+        - (_client_cpuset_manual | default('')) | length > 0
 
     - name: "Fail on overlapping manual cpuset for {{ dingo_client_fsname }}"
       assert:
@@ -235,6 +254,7 @@
     - name: "Re-validate existing cpuset for {{ dingo_client_fsname }}"
       shell: |
         bash /tmp/dingo-cpuset-detect.sh --no-busy -S dingo-client --self-exe "{{ dingo_client_base_dir }}/bin/dingo-client" {{ '--force' if dingo_client_cpuset_on_insufficient == 'force' else '' }} \
+          {{ _client_cpuset_numa_args }} \
           -b {{ dingo_client_cpuset_busy_pct | int }} \
           -x "{{ _client_sibling_cpusets | default([]) | join(',') }}" \
           -c "{{ _client_cpuset_existing.stdout | trim }}"
@@ -279,7 +299,7 @@
       shell: |
         bash /tmp/dingo-cpuset-detect.sh -S dingo-client --self-exe "{{ dingo_client_base_dir }}/bin/dingo-client" {{ '--force' if dingo_client_cpuset_on_insufficient == 'force' else '' }} \
           -s {{ _client_shards | int }} \
-          {{ ('-n ' + (_client_cpuset_node | string)) if (_client_cpuset_node | default('') | string | trim | length > 0) else '' }} \
+          {{ _client_cpuset_numa_args }} \
           -b {{ dingo_client_cpuset_busy_pct | int }} \
           -x "{{ _client_sibling_cpusets | default([]) | join(',') }}" \
           {{ '--siblings' if dingo_client_cpuset_include_siblings | default(false) | bool else '' }}
@@ -347,7 +367,7 @@
       set_fact:
         dingo_client_cpuset_effective: "{{ _client_cpuset_winner.stdout_lines | select('match', '^FORCED=') | first | default('FORCED=NONE') | regex_replace('^FORCED=', '') | trim }}"
         dingo_client_numa_cpunode_effective: "{{ ((_client_cpuset_winner.stdout_lines | select('match', '^FORCED_NODE=') | first | default('') | regex_replace('^FORCED_NODE=', '') | trim) or (_client_cpuset_node | default(''))) }}"
-        _client_cpuset_source: "FORCED overlap — no free CPUs left on this host, shards WILL contend with whatever runs there. Free CPUs or add capacity ASAP."
+        _client_cpuset_source: "FORCED overlap in the allowed NUMA scope; shards WILL contend with existing workloads."
         _client_cpuset_forced: true
       when:
         - (_client_cpuset_manual | default('')) | length == 0
@@ -361,7 +381,7 @@
           - dingo_client_cpuset_effective not in ['NONE', '']
         fail_msg: >-
           {{ inventory_hostname }} has fewer than {{ _client_shards }} usable
-          physical cores in total for {{ dingo_client_fsname }} (after excluding
+          physical cores in the allowed NUMA scope for {{ dingo_client_fsname }} (after excluding
           cpusets assigned to sibling mounts) — no cpuset, free or forced, can be
           built. Lower the shards for this mount or add CPUs.
       when:
@@ -383,25 +403,18 @@
         - not (_client_keep_existing_cpuset | default(false) | bool)
         - (_client_cpuset_forced | default(false)) == false
 
+    - name: "Record the allocated Client cpuset NUMA node for {{ dingo_client_fsname }}"
+      set_fact:
+        _client_cpuset_nodes: "{{ [dingo_client_numa_cpunode_effective | string] }}"
+      when:
+        - (_client_cpuset_manual | default('')) | length == 0
+        - not (_client_keep_existing_cpuset | default(false) | bool)
+        - dingo_client_cpuset_effective | default('NONE') not in ['', 'NONE']
+
     - name: "Reserve this cpuset for later mounts on the host"
       set_fact:
         dingo_client_cpusets_claimed: "{{ ((dingo_client_cpusets_claimed | default([])) + ([dingo_client_cpuset_effective] if (dingo_client_cpuset_effective is defined and dingo_client_cpuset_effective not in ['NONE', '']) else [])) | unique | list }}"
         dingo_client_scripts_processed: "{{ ((dingo_client_scripts_processed | default([])) + [dingo_client_base_dir ~ '/dingofs-mount.sh']) | unique | list }}"
-
-    - name: "Warn when the effective NUMA node is short on free memory for {{ dingo_client_fsname }}"
-      debug:
-        msg: >-
-          WARNING: NUMA node {{ dingo_client_numa_cpunode_effective }} for
-          {{ dingo_client_fsname }} on {{ inventory_hostname }} is
-          {{ (_client_node_mem | default({})).get(dingo_client_numa_cpunode_effective | string, 'n/a') }}%
-          memory-used (threshold {{ _client_mem_thr | default(50) }}%) — bootstrap
-          OOM risk. Free memory on this node or pin this mount to a cooler node
-          via cpuset_numa_node: on its dingo_clients entry.
-      when:
-        - (_client_cpuset_manual | default('')) | length == 0
-        - dingo_client_cpuset_effective is defined and dingo_client_cpuset_effective not in ['NONE', '']
-        - dingo_client_numa_cpunode_effective is defined
-        - ((_client_node_mem | default({})).get(dingo_client_numa_cpunode_effective | string, 0) | int) > (_client_mem_thr | default(50) | int)
 
     - name: "Log forced-pick CPU usage for {{ dingo_client_fsname }}"
       debug:
@@ -429,21 +442,58 @@
 
 # --- numactl node for the mount script ---
 # The mount script starts the client under
-#   numactl --cpunodebind=<node> --membind=<node>
-# so its heap (jemalloc) and RDMA buffer pool stay on the socket the RDMA
-# device sits on instead of the opposite one. <node> is
+#   numactl --cpunodebind=<node> --preferred=<node>
+# before process initialization. The default memory policy prefers the local
+# node but may spill; explicit per-region allocation policies may override it.
+# With required locality, <node> is the IB node; otherwise it is
 # dingo_client_numactl_node when set (independent override), otherwise the NUMA
 # node of the cpuset chosen above.
 #
 # A manual cpuset spanning several nodes gets NO binding: --cpunodebind narrows
 # the whole process to one node, and the client's own --cpuset pinning would
 # then silently lose the CPUs on the other node.
+- name: "Reset CPU-node metadata when pinning is disabled for {{ dingo_client_fsname }}"
+  set_fact:
+    _client_cpuset_nodes: []
+    dingo_client_numa_cpunode_effective: ""
+  when: not (dingo_client_pin_cpu | default(true) | bool)
+
 - name: "Resolve the numactl node for {{ dingo_client_fsname }}"
   set_fact:
     dingo_client_numactl_node_effective: >-
-      {{ (dingo_client_numactl_node | default('') | string | trim)
-         or (((dingo_client_numa_cpunode_effective | default('') | string | trim).split() | first | default(''))
-             if (_client_cpuset_nodes | default([]) | length) <= 1 else '') }}
+      {{ _client_ib_node if _client_require_ib | default(false) | bool
+         else (((dingo_client_numactl_node | default('') | string | trim)
+                or ((_client_cpuset_nodes | first) if (_client_cpuset_nodes | default([]) | length) == 1
+                    else ((dingo_client_numa_cpunode_effective | default('') | string | trim)
+                          if dingo_client_pin_cpu | default(true) | bool else '')))
+               if (_client_cpuset_nodes | default([]) | length) <= 1 else '') }}
+
+- name: "Enforce required Client process locality for {{ dingo_client_fsname }}"
+  assert:
+    that:
+      - dingo_client_numactl_enabled | default(true) | bool
+      - dingo_client_numactl_node_effective == _client_ib_node
+      - (_client_cpuset_nodes | default([]) | length) == 0 or _client_cpuset_nodes == [_client_ib_node]
+    fail_msg: "Client CPU and memory-policy targets must stay on IB NUMA {{ _client_ib_node }}."
+  when: _client_require_ib | default(false) | bool
+
+- name: "Report Client process NUMA locality for {{ dingo_client_fsname }}"
+  debug:
+    msg: >-
+      NUMA locality: require_ib={{ _client_require_ib | default(false) }} ib_node={{ _client_ib_node | default('unknown', true) }}
+      cpu_nodes={{ _client_cpuset_nodes | default([]) }} process_node={{ dingo_client_numactl_node_effective | default('unbound', true) }}
+      memory_policy={{ 'bind' if dingo_client_numactl_membind | default(false) | bool else 'preferred (may spill)' }}.
+
+- name: "Alert on Client NUMA memory pressure without changing locality for {{ dingo_client_fsname }}"
+  debug:
+    msg: >-
+      WARNING: NUMA {{ dingo_client_numactl_node_effective }} estimated memory-used
+      {{ (_client_node_mem | default({})).get(dingo_client_numactl_node_effective | string, 'unknown') }}%
+      exceeds {{ _client_mem_thr | default(80) }}%. Free local capacity or resize
+      the workload; required IB locality does not migrate CPUs because of memory pressure.
+  when:
+    - dingo_client_numactl_node_effective | length > 0
+    - ((_client_node_mem | default({})).get(dingo_client_numactl_node_effective | string, 0) | int) > (_client_mem_thr | default(80) | int)
 
 - name: "Warn when the manual cpuset spans NUMA nodes for {{ dingo_client_fsname }}"
   debug:

@@ -48,13 +48,14 @@ else
     fi
 fi
 
-# NUMA binding: bind the whole process (and therefore the jemalloc heap and the
-# RDMA buffers) to one NUMA node. The node is dingo_client_numactl_node when
+# NUMA binding: constrain process CPUs and set its default memory policy before
+# initialization. Preferred memory may spill; explicit per-buffer policies can
+# override the process default. The node is dingo_client_numactl_node when
 # set, otherwise the node this instance's --cpuset lives on (that cpuset is
 # itself a subset of the node, so --cpunodebind never takes CPUs away from it).
 # Without a node — pin_cpu off and no explicit override — nothing is bound.
 {% set _numactl_node = dingo_client_numactl_node_effective | default('') | string | trim %}
-{% set _numactl_mem = '--membind=' if dingo_client_numactl_membind | default(true) | bool else '--preferred=' %}
+{% set _numactl_mem = '--membind=' if dingo_client_numactl_membind | default(false) | bool else '--preferred=' %}
 {% set _numactl = ('numactl --cpunodebind=' ~ _numactl_node ~ ' ' ~ _numactl_mem ~ _numactl_node)
      if (dingo_client_numactl_enabled | default(true) | bool and (_numactl_node | length) > 0) else '' %}
 # Both commands sit on the same continued line on purpose: Ansible trims the
