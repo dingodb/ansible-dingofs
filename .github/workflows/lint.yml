@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   yaml:
     name: YAML & playbook syntax
@@ -36,9 +40,6 @@ jobs:
       # on for anyone installing collections by hand.
       - name: Install ansible
         run: pip install ansible
-
-      - name: Regression tests for read-only checks and additional-cluster deployment
-        run: python3 -m unittest discover -s tests -v
 
       # Plain YAML parsing first: its errors are more direct than ansible's.
       # This is what catches a plain (unquoted) scalar containing ": " --
@@ -92,3 +93,51 @@ jobs:
             fi
           done
           exit $fail
+
+  regression:
+    name: Regression tests (${{ matrix.shard }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    env:
+      ANSIBLE_STDOUT_CALLBACK: ansible.builtin.default
+      TEST_SHARD: ${{ matrix.shard }}
+      TEST_SHARDS: '4'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.yml
+      - name: Install ansible
+        run: pip install ansible
+      - name: Run regression shard
+        run: |
+          python3 - <<'PY'
+          import os
+          import sys
+          import unittest
+
+          def cases(suite):
+              for item in suite:
+                  if isinstance(item, unittest.TestSuite):
+                      yield from cases(item)
+                  else:
+                      yield item
+
+          # Stable discovery order distributes individual test cases, rather
+          # than putting one large integration-test module on a single runner.
+          loader = unittest.TestLoader()
+          all_cases = list(cases(loader.discover('tests')))
+          shard = int(os.environ['TEST_SHARD'])
+          count = int(os.environ['TEST_SHARDS'])
+          selected = all_cases[shard::count]
+          if not all_cases or not selected:
+              raise SystemExit('Regression discovery produced an empty shard')
+          print(f'Shard {shard + 1}/{count}: {len(selected)} of {len(all_cases)} tests', flush=True)
+          result = unittest.TextTestRunner(verbosity=2).run(unittest.TestSuite(selected))
+          sys.exit(0 if result.wasSuccessful() else 1)
+          PY

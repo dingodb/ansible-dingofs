@@ -229,7 +229,7 @@
     - name: Validate cpuset insufficiency policy
       assert:
         that:
-          - (dingo_cache_cpuset_on_insufficient | default('fail')) in ['fail', 'warn', 'force']
+          - (dingo_cache_cpuset_on_insufficient | default('force')) in ['fail', 'warn', 'force']
         fail_msg: >-
           dingo_cache_cpuset_on_insufficient must be one of fail|warn|force, got
           '{{ dingo_cache_cpuset_on_insufficient }}'. fail = stop the deploy;
@@ -295,7 +295,7 @@
           dingo_cache_cpuset_on_insufficient=force (warns LOUDLY, pins anyway).
       when:
         - (dingo_cache_cpuset | default('')) | length > 0
-        - (dingo_cache_cpuset_on_insufficient | default('fail')) == 'fail'
+        - (dingo_cache_cpuset_on_insufficient | default('force')) == 'fail'
 
     - name: Warn and keep overlapping manual cpuset (force policy)
       debug:
@@ -310,7 +310,7 @@
         - (dingo_cache_cpuset | default('')) | length > 0
         - cpuset_check.rc is defined and cpuset_check.rc != 0
         - "'NOT-ONLINE' not in (cpuset_check.stdout | default(''))"
-        - (dingo_cache_cpuset_on_insufficient | default('fail')) == 'force'
+        - (dingo_cache_cpuset_on_insufficient | default('force')) == 'force'
 
     - name: Warn that overlapping manual cpuset is dropped (warn policy)
       debug:
@@ -325,7 +325,7 @@
         - (dingo_cache_cpuset | default('')) | length > 0
         - cpuset_check.rc is defined and cpuset_check.rc != 0
         - "'NOT-ONLINE' not in (cpuset_check.stdout | default(''))"
-        - (dingo_cache_cpuset_on_insufficient | default('fail')) == 'warn'
+        - (dingo_cache_cpuset_on_insufficient | default('force')) == 'warn'
 
     - name: Drop overlapping manual cpuset (warn policy)
       set_fact:
@@ -334,7 +334,7 @@
         - (dingo_cache_cpuset | default('')) | length > 0
         - cpuset_check.rc is defined and cpuset_check.rc != 0
         - "'NOT-ONLINE' not in (cpuset_check.stdout | default(''))"
-        - (dingo_cache_cpuset_on_insufficient | default('fail')) == 'warn'
+        - (dingo_cache_cpuset_on_insufficient | default('force')) == 'warn'
 
     # Stability first: a redeploy must NOT see the service's own running cpuset
     # as "taken" and hop to new CPUs every run (which would restart the cache
@@ -430,7 +430,7 @@
       when:
         - (dingo_cache_cpuset | default('')) | length == 0
         - not (_cache_keep_existing_cpuset | default(false) | bool)
-        - (dingo_cache_cpuset_on_insufficient | default('fail')) == 'fail'
+        - (dingo_cache_cpuset_on_insufficient | default('force')) == 'fail'
 
     - name: Warn when deploying without a cpuset
       debug:
@@ -442,7 +442,7 @@
       when:
         - (dingo_cache_cpuset | default('')) | length == 0
         - not (_cache_keep_existing_cpuset | default(false) | bool)
-        - (dingo_cache_cpuset_on_insufficient | default('fail')) == 'warn'
+        - (dingo_cache_cpuset_on_insufficient | default('force')) == 'warn'
         - _cpuset_winner.rc is defined and _cpuset_winner.rc != 0
 
     - name: Force best-effort cpuset from occupied CPUs
@@ -454,7 +454,7 @@
       when:
         - (dingo_cache_cpuset | default('')) | length == 0
         - not (_cache_keep_existing_cpuset | default(false) | bool)
-        - (dingo_cache_cpuset_on_insufficient | default('fail')) == 'force'
+        - (dingo_cache_cpuset_on_insufficient | default('force')) == 'force'
         - _cpuset_winner.rc is defined and _cpuset_winner.rc != 0
 
     - name: Fail when even a forced cpuset is impossible
@@ -469,7 +469,7 @@
       when:
         - (dingo_cache_cpuset | default('')) | length == 0
         - not (_cache_keep_existing_cpuset | default(false) | bool)
-        - (dingo_cache_cpuset_on_insufficient | default('fail')) == 'force'
+        - (dingo_cache_cpuset_on_insufficient | default('force')) == 'force'
         - _cpuset_winner.rc is defined and _cpuset_winner.rc != 0
 
     - name: Set effective cpuset and NUMA facts

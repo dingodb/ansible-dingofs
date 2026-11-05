@@ -188,7 +188,7 @@
           dingo_client_cpuset_on_insufficient=force (warns LOUDLY, pins anyway).
       when:
         - (_client_cpuset_manual | default('')) | length > 0
-        - (dingo_client_cpuset_on_insufficient | default('fail')) == 'fail'
+        - (dingo_client_cpuset_on_insufficient | default('force')) == 'fail'
 
     - name: "Warn and keep overlapping manual cpuset for {{ dingo_client_fsname }} (force policy)"
       debug:
@@ -205,7 +205,7 @@
         - (_client_cpuset_manual | default('')) | length > 0
         - _client_cpuset_check.rc is defined and _client_cpuset_check.rc != 0
         - "'NOT-ONLINE' not in (_client_cpuset_check.stdout | default(''))"
-        - (dingo_client_cpuset_on_insufficient | default('fail')) == 'force'
+        - (dingo_client_cpuset_on_insufficient | default('force')) == 'force'
 
     - name: "Warn that overlapping manual cpuset is dropped for {{ dingo_client_fsname }} (warn policy)"
       debug:
@@ -221,7 +221,7 @@
         - (_client_cpuset_manual | default('')) | length > 0
         - _client_cpuset_check.rc is defined and _client_cpuset_check.rc != 0
         - "'NOT-ONLINE' not in (_client_cpuset_check.stdout | default(''))"
-        - (dingo_client_cpuset_on_insufficient | default('fail')) == 'warn'
+        - (dingo_client_cpuset_on_insufficient | default('force')) == 'warn'
 
     - name: "Drop overlapping manual cpuset for {{ dingo_client_fsname }} (warn policy)"
       set_fact:
@@ -230,7 +230,7 @@
         - (_client_cpuset_manual | default('')) | length > 0
         - _client_cpuset_check.rc is defined and _client_cpuset_check.rc != 0
         - "'NOT-ONLINE' not in (_client_cpuset_check.stdout | default(''))"
-        - (dingo_client_cpuset_on_insufficient | default('fail')) == 'warn'
+        - (dingo_client_cpuset_on_insufficient | default('force')) == 'warn'
 
     # NUMA nodes the manual cpuset actually covers. The check above printed
     # NODES= for it; a cpuset on two sockets must not be handed to
@@ -348,7 +348,7 @@
       when:
         - (_client_cpuset_manual | default('')) | length == 0
         - not (_client_keep_existing_cpuset | default(false) | bool)
-        - (dingo_client_cpuset_on_insufficient | default('fail')) == 'fail'
+        - (dingo_client_cpuset_on_insufficient | default('force')) == 'fail'
 
     - name: "Warn when deploying {{ dingo_client_fsname }} without a cpuset"
       debug:
@@ -360,7 +360,7 @@
       when:
         - (_client_cpuset_manual | default('')) | length == 0
         - not (_client_keep_existing_cpuset | default(false) | bool)
-        - (dingo_client_cpuset_on_insufficient | default('fail')) == 'warn'
+        - (dingo_client_cpuset_on_insufficient | default('force')) == 'warn'
         - _client_cpuset_winner.rc is defined and _client_cpuset_winner.rc != 0
 
     - name: "Force best-effort cpuset for {{ dingo_client_fsname }} from occupied CPUs"
@@ -372,7 +372,7 @@
       when:
         - (_client_cpuset_manual | default('')) | length == 0
         - not (_client_keep_existing_cpuset | default(false) | bool)
-        - (dingo_client_cpuset_on_insufficient | default('fail')) == 'force'
+        - (dingo_client_cpuset_on_insufficient | default('force')) == 'force'
         - _client_cpuset_winner.rc is defined and _client_cpuset_winner.rc != 0
 
     - name: "Fail when even a forced cpuset is impossible for {{ dingo_client_fsname }}"
@@ -387,7 +387,7 @@
       when:
         - (_client_cpuset_manual | default('')) | length == 0
         - not (_client_keep_existing_cpuset | default(false) | bool)
-        - (dingo_client_cpuset_on_insufficient | default('fail')) == 'force'
+        - (dingo_client_cpuset_on_insufficient | default('force')) == 'force'
         - _client_cpuset_winner.rc is defined and _client_cpuset_winner.rc != 0
 
     - name: "Set effective cpuset and NUMA facts for {{ dingo_client_fsname }}"

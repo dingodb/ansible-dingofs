@@ -632,6 +632,15 @@ CPU/node overrides that disagree with the IB topology fail, even with `force`.
 An old automatic cpuset on another node is recalculated; a valid local cpuset
 is retained. Sibling mount exclusions and existing CPU ownership checks remain.
 
+Cache and Client default `cpuset_on_insufficient` to `force`: prefer free
+physical cores, then share the least-busy eligible cores when none are free.
+Required IB locality still limits both passes to the IB node, and automatic
+allocation still excludes sibling mounts' assigned cores. If there are too few
+eligible physical cores even with sharing, deployment fails. Existing explicit
+`fail` or `warn` settings in an inventory retain their priority; use
+`-e dingo_cache_cpuset_on_insufficient=force` or
+`-e dingo_client_cpuset_on_insufficient=force` to override them for a run.
+
 Both startup scripts use `numactl --cpunodebind=<node> --preferred=<node>` by
 default, before process initialization. `warn` or `pin_cpu=false` can omit
 per-core pinning, but the process CPU range remains on the IB node. A required

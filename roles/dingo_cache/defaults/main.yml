@@ -100,7 +100,7 @@ dingo_cache_cpuset_busy_pct: 30
 # force = pin onto OCCUPIED CPUs anyway (least-busy pick by sampled usage,
 # so the service still starts on fully-shared boxes; shards will contend until
 # CPUs are freed. Only fail-vs-host-too-small still stops a force deploy.
-dingo_cache_cpuset_on_insufficient: fail
+dingo_cache_cpuset_on_insufficient: force
 # When true, the auto-detected cpuset expands to all sibling threads of the
 # selected cores; false (default) keeps first-thread ids only, i.e. one shard
 # per physical core with no hyperthread sharing.
