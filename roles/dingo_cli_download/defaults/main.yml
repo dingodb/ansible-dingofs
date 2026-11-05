@@ -5,5 +5,5 @@ dingo_cli_download_url: "https://www.dingodb.com/dingocli/branches/main/latest/d
 dingo_cli_download_checksum: ""
 dingo_cli_latest_pkg_path: /root/dingofs/pkg/dingo-latest
 dingo_cli_download_dest: "{{ dingo_cli_latest_pkg_path }}"
-# Disable only for an explicitly pre-staged/offline CLI binary.
-dingo_cli_download_enabled: true
+# Use the existing controller file by default. Enable explicitly to refresh it.
+dingo_cli_download_enabled: false

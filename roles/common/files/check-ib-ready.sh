@@ -44,6 +44,7 @@ def resolve(name, port):
         raise ValueError('RDMA device/port mapping is missing or ambiguous for %s/%s' % (name, port))
     device, endpoint, netdevs = matches[0]
     numa = None
+    numa_source = 'unknown'
     location = (device / 'device').resolve()
     for parent in (location, *location.parents):
         attribute = parent / 'numa_node'
@@ -51,8 +52,24 @@ def resolve(name, port):
             value = int(attribute.read_text())
             if value >= 0:
                 numa = value
+                numa_source = 'device' if parent == location else 'pci-parent'
                 break
+    if numa is None:
+        # Some virtual/PCI-passthrough devices report -1. A single online
+        # system node is unambiguous; never infer node 0 on multi-node hosts.
+        online_path = Path('/sys/devices/system/node/online')
+        if online_path.exists():
+            online_nodes = set()
+            for span in online_path.read_text().strip().split(','):
+                ends = span.split('-')
+                online_nodes.update(range(int(ends[0]), int(ends[-1]) + 1))
+            if len(online_nodes) == 1:
+                only = next(iter(online_nodes))
+                cpus = Path('/sys/devices/system/node/node%s/cpulist' % only)
+                if cpus.exists() and cpus.read_text().strip():
+                    numa, numa_source = only, 'single-online-node'
     return {'device': device.name, 'port': port, 'netdevs': netdevs, 'numa_node': numa,
+            'numa_source': numa_source,
             'state_path': str(endpoint / 'state')}
 
 

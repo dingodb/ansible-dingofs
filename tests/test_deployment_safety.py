@@ -138,6 +138,7 @@ class MountTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             binary = root / 'crictl'
+            (root / 'python3').symlink_to(sys.executable)
             responses = {'pods': {'items': [{'id': 'pod', 'metadata': {'namespace': namespace, 'name': 'job'}}]},
                          'ps': {'containers': [{'id': 'container', 'podSandboxId': 'pod'}]},
                          'inspect': {'status': {'mounts': [{'hostPath': '/fixture/data', 'containerPath': '/data'}]}}}
@@ -152,7 +153,7 @@ class MountTests(unittest.TestCase):
             function = function.replace('target_device = mounted_device(target)', 'target_device = None')
             result = subprocess.run(['/bin/bash'], input='STRICT=' + str(strict).lower() + '\nlog() { echo "$*"; }\n' + function
                                     + '\ncontainer_users_busy /fixture\nexit $?\n', text=True,
-                                    capture_output=True, env=dict(os.environ, PATH=str(root) + ':' + os.environ['PATH']))
+                                    capture_output=True, env=dict(os.environ, PATH=str(root)))
             return result
 
     def test_default_namespace_container_is_busy(self):
