@@ -4,6 +4,7 @@ __pycache__/
 .vault_pass
 *.vault
 .env
+/reports/
 
 # claude
 .claude

@@ -1,0 +1,18 @@
+---
+# Controller-side structured event consumed by dingofs_client_report callback.
+# Do not include checker stdout, hostvars or credentials in report artifacts.
+- name: Record client operation outcome for the controller report
+  set_stats:
+    per_host: true
+    aggregate: false
+    data:
+      dingofs_client_event: >-
+        {{ _dingofs_client_report_context | combine({
+             'schema_version': 1,
+             'stage': client_report_stage,
+             'status': client_report_status,
+             'reason': client_report_reason,
+             'changed_on_disk': false if ansible_check_mode else (client_report_changed_on_disk | default(none)),
+             'pending_restart': client_report_pending_restart | default(none),
+             'check_mode': ansible_check_mode
+           }) }}

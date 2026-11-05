@@ -431,6 +431,50 @@ ansible-playbook playbooks/client_99_status.yml
 
 All client playbooks connect with `remote_user: root`.
 
+### Client restart and skip reports
+
+Client deployment and upgrade runs now print the controller-side report paths
+at the end of execution. Reports cover every host, filesystem instance and
+serial batch in that invocation:
+
+- `reports/<run-id>/client-restart-skips-<run-id>.tsv`: a tab-separated list of
+  deferred instances, with host, filesystem, mount point, service and reason.
+- `reports/<run-id>/client-restart-report-<run-id>.json`: full instance outcomes,
+  check-mode information, failed/unreachable hosts and run completion status.
+
+The paths are absolute in the final output. Each invocation has its own private
+directory and files, so concurrent runs cannot overwrite each other's reports.
+Set `DINGO_CLIENT_REPORT_DIR=/path/on/controller` to change the report directory.
+The callback is enabled in this repository's `ansible.cfg`; when using a custom
+configuration, also enable `dingofs_client_report` and set `callback_plugins` to
+this repository's `callback_plugins` directory.
+
+```bash
+DINGO_CLIENT_REPORT_DIR=/tmp/dingo-client-reports \
+  ansible-playbook -i /path/to/site/hosts.py playbooks/client_04_deploy.yml
+# After execution, use the exact TSV/JSON paths printed in the final summary.
+```
+
+| Status | Meaning |
+| --- | --- |
+| `skipped_busy_before_change` | Mount busy before configuration/upgrade; this instance's files and service were left unchanged |
+| `restart_deferred_busy` | Restart deferred because the mount became busy; inspect `changed_on_disk` and `pending_restart` |
+| `restart_deferred_unknown` | Restart deferred because usage could not be verified, for example missing `fuser` |
+| `check_failed` / `restart_failed` / `verification_failed` | Operation failed; inspect the JSON error records and Ansible failure output |
+| `completed` / `dry_run` | Finished or intentionally not applied; not counted as a busy skip |
+
+An empty TSV does not prove every host succeeded: also check the JSON failure
+and unreachable summaries, including hosts that failed before a filesystem
+could be identified. Reports contain structured summaries, not full checker
+output, container inspection data or inventory credentials. Writing reports
+does not change the existing mount checks, force flags or failure behavior.
+
+For `changed_on_disk: true` and `pending_restart: true`, wait for the mount to
+be idle before completing the restart. An unchanged repeat of the ordinary
+deployment does not necessarily retry a previously deferred restart; use the
+upgrade entry point's checks or arrange a controlled manual restart. The report
+is an execution snapshot and does not itself schedule or perform a restart.
+
 ## Meta Server Deployment Phases
 
 | Phase | Playbook | Target | Description |
