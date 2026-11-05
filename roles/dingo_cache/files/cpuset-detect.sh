@@ -297,7 +297,9 @@ def main():
 if __name__ == '__main__':
     try:
         sys.exit(main())
-    except (OSError, ValueError, KeyError, TypeError) as error:
+    # Exit 1 means a known manual conflict to the roles. Even an unexpected
+    # collection/parsing failure must not be mistaken for a forceable conflict.
+    except Exception as error:
         print('CPU detection failed: ' + str(error), file=sys.stderr)
         sys.exit(3)
 

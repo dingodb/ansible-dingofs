@@ -166,6 +166,16 @@ class ThreadOwnershipTests(unittest.TestCase):
         self.assertNotIn('SUGGEST=', output.getvalue())
         self.assertNotIn('FORCED=', output.getvalue())
 
+    def test_malformed_kubelet_structure_is_unknown_not_a_forceable_conflict(self):
+        self.fixture.write('/var/lib/kubelet/cpu_manager_state', '{"entries": []}')
+        source = (REPO / 'roles/dingo_cache/files/cpuset-detect.sh').read_text()
+        entry = "if __name__ == '__main__':" + source.split("if __name__ == '__main__':", 1)[1].rsplit('\nPYCPU', 1)[0]
+        with patch.dict(self.code, Path=self.fixture.mapped_path, __name__='__main__'), \
+                patch.object(sys, 'argv', ['cpuset-detect', '--no-busy', '--force']), \
+                contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as result:
+            exec(compile(entry, 'cpuset-entry', 'exec'), self.code)
+        self.assertEqual(result.exception.code, 3)
+
     def test_force_is_opt_in_and_excludes_smt_siblings_of_assigned_cores(self):
         self.process(threads={900003: '0-7', 900004: '0', 900005: '2', 900006: '4', 900007: '6'})
         for force in [False, True]:
