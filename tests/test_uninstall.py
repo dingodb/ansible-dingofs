@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import yaml
 
@@ -15,6 +16,44 @@ REPO = Path(__file__).resolve().parents[1]
 MODULE = REPO / 'roles/dingo_uninstall/library/dingofs_uninstall_plan.py'
 spec = importlib.util.spec_from_file_location('uninstall_plan', MODULE)
 plan = importlib.util.module_from_spec(spec); spec.loader.exec_module(plan)
+state_spec = importlib.util.spec_from_file_location('mount_state', REPO / 'roles/dingo_uninstall/library/dingofs_mount_state.py')
+state = importlib.util.module_from_spec(state_spec); state_spec.loader.exec_module(state)
+
+
+class MountStateTests(unittest.TestCase):
+    def test_exact_mount_and_bind_mount_paths(self):
+        data = ('31 1 8:1 / / rw - ext4 /dev/root rw\n'
+                '42 31 0:12 / /mnt/work rw - fuse.dingofs DingoFS:work rw\n'
+                '43 31 0:12 /sub /mnt/alias rw - fuse.dingofs DingoFS:work rw\n')
+        with patch.object(Path, 'read_text', return_value=data):
+            self.assertTrue(state.mount_state('/mnt/work')['mounted'])
+            self.assertTrue(state.mount_state('/mnt/alias')['mounted'])
+            self.assertFalse(state.mount_state('/mnt/work/child')['mounted'])
+            self.assertFalse(state.mount_state('/mnt/work-other')['mounted'])
+            self.assertFalse(state.mount_state('/does-not-exist')['mounted'])
+
+    def test_escaped_paths_are_decoded(self):
+        with patch.object(Path, 'read_text', return_value='42 31 0:12 / /mnt/work\\040space rw - fuse.dingofs DingoFS:work rw\n'):
+            self.assertTrue(state.mount_state('/mnt/work space')['mounted'])
+
+    def test_read_or_parse_failure_cannot_become_unmounted(self):
+        with patch.object(Path, 'read_text', side_effect=PermissionError('denied')):
+            with self.assertRaises(PermissionError): state.mount_state('/mnt/work')
+        for malformed in ['', 'not mountinfo\n', '42 31 - fuse\n']:
+            with patch.object(Path, 'read_text', return_value=malformed):
+                with self.assertRaises(ValueError): state.mount_state('/mnt/work')
+
+    @unittest.skipUnless(sys.platform.startswith('linux') and shutil.which('mountpoint'), 'requires Linux mountpoint')
+    def test_real_unmounted_directory_including_util_linux_rc_32(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = str(Path(directory).resolve())
+            result = subprocess.run(['mountpoint', '-q', target], capture_output=True)
+            self.assertNotEqual(result.returncode, 0)
+            version = subprocess.run(['mountpoint', '--version'], capture_output=True, text=True)
+            if 'util-linux' in version.stdout:
+                self.assertEqual(result.returncode, 32)
+            self.assertFalse(state.mount_state(target)['mounted'])
+            self.assertFalse(state.mount_state(target + '/absent')['mounted'])
 
 
 class UninstallTests(unittest.TestCase):
@@ -107,9 +146,14 @@ class UninstallTests(unittest.TestCase):
         code = module.read_text()
         self.assertIn("UNIT_DIR = Path('/etc/systemd/system')", code)
         code = code.replace("UNIT_DIR = Path('/etc/systemd/system')", 'UNIT_DIR = Path(' + repr(str(self.units)) + ')')
-        mounts = self.root / 'mountinfo'; mounts.write_text('')
+        base_mountinfo = '31 1 8:1 / / rw - ext4 /dev/fixture rw\n'
+        mounts = self.root / 'mountinfo'; mounts.write_text(base_mountinfo)
         code = code.replace("MOUNTINFO = Path('/proc/self/mountinfo')", 'MOUNTINFO = Path(' + repr(str(mounts)) + ')')
         module.write_text(code)
+        status_module = role / 'library/dingofs_mount_state.py'
+        status_source = status_module.read_text()
+        self.assertIn("MOUNTINFO = Path('/proc/self/mountinfo')", status_source)
+        status_module.write_text(status_source.replace("MOUNTINFO = Path('/proc/self/mountinfo')", 'MOUNTINFO = Path(' + repr(str(mounts)) + ')'))
         # Isolate process inspection too: CI runs unprivileged and must not
         # inspect the runner's real /proc or depend on its current processes.
         proc = self.root / 'proc'; proc.mkdir()
@@ -200,8 +244,38 @@ m.exit_json(changed=not m.check_mode)
 
         # Once idle, uninstall never recursively deletes the mountpoint contents.
         checker.write_text('#!/bin/sh\nexit 0\n')
-        mountpoint=fakebin/'mountpoint';mountpoint.write_text('#!/bin/sh\nexit 1\n');mountpoint.chmod(0o755)
+        # The old uninstall path rejected util-linux's legitimate rc=32.
+        mountpoint=fakebin/'mountpoint';mountpoint.write_text('#!/bin/sh\nexit 32\n');mountpoint.chmod(0o755)
+        # An unmount that really fails must still block removal; no real host
+        # mount/umount is used in this fixture.
+        mounts.write_text('42 31 0:12 / '+str(new_mount)+' rw - fuse.dingofs DingoFS:same-name rw\n')
+        refuse=self.root/'refuse-unmount';refuse.touch()
+        unmount_events=self.root/'unmount-events'
+        umount=fakebin/'umount'
+        umount.write_text('#!'+sys.executable+'\nimport pathlib,sys,json\n'
+                          +'with open('+repr(str(unmount_events))+',"a") as f:f.write(json.dumps(sys.argv[1:])+"\\n")\n'
+                          +'if pathlib.Path('+repr(str(refuse))+').exists():sys.exit(16)\n'
+                          +'pathlib.Path('+repr(str(mounts))+').write_text('+repr(base_mountinfo)+')\n')
+        umount.chmod(0o755)
+        result=subprocess.run(['ansible-playbook','-i','fixture,',str(play),'--limit','fixture'],
+                              cwd=self.root,env=env,text=True,capture_output=True,timeout=120)
+        self.assertNotEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertTrue(new_unit.exists());self.assertTrue(new_base.exists());self.assertTrue(new_log.exists())
+        refuse.unlink()
         run([])
+        self.assertFalse(new_unit.exists());self.assertFalse(new_base.exists());self.assertFalse(new_mount.exists())
+        self.assertTrue(new_log.exists());self.assertTrue(self.old.exists())
+        self.assertEqual([json.loads(v) for v in unmount_events.read_text().splitlines()],
+                         [['--',str(new_mount)],['--',str(new_mount)]])
+
+        # Recreate an already-detached installation, as after the client's own
+        # shutdown auto-unmounts FUSE. No umount invocation should be needed.
+        new_base.mkdir();new_mount.mkdir()
+        new_unit.write_text('ExecStart='+str(new_base/'dingofs-mount.sh')+'\n')
+        (new_base/'dingofs-mount.sh').write_text('g_mnt="'+str(new_mount)+'"\ng_fsname="same-name"\ng_log="'+str(new_log)+'"\ng_mdsaddr="127.0.0.1:7000"\n')
+        before_unmount=unmount_events.read_text()
+        run([])
+        self.assertEqual(unmount_events.read_text(),before_unmount)
         self.assertFalse(new_unit.exists());self.assertFalse(new_base.exists());self.assertFalse(new_mount.exists())
         self.assertTrue(new_log.exists());self.assertTrue(self.old.exists())
 

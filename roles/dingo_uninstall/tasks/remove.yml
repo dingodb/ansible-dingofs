@@ -19,11 +19,9 @@
   when: _uninstall_plan.unit_exists
 
 - name: Check whether the selected client mount remains attached
-  command:
-    argv: [mountpoint, -q, "{{ _u_mount }}"]
+  dingofs_mount_state:
+    path: "{{ _u_mount }}"
   register: _u_mounted_after_stop
-  changed_when: false
-  failed_when: _u_mounted_after_stop.rc not in [0, 1]
   when: dingo_uninstall_kind == 'client'
 
 - name: Normally unmount only the selected client path
@@ -31,14 +29,13 @@
     argv: [umount, '--', "{{ _u_mount }}"]
   when:
     - dingo_uninstall_kind == 'client'
-    - _u_mounted_after_stop.rc == 0
+    - _u_mounted_after_stop.mounted
 
 - name: Verify the client mount is detached before any removal
-  command:
-    argv: [mountpoint, -q, "{{ _u_mount }}"]
+  dingofs_mount_state:
+    path: "{{ _u_mount }}"
   register: _u_detached
-  changed_when: false
-  failed_when: _u_detached.rc != 1
+  failed_when: (_u_detached.failed | default(false)) or (_u_detached.mounted | default(true))
   when: dingo_uninstall_kind == 'client'
 
 - name: Verify no executable or startup script from this installation remains running
