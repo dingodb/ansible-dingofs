@@ -249,15 +249,18 @@ ansible-playbook -i "$INV" playbooks/04b_update_dingo_cli.yml
 ```
 
 Cache/client workers use the universal **latest client** CLI, independently of
-the `dingo-client` and `dingo-cache` release packages. Worker deployment downloads
-`dingo_cli_download_url` on the controller once per play to
-`dingo_cli_latest_pkg_path` (default `/root/dingofs/pkg/dingo-latest`), then copies
-it by content checksum. `dingo_client_dingo_bin_local_src` points to this latest
+the `dingo-client` and `dingo-cache` release packages. Worker deployment uses
+the existing controller file at `dingo_cli_latest_pkg_path` (default
+`/root/dingofs/pkg/dingo-latest`) and copies it by content checksum.
+`dingo_client_dingo_bin_local_src` points to this worker CLI
 path. The downloader refuses to overwrite the manual server CLI, including via
 a symlink. Cache deployment configures the command and PATH without rewriting
 an existing `dingo.yaml`; `client_06_dingocli.yml` also configures `dingo.yaml`.
 Updating only the CLI does not restart a running FUSE client.
-For an explicitly pre-staged offline binary, set `dingo_cli_download_enabled: false`.
+`dingo_cli_download_enabled` defaults to **false**: no URL is contacted, and a
+missing/empty controller source fails early with its path. To refresh the file
+from `dingo_cli_download_url` once per play, explicitly pass
+`-e dingo_cli_download_enabled=true`.
 Check mode uses the cached controller binary and does not fetch the latest URL.
 
 This is an Ansible-managed executable update; keep `dingo_cli_auto_upgrade: false`
@@ -698,7 +701,7 @@ Not referenced by any `*_site.yml`; they only run when invoked explicitly.
 | `cache_02b_remap.yml` | `cache_servers` | Renumbers cache mounts by disk size (smallest -> `/mnt/disk1`). Check-only unless `-e remap_apply=true`. |
 | `cache_06_upgrade.yml` | `cache_servers` | Replaces cache binaries and restarts the service. |
 | `client_05_label.yml` | `client_servers` | Applies node labels. |
-| `client_06_dingocli.yml` | `client_servers:cache_servers:!meta_servers:!admin` | Downloads latest for workers, updates `~/.dingo/bin/dingo` by SHA1 comparison, and writes `~/.dingo/dingo.yaml`. Explicit admin targets use the manual server CLI in a cluster-specific binary directory. |
+| `client_06_dingocli.yml` | `client_servers:cache_servers:!meta_servers:!admin` | Distributes the staged worker CLI, updates `~/.dingo/bin/dingo` by SHA1 comparison, and writes `~/.dingo/dingo.yaml`. Download is opt-in. Explicit admin targets use the manual server CLI in a cluster-specific binary directory. |
 | `client_07_upgrade.yml` | `client_servers` | Replaces client binaries and restarts mounts. Does not create missing mounts -- that is `client_04_deploy.yml`. |
 
 Override the target with `-e target_hosts=<group>`.
@@ -760,6 +763,13 @@ and migration of the actual database directory before redeployment. Configure an
 absolute `rqlite_node_dir` and retain the database state during that migration.
 
 Mount safety checks inspect Kubernetes namespaces beginning with `cci` by default.
+The checker uses CRI when available and also inspects containerd via `ctr`.
+If CRI is unavailable, `ctr` alone can provide OCI mount metadata and running
+task PIDs. Kubernetes namespace filtering is preserved; standalone containerd
+namespaces are checked without the Kubernetes filter. Hosts with no detected
+runtime are checked through process mount namespaces. An active runtime with
+no usable inspection interface, invalid metadata or unreadable namespaces stays
+UNKNOWN and blocks reconfiguration.
 Set `dingo_client_mount_check_strict: true` (or pass `--strict` to the checker) to
 include all containers and other process mount namespaces. Deployment, upgrade,
 manual restart helpers and automatic remount scripts honor the same setting.

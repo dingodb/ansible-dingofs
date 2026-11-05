@@ -69,6 +69,7 @@ class DingoEnvTests(unittest.TestCase):
                     "dingo_cli_latest_pkg_path": str(source),
                     "dingo_cli_pkg_path": str(server_source),
                     "dingo_cli_download_url": "http://127.0.0.1:%s/dingo" % server.server_port,
+                    "dingo_cli_download_enabled": True,
                     "dingo_env_mdsaddr": "127.0.0.1:7400",
                 },
                 "roles": ["dingo_env"],
@@ -137,7 +138,7 @@ class DingoEnvTests(unittest.TestCase):
             inventory.write_text(json.dumps({"all": {"children": {
                 "cache_servers": {"hosts": {"cache": {"dingo_cli_download_enabled": False}}},
                 "meta_servers": {"hosts": {"admin": {}}},
-                "admin": {"hosts": {"admin": {}}},
+                "admin": {"hosts": {"admin": {"dingo_cli_download_enabled": True}}},
             }}}))
             play = [{
                 "hosts": "all", "gather_facts": False, "become": False,
@@ -192,7 +193,6 @@ class DingoEnvTests(unittest.TestCase):
                     "ansible_python_interpreter": sys.executable,
                     "dingo_env_home": str(home),
                     "dingo_env_bin_src": str(source),
-                    "dingo_cli_download_enabled": False,
                     "dingo_env_mdsaddr": "127.0.0.1:7400",
                 },
                 "roles": ["dingo_env"],

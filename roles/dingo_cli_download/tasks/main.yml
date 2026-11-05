@@ -1,4 +1,27 @@
 ---
+- name: Validate the existing controller CLI when downloads are disabled
+  delegate_to: localhost
+  become: false
+  run_once: true
+  when: not (dingo_cli_download_enabled | bool)
+  block:
+    - name: Inspect the staged worker CLI on the controller
+      stat:
+        path: "{{ dingo_cli_download_dest }}"
+        get_checksum: false
+        get_mime: false
+      register: _dingo_cli_staged_source
+
+    - name: Require the worker CLI to be staged before offline distribution
+      assert:
+        that:
+          - _dingo_cli_staged_source.stat.isreg | default(false)
+          - _dingo_cli_staged_source.stat.size | default(0) | int > 0
+        fail_msg: >-
+          CLI downloads are disabled. Prepare the worker CLI at
+          {{ dingo_cli_download_dest }} on the Ansible controller, or explicitly
+          set dingo_cli_download_enabled=true for a download run.
+
 # Fetch latest on the controller once per play, then let copy compare each
 # target's content. Check mode uses the cached source without fetching a URL.
 - name: Refresh the independent CLI binary on the control node

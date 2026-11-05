@@ -9,6 +9,7 @@
 #   1. host processes with files open on the mountpoint (fuser -m);
 #   2. running containers in Kubernetes namespaces beginning with 'cci',
 #      including their actual mount namespace and retained bind mounts;
+#      standalone containerd namespaces are inspected without a cci filter;
 #   3. with --strict, ALL containers and other process mount namespaces.
 #
 # Usage:
@@ -189,19 +190,12 @@ namespace_users_busy() {
 }
 
 # --- Check 3: containers with a hostPath at/under the mountpoint ------------
-# crictl inspection is done in python3: it is far less error-prone than
+# Runtime inspection is done in python3: it is far less error-prone than
 # shelling out once per field, and python3 is already required by Ansible.
 container_users_busy() {
     local mp=$1 strict=0
     $STRICT && strict=1
 
-    if ! command -v crictl >/dev/null 2>&1; then
-        if [ -d /var/lib/kubelet ]; then
-            log "ERROR: Kubernetes host requires crictl for mount checks."
-            return 2
-        fi
-        return 1
-    fi
     if ! command -v python3 >/dev/null 2>&1; then
         log "ERROR: python3 is required for container checks."
         return 2
@@ -212,6 +206,7 @@ import json
 import os
 import posixpath
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -240,7 +235,7 @@ def mountinfo(path):
             raise ValueError("invalid mountinfo at " + str(path))
         unescape = lambda value: re.sub(r"\\([0-7]{3})", lambda m: chr(int(m[1], 8)), value)
         rows.append({"device": fields[2], "path": unescape(fields[4]),
-                     "fstype": fields[separator + 1]})
+                     "fstype": fields[separator + 1], "source": unescape(fields[separator + 2])})
     return rows
 
 
@@ -305,7 +300,7 @@ def container_references(detail, target, target_device):
     return hits
 
 
-def check(target, strict=False):
+def check_cri(target, strict=False):
     target = os.path.realpath(target)
     target_device = mounted_device(target)
     pod_response = cri("pods", "-o", "json")
@@ -346,6 +341,130 @@ def check(target, strict=False):
     return 0
 
 
+def ctr(*args):
+    return subprocess.check_output(['ctr'] + list(args), stderr=subprocess.DEVNULL,
+                                   timeout=60, text=True)
+
+
+def check_ctr(target, strict=False):
+    target = os.path.realpath(target)
+    target_device = mounted_device(target)
+    hits = []
+    for runtime_namespace in ctr('namespaces', 'list', '-q').split():
+        lines = [line.split() for line in ctr('-n', runtime_namespace, 'tasks', 'list').splitlines() if line.strip()]
+        if not lines or lines[0][:3] != ['TASK', 'PID', 'STATUS']:
+            raise ValueError('unrecognized ctr task list for ' + runtime_namespace)
+        for row in lines[1:]:
+            if len(row) != 3:
+                raise ValueError('invalid ctr task row')
+            container_id, pid, state = row
+            if state in ('STOPPED', 'EXITED'):
+                continue
+            if state not in ('RUNNING', 'PAUSED', 'PAUSING', 'CREATED'):
+                raise ValueError('unrecognized ctr task state: ' + state)
+            if not re.fullmatch(r'[1-9][0-9]*', pid):
+                raise ValueError('active ctr task has no valid PID')
+            detail = json.loads(ctr('-n', runtime_namespace, 'containers', 'info', container_id))
+            labels = detail.get('Labels', detail.get('labels', {})) or {}
+            spec = detail.get('Spec', detail.get('spec'))
+            if not isinstance(spec, dict):
+                raise ValueError('ctr container OCI spec is unavailable')
+            annotations = spec.get('annotations') or {}
+            namespace = labels.get('io.kubernetes.pod.namespace') or annotations.get('io.kubernetes.cri.sandbox-namespace') or ''
+            pod = labels.get('io.kubernetes.pod.name') or annotations.get('io.kubernetes.cri.sandbox-name') or container_id
+            kubernetes = runtime_namespace == 'k8s.io' or bool(namespace) or labels.get('io.cri-containerd.kind') in ('sandbox', 'container')
+            if kubernetes and not strict:
+                if not namespace:
+                    raise ValueError('cannot determine Kubernetes namespace for ctr task ' + container_id)
+                if not namespace.startswith('cci'):
+                    continue
+            mounts = spec.get('mounts', [])
+            if not isinstance(mounts, list):
+                raise ValueError('invalid ctr OCI mounts')
+            adapted = {'info': {'pid': int(pid), 'runtimeSpec': {'mounts': mounts}}}
+            for reference in container_references(adapted, target, target_device):
+                hits.append('    runtime_ns=%s pod=%s/%s container=%s %s' %
+                            (runtime_namespace, namespace or 'non-kubernetes', pod, container_id[:13], reference))
+    if hits:
+        log('IN USE (containers referencing %s, via ctr):' % target)
+        for hit in hits:
+            log(hit)
+        return 1
+    log('OK: ctr found no selected running container referencing ' + target)
+    return 0
+
+
+def runtime_present():
+    sockets = ['/run/containerd/containerd.sock', '/run/k3s/containerd/containerd.sock',
+               '/var/run/crio/crio.sock', '/run/crio/crio.sock',
+               '/var/run/cri-dockerd.sock', '/var/run/docker.sock', '/run/podman/podman.sock']
+    if any(Path(path).exists() for path in sockets):
+        return True
+    for comm in Path('/proc').glob('[0-9]*/comm'):
+        try:
+            if comm.read_text().strip() in ('kubelet', 'containerd', 'dockerd', 'crio', 'cri-dockerd', 'conmon'):
+                return True
+        except FileNotFoundError:
+            continue
+    # A stale /var/lib/kubelet directory alone is not a running runtime.
+    return False
+
+
+def check_plain_namespaces(target):
+    target = os.path.realpath(target)
+    target_device = mounted_device(target)
+    host_namespace = os.readlink('/proc/1/ns/mnt')
+    seen = {host_namespace, os.readlink('/proc/self/ns/mnt')}
+    ambiguous = False
+    for process in Path('/proc').iterdir():
+        if not process.name.isdigit():
+            continue
+        try:
+            namespace = os.readlink(process / 'ns/mnt')
+            if namespace in seen:
+                continue
+            rows = mountinfo(process / 'mountinfo')
+        except FileNotFoundError:
+            if process.exists():
+                raise ValueError('live process mount namespace is unreadable')
+            continue
+        seen.add(namespace)
+        for row in rows:
+            if ((target_device is not None and row['device'] == target_device)
+                    or at_or_below(row['path'], target)):
+                log('IN USE (process namespace): pid=%s path=%s' % (process.name, row['path']))
+                return 1
+            if target_device is None and row['fstype'].startswith('fuse') and row.get('source', '').startswith('DingoFS:'):
+                ambiguous = True
+    if ambiguous:
+        raise ValueError('foreign namespace retains a DingoFS mount; cannot correlate an unmounted host path')
+    log('OK: no container runtime detected; process mount namespaces checked.')
+    return 0
+
+
+def check(target, strict=False):
+    errors = []
+    cri_ok = False
+    if shutil.which('crictl'):
+        try:
+            if check_cri(target, strict) == 1:
+                return 1
+            cri_ok = True
+        except Exception as error:
+            errors.append('crictl: ' + str(error))
+            log('CRI query unavailable; trying containerd/ctr if present.')
+    if shutil.which('ctr'):
+        try:
+            return check_ctr(target, strict)
+        except Exception as error:
+            errors.append('ctr: ' + str(error))
+    if cri_ok and not errors:
+        return 0
+    if errors or runtime_present():
+        raise ValueError('; '.join(errors) or 'a container runtime/kubelet is active but neither crictl nor ctr can inspect it')
+    return check_plain_namespaces(target)
+
+
 def main():
     try:
         return check(sys.argv[1], sys.argv[2] == "1")
@@ -375,9 +494,9 @@ fi
 
 log "Checking $MOUNTPOINT"
 if $STRICT; then
-    log "Container scope: all Kubernetes namespaces (--strict)."
+    log "Container scope: all containers and process mount namespaces (--strict)."
 else
-    log "Container scope: Kubernetes namespaces beginning with cci."
+    log "Container scope: Kubernetes cci* namespaces and standalone containerd tasks."
 fi
 
 if [ ! -e "$MOUNTPOINT" ] || ! mountpoint -q "$MOUNTPOINT" 2>/dev/null; then
