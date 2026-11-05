@@ -56,6 +56,127 @@ def sample():
     return result
 
 
+def process_state(process):
+    """A zombie leader may still have workers after pthread_exit()."""
+    try:
+        status = (process / 'status').read_text()
+    except FileNotFoundError:
+        if process.exists():
+            raise ValueError('process status unavailable for pid=' + process.name)
+        return None, 0
+    state = re.search(r'^State:\s*(\S)', status, re.M)
+    threads = re.search(r'^Threads:\s*(\d+)', status, re.M)
+    return state.group(1) if state else '?', int(threads.group(1)) if threads else 1
+
+
+def process_alive(process):
+    """Distinguish normal exit races from incomplete data for a live process."""
+    state, threads = process_state(process)
+    return state is not None and (state not in ('Z', 'X', 'x') or threads > 1)
+
+
+def declared_cpus(argv):
+    """Keep explicit argv reservations without matching text inside arguments.
+
+    Flagfiles are deliberately not reread as runtime truth: their current
+    contents can differ from the running process. Thread affinity below also
+    covers processes that obtained their CPU settings from a flagfile.
+    """
+    cpus = set()
+    index = 1
+    while index < len(argv):
+        arg = argv[index]
+        if arg == '--':
+            break
+        if arg in ('--cpuset', '-cpuset'):
+            index += 1
+            if index == len(argv):
+                raise ValueError('cpuset argument has no value')
+            cpus.update(expand(argv[index]))
+        elif arg.startswith(('--cpuset=', '-cpuset=')):
+            cpus.update(expand(arg.split('=', 1)[1]))
+        index += 1
+    return cpus
+
+
+def thread_claims(process, online, minimum):
+    """Collect narrow affinities of every live thread, including the leader.
+
+    Whole-NUMA allowed masks retain the existing non-exclusive interpretation.
+    Only diagnostic samples of TIDs are kept, so a large thread pool does not
+    produce unbounded CONFLICT messages.
+    """
+    owners = {}
+    observed = 0
+    task = process / 'task'
+    for thread in task.iterdir():
+        if not thread.name.isdigit():
+            continue
+        try:
+            status = (thread / 'status').read_text()
+        except FileNotFoundError:
+            if not thread.exists():
+                continue  # this thread exited; keep other threads' claims
+            raise
+        match = re.search(r'^Cpus_allowed_list:\s*([^\n]*)$', status, re.M)
+        if match is None:
+            raise ValueError('missing CPU affinity for pid=%s tid=%s' % (process.name, thread.name))
+        affinity = expand(match.group(1)) & online
+        if not affinity:
+            raise ValueError('empty online affinity for pid=%s tid=%s' % (process.name, thread.name))
+        observed += 1
+        if len(affinity) >= minimum:
+            continue
+        for cpu in affinity:
+            count, tids = owners.setdefault(cpu, [0, []])
+            owners[cpu][0] = count + 1
+            if len(tids) < 4:
+                tids.append(thread.name)
+    if not observed and process_alive(process):
+        raise ValueError('no readable threads for live pid=' + process.name)
+    return owners
+
+
+def process_claims(args, online, minimum):
+    claims = {}
+    self_matches = 0
+    self_exe = os.path.realpath(args.self_exe) if args.self_exe else ''
+    for process in Path('/proc').iterdir():
+        if not process.name.isdigit() or int(process.name) == os.getpid():
+            continue
+        try:
+            raw = (process / 'cmdline').read_bytes()
+            if not raw:
+                if process_state(process)[1] > 1:
+                    raise ValueError('cannot identify live worker threads for pid=' + process.name)
+                continue  # kernel threads and exited user processes
+            argv = [os.fsdecode(value) for value in raw.rstrip(b'\0').split(b'\0')]
+            if self_exe:
+                executable = re.sub(r' \(deleted\)$', '', os.readlink(process / 'exe'))
+                if os.path.realpath(executable) == self_exe:
+                    self_matches += 1
+                    continue
+            try:
+                explicit = declared_cpus(argv)
+            except ValueError as error:
+                raise ValueError('invalid cpuset reservation for pid=' + process.name) from error
+            affinities = thread_claims(process, online, minimum)
+        except FileNotFoundError as error:
+            if not process_alive(process):
+                continue
+            raise ValueError('CPU ownership incomplete for live pid=' + process.name) from error
+        for cpu in explicit:
+            claims.setdefault(cpu, set()).add('process ' + process.name + ' --cpuset')
+        for cpu, (count, tids) in affinities.items():
+            reason = 'thread-affinity pid=%s tids=%s' % (process.name, ','.join(sorted(tids, key=int)))
+            if count > len(tids):
+                reason += ' (+%s more)' % (count - len(tids))
+            claims.setdefault(cpu, set()).add(reason)
+    if self_matches > 1:
+        raise ValueError('multiple instances share the self executable; use distinct instance binaries')
+    return claims
+
+
 def collect(args):
     online = expand(read('/sys/devices/system/cpu/online'))
     nodes = {}
@@ -90,33 +211,8 @@ def collect(args):
         match = re.search(r'^\s*reservedSystemCPUs:\s*[\'"]?([0-9,-]+)', read(path, ''), re.M)
         if match:
             claim(expand(match.group(1)), 'kubelet-reserved')
-    self_matches = 0
-    for process in Path('/proc').iterdir():
-        if not process.name.isdigit() or int(process.name) == os.getpid():
-            continue
-        try:
-            command = (process / 'cmdline').read_bytes().replace(b'\0', b' ').decode(errors='replace')
-            if not command:
-                continue
-            if args.self_exe:
-                executable = re.sub(r' \(deleted\)$', '', os.readlink(process / 'exe'))
-                if os.path.realpath(executable) == os.path.realpath(args.self_exe):
-                    self_matches += 1
-                    continue
-            match = re.search(r'--cpuset[= ]([^ ]+)', command)
-            if match:
-                claim(expand(match.group(1)), 'process ' + process.name)
-            else:
-                status = (process / 'status').read_text()
-                match = re.search(r'^Cpus_allowed_list:\s*(\S+)', status, re.M)
-                if match:
-                    affinity = expand(match.group(1))
-                    if len(affinity) < minimum:
-                        claim(affinity, 'affinity ' + process.name)
-        except FileNotFoundError:
-            continue  # process exited during collection
-    if self_matches > 1:
-        raise ValueError("multiple instances share the self executable; use distinct instance binaries")
+    for cpu, reasons in process_claims(args, online, minimum).items():
+        claims.setdefault(cpu, set()).update(reasons)
     usage = {}
     if not args.no_busy:
         before = sample()
@@ -164,13 +260,18 @@ def main():
         cpus = expand(args.check)
         if not cpus:
             raise ValueError('empty cpuset')
+        bad = False
         for cpu in sorted(cpus):
             if cpu not in online:
                 print('CONFLICT %s NOT-ONLINE' % cpu)
-            elif cpu in claims:
-                print('CONFLICT %s %s' % (cpu, '; '.join(sorted(claims[cpu]))))
+                bad = True
+                continue
+            occupied = siblings[cpu] & claims.keys()
+            if occupied:
+                bad = True
+                reasons = set().union(*(claims[sibling] for sibling in occupied))
+                print('CONFLICT %s SMT_CPUS=%s %s' % (cpu, compact(occupied), '; '.join(sorted(reasons))))
         print('NODES=' + ' '.join(str(n) for n, members in sorted(nodes.items()) if members & cpus))
-        bad = not cpus <= online or bool(cpus & claims.keys())
         if not bad:
             print('OK ' + args.check)
         return int(bad)
