@@ -1,0 +1,33 @@
+---
+# Fetch latest on the controller once per play, then let copy compare each
+# target's content. Check mode uses the cached source without fetching a URL.
+- name: Refresh the independent CLI binary on the control node
+  delegate_to: localhost
+  become: false
+  run_once: true
+  when:
+    - dingo_cli_download_enabled | bool
+    - not ansible_check_mode
+  block:
+    - name: Keep the latest client CLI separate from the manually staged server CLI
+      assert:
+        that:
+          - (dingo_cli_download_dest | realpath) != (dingo_cli_pkg_path | default('/root/dingofs/pkg/dingo') | realpath)
+        fail_msg: >-
+          Client latest download destination {{ dingo_cli_download_dest }} must
+          differ from the manually staged server CLI path
+          {{ dingo_cli_pkg_path | default('/root/dingofs/pkg/dingo') }}.
+
+    - name: Ensure the controller CLI download directory exists
+      file:
+        path: "{{ dingo_cli_download_dest | dirname }}"
+        state: directory
+        mode: "0755"
+
+    - name: Download the latest CLI to the control node
+      get_url:
+        url: "{{ dingo_cli_download_url }}"
+        dest: "{{ dingo_cli_download_dest }}"
+        force: true
+        checksum: "{{ dingo_cli_download_checksum if dingo_cli_download_checksum | length > 0 else omit }}"
+        mode: "0755"

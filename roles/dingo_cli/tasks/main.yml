@@ -1,4 +1,7 @@
 ---
+- name: Validate the manually prepared server CLI
+  import_tasks: validate_source.yml
+
 - name: Update an existing shared CLI without rewriting its configuration
   include_tasks: update.yml
   when: dingo_cli_update_existing | bool

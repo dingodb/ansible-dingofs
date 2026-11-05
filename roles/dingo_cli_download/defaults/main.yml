@@ -1,0 +1,9 @@
+---
+# Latest CLI is only for cache/client nodes. The server CLI is staged manually
+# at dingo_cli_pkg_path and must never be overwritten by this downloader.
+dingo_cli_download_url: "https://www.dingodb.com/dingocli/branches/main/latest/dingo"
+dingo_cli_download_checksum: ""
+dingo_cli_latest_pkg_path: /root/dingofs/pkg/dingo-latest
+dingo_cli_download_dest: "{{ dingo_cli_latest_pkg_path }}"
+# Disable only for an explicitly pre-staged/offline CLI binary.
+dingo_cli_download_enabled: true

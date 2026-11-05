@@ -254,6 +254,16 @@ sys.exit(code)
         self.assertEqual(report["errors"], [])
         self.assertEqual(self.service_restarts(), [])
 
+    def test_independent_cli_update_does_not_restart_the_fuse_client(self):
+        client = self.client("node-a", "alpha")
+        variables = self.deployment_tail_variables(client)
+        variables.update(_client_bin={"changed": False}, _dingo_bin={"changed": True})
+        result, report = self.run_play(self.configure_tail(), extra=variables)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.service_restarts(), [])
+        self.assertEqual(report["records"][0]["status"], "completed")
+        self.assertIs(report["records"][0]["pending_restart"], False)
+
     def test_deployment_missing_fuser_is_distinct_from_busy(self):
         client = self.client("node-a", "alpha")
         (self.fakebin / "fuser").unlink()

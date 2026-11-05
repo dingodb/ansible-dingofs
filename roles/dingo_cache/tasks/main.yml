@@ -11,6 +11,12 @@
 # Validate before probing the host or changing any files/services.
 - import_tasks: validate_rdma.yml
 
+- name: Configure the latest dingo command on cache workers without rewriting dingo.yaml
+  include_role:
+    name: dingo_env
+    tasks_from: binary
+  when: inventory_hostname not in (groups.get('meta_servers', []) + groups.get('admin', []))
+
 # --- Determine listen IP ---
 - name: Detect listen IP from network interface
   shell: ip route | awk '/{{ dingo_cache_ip_pattern }}/ && /src/ { for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}'

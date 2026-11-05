@@ -18,16 +18,15 @@
       debug:
         msg: "RQLite leader: {{ (rqlite_status.content | from_json).store.raft.state }}"
 
-    # Use the absolute path rather than relying on PATH. The dingo binary lives
-    # in ~/.dingo/bin, which is only added to login-shell profiles
-    # (.bash_profile/.bashrc); Ansible's become runs a non-login shell, and some
-    # .bashrc files bail out early for non-interactive shells, so `source` is not
-    # a reliable way to pick it up either. Referencing dingo_cli_bin_dir from the
-    # role defaults is not an option here -- this playbook uses no role.
+    - name: Resolve the compatible server CLI for this cluster
+      set_fact:
+        _status_cli: "{{ dingo_cli_bin_dir | default(dingofs_home ~ '/.dingo/bin/server-' ~ dingofs_cluster_name) }}/dingo"
+
+    # Use the selected server CLI, never PATH or a different cluster's binary.
     - name: Check DingoFS cluster status
       shell: |
         set -o pipefail
-        {{ dingofs_home }}/.dingo/bin/dingo cluster status -sv \
+        {{ _status_cli | quote }} cluster status -sv \
           | sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' -e '/^[^ -~]*$/d'
       args:
         executable: /bin/bash
@@ -39,7 +38,7 @@
         that: "cluster_status.stdout is search('cluster name\\s*:\\s*' ~ (dingofs_cluster_name | regex_escape) ~ '(?:\\s|$)')"
 
     - name: Read the intended cluster topology
-      command: "{{ dingofs_home }}/.dingo/bin/dingo config show"
+      command: "{{ _status_cli }} config show"
       register: _status_topology
       changed_when: false
 

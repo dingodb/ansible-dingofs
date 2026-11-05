@@ -6,5 +6,5 @@ dingo_uninstall_remove_logs: false
 dingo_uninstall_unregister_cache: true
 dingo_uninstall_remove_mountpoint: true
 dingo_uninstall_state_dir: /var/lib/dingofs-uninstall
-dingo_uninstall_cli: "{{ dingo_client_dingo_bin_local_src | default('/root/dingofs/pkg/dingo') }}"
+dingo_uninstall_cli: "{{ dingo_client_dingo_bin_local_src | default(dingo_cli_latest_pkg_path | default('/root/dingofs/pkg/dingo-latest')) }}"
 dingo_client_mount_check_strict: false

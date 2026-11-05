@@ -1,0 +1,18 @@
+---
+- name: Inspect the manually prepared server CLI on the control node
+  delegate_to: localhost
+  become: false
+  run_once: true
+  stat:
+    path: "{{ dingo_cli_pkg_path }}"
+    get_checksum: false
+  register: _dingo_cli_manual_source
+
+- name: Require the version-compatible server CLI to be prepared manually
+  run_once: true
+  assert:
+    that:
+      - _dingo_cli_manual_source.stat.isreg | default(false)
+    fail_msg: >-
+      Prepare the compatible server dingo binary at {{ dingo_cli_pkg_path }} on
+      the Ansible control node. Server workflows never download main/latest.

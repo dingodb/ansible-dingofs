@@ -96,9 +96,9 @@ explicitly. The ones that matter for a working meta deployment:
 `01b_lvm_data.yml` and `client_06_dingocli.yml` -- see the Meta Deployment
 section below.
 
-`client_06_dingocli.yml` defaults to `target_hosts: client_servers`, so against
-a meta-only inventory it matches **zero hosts and silently does nothing**. Pass
-`-e target_hosts=admin` when running it for a meta deployment. (The same trap
+`client_06_dingocli.yml` defaults to cache/client workers, excluding meta/admin
+nodes. Pass `-e target_hosts=admin` for a meta command environment; it uses the
+manually prepared server CLI and never downloads latest. (The same trap
 applied to `config_podman_rootless.yml`; it no longer matters for meta, because
 `04_dingo_cli.yml` now runs the role directly.)
 
@@ -234,18 +234,35 @@ after the operation. A healthy, matching existing target is verified without
 reinitialization; configuration drift, partial deployment and query failures stop
 the run for inspection rather than triggering another initial deploy.
 
-The CLI update downloads the latest executable from the configured main/latest
-URL, validates its version, backs up a changed executable under `.dingo/bin/backups/dingo-<sha256>`,
-and replaces it atomically. It preserves `dingocli.cfg` and restores the previous
-binary if a post-install validation fails. The update can also run separately:
+Prepare the compatible **server** CLI manually on the Ansible controller at
+`dingo_cli_pkg_path` (default `/root/dingofs/pkg/dingo`) before deploying servers.
+Server workflows never download a CLI URL and fail if this file is missing.
+They validate and stage this binary under `dingo_cli_bin_dir`, which defaults to
+`~/.dingo/bin/server-<cluster-name>`, so different clusters can use incompatible
+CLI versions. Existing `dingocli.cfg` and legacy executables remain in place.
+A changed executable is backed up under `<dingo_cli_bin_dir>/backups/dingo-<sha256>`
+and restored on failed validation; a failed first executable at a new path is
+removed. Staging can also run separately:
 
 ```bash
 ansible-playbook -i "$INV" playbooks/04b_update_dingo_cli.yml
 ```
 
+Cache/client workers use the universal **latest client** CLI, independently of
+the `dingo-client` and `dingo-cache` release packages. Worker deployment downloads
+`dingo_cli_download_url` on the controller once per play to
+`dingo_cli_latest_pkg_path` (default `/root/dingofs/pkg/dingo-latest`), then copies
+it by content checksum. `dingo_client_dingo_bin_local_src` points to this latest
+path. The downloader refuses to overwrite the manual server CLI, including via
+a symlink. Cache deployment configures the command and PATH without rewriting
+an existing `dingo.yaml`; `client_06_dingocli.yml` also configures `dingo.yaml`.
+Updating only the CLI does not restart a running FUSE client.
+For an explicitly pre-staged offline binary, set `dingo_cli_download_enabled: false`.
+Check mode uses the cached controller binary and does not fetch the latest URL.
+
 This is an Ansible-managed executable update; keep `dingo_cli_auto_upgrade: false`
-so CLI invocations do not independently upgrade a shared installation. An optional
-`dingo_cli_download_checksum` pins the candidate checksum. Check mode runs the
+so CLI invocations do not independently upgrade a server installation. An optional
+`dingo_cli_download_checksum` pins the worker download checksum. Check mode runs the
 read-only prerequisites and skips CLI/image downloads, registration and deployment;
 it does not prove the release image is available in the registry.
 
@@ -634,7 +651,7 @@ Not referenced by any `*_site.yml`; they only run when invoked explicitly.
 | `cache_02b_remap.yml` | `cache_servers` | Renumbers cache mounts by disk size (smallest -> `/mnt/disk1`). Check-only unless `-e remap_apply=true`. |
 | `cache_06_upgrade.yml` | `cache_servers` | Replaces cache binaries and restarts the service. |
 | `client_05_label.yml` | `client_servers` | Applies node labels. |
-| `client_06_dingocli.yml` | `client_servers` | Installs the dingo binary into `~/.dingo/bin` and writes `~/.dingo/dingo.yaml`. Also needed on the meta admin node. |
+| `client_06_dingocli.yml` | `client_servers:cache_servers:!meta_servers:!admin` | Downloads latest for workers, updates `~/.dingo/bin/dingo` by SHA1 comparison, and writes `~/.dingo/dingo.yaml`. Explicit admin targets use the manual server CLI in a cluster-specific binary directory. |
 | `client_07_upgrade.yml` | `client_servers` | Replaces client binaries and restarts mounts. Does not create missing mounts -- that is `client_04_deploy.yml`. |
 
 Override the target with `-e target_hosts=<group>`.

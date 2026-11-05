@@ -3,13 +3,20 @@
 # Role: dingo_env - Configure the `dingo` command environment
 # ============================================================
 
-# Source dingo binary already present on the remote node (from pkg dir)
-dingo_env_bin_src: "{{ dingo_client_dingo_bin_local_src | default('/root/dingofs/pkg/dingo') }}"
+# Explicit admin/meta invocations use the manually staged server CLI; worker
+# nodes use latest. These paths belong to the Ansible controller.
+dingo_env_use_latest: "{{ inventory_hostname not in (groups.get('meta_servers', []) + groups.get('admin', [])) }}"
+dingo_env_bin_src: >-
+  {{ (dingo_client_dingo_bin_local_src | default(dingo_cli_latest_pkg_path | default('/root/dingofs/pkg/dingo-latest')))
+     if dingo_env_use_latest | bool
+     else (dingo_cli_pkg_path | default('/root/dingofs/pkg/dingo')) }}
 
 # Target home / dingo env layout (client nodes run as root)
 dingo_env_home: /root
 dingo_env_dir: "{{ dingo_env_home }}/.dingo"
-dingo_env_bin_dir: "{{ dingo_env_dir }}/bin"
+dingo_env_bin_dir: >-
+  {{ dingo_env_dir }}/bin{{ '' if dingo_env_use_latest | bool
+     else '/server-' ~ (dingofs_cluster_name | default(dingofs_version | default('default'))) }}
 dingo_env_config: "{{ dingo_env_dir }}/dingo.yaml"
 
 # --- global section ---

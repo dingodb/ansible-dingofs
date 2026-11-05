@@ -1,5 +1,4 @@
 """Regression coverage for shared CLI and additional-cluster deployment."""
-import functools
 import hashlib
 import http.server
 import importlib.util
@@ -255,6 +254,7 @@ class AdditionalClusterIntegrationTests(unittest.TestCase):
             "container_engine": "fake-container", "dingo_cli_engine": "fake-container",
             "dingo_cli_db_url": "rqlite://127.0.0.1:4001",
             "dingo_cli_bin_dir": str(self.bin),
+            "dingo_cli_pkg_path": str(self.root / "controller/dingo"),
         }
         self.env = os.environ.copy()
         self.env["ANSIBLE_CONFIG"] = str(REPO / "ansible.cfg")
@@ -358,28 +358,22 @@ class AdditionalClusterIntegrationTests(unittest.TestCase):
         self.run_role("dingofs_cluster", {"dingofs_meta_existing_hosts": False}, succeeds=False)
         self.assertEqual(len(self.calls(["cluster", "deploy"])), 1)
 
-    def serve_candidate(self):
-        candidate = self.root / "candidate"
+    def prepare_server_cli(self):
+        candidate = Path(self.variables["dingo_cli_pkg_path"])
+        candidate.parent.mkdir(parents=True, exist_ok=True)
         candidate.write_text(self.mock_cli("candidate"))
-        server = http.server.ThreadingHTTPServer(
-            ("127.0.0.1", 0), functools.partial(QuietHandler, directory=str(self.root)))
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-        self.addCleanup(server.server_close)
-        self.addCleanup(server.shutdown)
-        return "http://127.0.0.1:" + str(server.server_port) + "/candidate"
+        # Server operations must succeed with no usable download URL.
+        self.variables["dingo_cli_download_url"] = "http://127.0.0.1:1/must-not-be-used"
 
     def test_cli_update_backs_up_binary_preserves_config_and_rolls_back_failed_probe(self):
-        url = self.serve_candidate()
+        self.prepare_server_cli()
         self.state["bad_candidate"] = True
         self.write_state()
-        self.run_role("dingo_cli", {"dingo_cli_update_existing": True,
-                                   "dingo_cli_download_url": url}, succeeds=False)
+        self.run_role("dingo_cli", {"dingo_cli_update_existing": True}, succeeds=False)
         self.assertEqual(self.cli.read_text(), self.old_binary)
         self.state.pop("bad_candidate")
         self.write_state()
-        self.run_role("dingo_cli", {"dingo_cli_update_existing": True,
-                                   "dingo_cli_download_url": url})
+        self.run_role("dingo_cli", {"dingo_cli_update_existing": True})
         self.assertEqual(self.cli.read_text(), self.mock_cli("candidate"))
         self.assertEqual(self.config.read_bytes(), self.initial_config)
         old_hash = hashlib.sha256(self.old_binary.encode()).hexdigest()
@@ -390,11 +384,35 @@ class AdditionalClusterIntegrationTests(unittest.TestCase):
         self.state = self.read_state()
         self.state["bad_installed_candidate"] = True
         self.write_state()
-        self.run_role("dingo_cli", {"dingo_cli_update_existing": True,
-                                   "dingo_cli_download_url": url}, succeeds=False)
+        self.run_role("dingo_cli", {"dingo_cli_update_existing": True}, succeeds=False)
         self.assertEqual(self.cli.read_text(), self.old_binary)
         self.assertEqual(self.config.read_bytes(), self.initial_config)
         self.assertFalse(list(self.bin.glob(".dingo-update-*")))
+
+    def test_missing_manual_server_cli_fails_without_downloading_or_changing_installation(self):
+        result = self.run_role("dingo_cli", {"dingo_cli_update_existing": True,
+                                              "dingo_cli_download_url": "http://127.0.0.1:1/unused"},
+                               succeeds=False)
+        self.assertIn("Prepare the compatible server dingo binary", result.stdout)
+        self.assertEqual(self.cli.read_text(), self.old_binary)
+        self.assertEqual(self.config.read_bytes(), self.initial_config)
+        self.assertFalse(Path(self.variables["dingo_cli_pkg_path"]).exists())
+
+    def test_isolated_server_cli_preserves_legacy_binary_and_cleans_up_failed_first_install(self):
+        self.prepare_server_cli()
+        isolated = self.home / ".dingo/bin/server-new"
+        variables = {"dingo_cli_update_existing": True, "dingo_cli_bin_dir": str(isolated)}
+        self.state["bad_installed_candidate"] = True
+        self.write_state()
+        self.run_role("dingo_cli", variables, succeeds=False)
+        self.assertFalse((isolated / "dingo").exists())
+        self.assertEqual(self.cli.read_text(), self.old_binary)
+        self.state.pop("bad_installed_candidate")
+        self.write_state()
+        self.run_role("dingo_cli", variables)
+        self.assertEqual((isolated / "dingo").read_text(), self.mock_cli("candidate"))
+        self.assertEqual(self.cli.read_text(), self.old_binary)
+        self.assertEqual(self.config.read_bytes(), self.initial_config)
 
     def test_check_mode_checks_tikv_without_mutations_and_honors_inventory_store_count(self):
         stores = [9]

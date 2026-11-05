@@ -2,7 +2,7 @@
 dingo_client_fsname: alayanew
 dingo_client_base_dir: "/root/dingofs/dingo-client/{{ dingo_client_fsname }}"
 dingo_client_bin_local_src: /root/dingofs/pkg/dingo-client
-dingo_client_dingo_bin_local_src: /root/dingofs/pkg/dingo
+dingo_client_dingo_bin_local_src: "{{ dingo_cli_latest_pkg_path | default('/root/dingofs/pkg/dingo-latest') }}"
 dingo_client_mount_point: /dingofs/data
 dingo_client_port: 12000
 

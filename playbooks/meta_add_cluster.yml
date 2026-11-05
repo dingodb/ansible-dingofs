@@ -52,10 +52,20 @@
       changed_when: false
       check_mode: false
 
+    - name: Inspect the requested cluster-specific server CLI
+      stat:
+        path: "{{ dingo_cli_bin_dir }}/dingo"
+      delegate_to: "{{ groups['admin'][0] }}"
+      register: _dingo_requested_cli
+      run_once: true
+
     - name: Read existing clusters without changing the default selection
       become_user: "{{ dingofs_user }}"
       command:
-        argv: ["{{ dingo_cli_bin_dir | default(dingofs_home ~ '/.dingo/bin') }}/dingo", cluster, list]
+        argv:
+          - "{{ (dingo_cli_bin_dir if _dingo_requested_cli.stat.isreg | default(false) else (dingofs_existing_cli_bin_dir | default(dingofs_home ~ '/.dingo/bin'))) }}/dingo"
+          - cluster
+          - list
       delegate_to: "{{ groups['admin'][0] }}"
       environment:
         DINGO_CLUSTER: ""
@@ -90,7 +100,7 @@
       debug:
         msg:
           - "Target: {{ dingofs_cluster_name }}; ports on this host: {{ _dingo_add_plan.ports.get(inventory_hostname, []) }}"
-          - "Check mode runs read-only prerequisites only; it does not download CLI/images or register/deploy services."
+          - "Check mode runs read-only prerequisites only; it does not stage the prepared server CLI, pull images or register/deploy services."
           - "Existing users, disks, RQLite, Podman settings, tuning, monitors and client mounts are not redeployed."
 
 - name: Verify the existing TiKV dependency
@@ -99,7 +109,7 @@
     tikv_verify_hosts: admin
   when: dingofs_mds_storage_engine | default('dingo-store') == 'tikv'
 
-- name: Update the existing shared CLI
+- name: Stage the manually prepared compatible server CLI
   import_playbook: 04b_update_dingo_cli.yml
 
 - name: Deploy only the additional DingoFS cluster

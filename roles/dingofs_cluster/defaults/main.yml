@@ -37,7 +37,7 @@ dingofs_cluster_id: 1
 dingofs_container_image: ""  # Required: select the matching versioned image
 dingofs_store_image: "harbor.zetyun.cn/dingodb/dingo-store:90b2885"
 dingofs_executor_image: "harbor.zetyun.cn/dingodb/dingo:develop-latest"
-dingo_cli_bin_dir: "{{ dingofs_home }}/.dingo/bin"
+dingo_cli_bin_dir: "{{ dingofs_home }}/.dingo/bin/server-{{ dingofs_cluster_name | default(dingofs_version | default('default')) }}"
 
 dingofs_data_dir: "/mnt/data/dingofs-dingo-main/data/${service_role}"
 dingofs_log_dir: "/mnt/data/dingofs-dingo-main/logs/${service_role}/${service_replica_sequence}"
