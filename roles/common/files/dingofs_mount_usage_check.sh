@@ -7,10 +7,9 @@
 # remounted. Three independent checks are performed:
 #
 #   1. host processes with files open on the mountpoint (fuser -m);
-#   2. processes in OTHER mount namespaces that mount the same filesystem
-#      (bind mounts / container hostPath map to the same st_dev);
-#   3. running containers whose hostPath is at or under the mountpoint
-#      (crictl, all namespaces).
+#   2. running containers in Kubernetes namespaces beginning with 'cci',
+#      including their actual mount namespace and retained bind mounts;
+#   3. with --strict, ALL containers and other process mount namespaces.
 #
 # Usage:
 #   dingofs_mount_usage_check.sh <mount_point> [--dry-run] [--strict]
@@ -28,7 +27,7 @@ set -u
 
 PROG=$(basename "$0")
 DRY_RUN=false
-STRICT=true
+STRICT=false
 MOUNTPOINT=""
 SERVICE_OVERRIDE=""
 
@@ -38,7 +37,8 @@ Usage: $PROG <mount_point> [--dry-run] [--strict] [--service NAME]
 
   <mount_point>   Absolute path of the DingoFS mount to inspect.
   --dry-run       Report the decision without changing anything (default behaviour).
-  --strict        Inspect containers in ALL namespaces (the default).
+  --strict        Inspect ALL containers and other process mount namespaces.
+                  Default: only Kubernetes namespaces beginning with 'cci'.
   --service NAME  Use NAME instead of auto-detecting the systemd unit.
 EOF
 }
@@ -209,107 +209,153 @@ container_users_busy() {
 
     python3 - "$mp" "$strict" <<'PY'
 import json
+import os
+import posixpath
+import re
 import subprocess
 import sys
-
-try:
-    mountpoint = sys.argv[1].rstrip("/") or "/"
-    strict = sys.argv[2] == "1"
+from pathlib import Path
 
 
-    def log(msg):
-        print("[%s] %s" % (__import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M:%S"), msg))
+def log(message):
+    from datetime import datetime
+    print("[%s] %s" % (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), message))
 
 
-    def cri(*args):
-        out = subprocess.check_output(
-            ["crictl"] + list(args), stderr=subprocess.DEVNULL, timeout=60
-        )
-        return json.loads(out)
+def cri(*args):
+    return json.loads(subprocess.check_output(
+        ["crictl"] + list(args), stderr=subprocess.DEVNULL, timeout=60))
 
 
-    def under(path, root):
-        import os
-        path, root = os.path.realpath(path), os.path.realpath(root)
-        if path == root or path.startswith(root.rstrip("/") + "/") or root.startswith(path.rstrip("/") + "/"):
-            return True
-        try:
-            return os.stat(path).st_dev == os.stat(root).st_dev
-        except FileNotFoundError:
-            return False
+def at_or_below(path, root):
+    return path == root or path.startswith(root.rstrip("/") + "/")
 
 
-    try:
-        pod_response = cri("pods", "-o", "json")
-        container_response = cri("ps", "-o", "json", "--state", "Running")
-        for response, key in [(pod_response, "items"), (container_response, "containers")]:
-            if not isinstance(response, dict) or (response and key not in response):
-                raise ValueError("unrecognized CRI response for " + key)
-        pods = pod_response.get("items", [])
-        containers = container_response.get("containers", [])
-        if not isinstance(pods, list) or not isinstance(containers, list):
-            raise ValueError("invalid CRI list response")
-    except Exception as exc:  # noqa: BLE001 - any crictl failure means "cannot check"
-        log("WARN: crictl is unusable (%s); skipping container hostPath check." % exc)
-        sys.exit(2)
+def mountinfo(path):
+    rows = []
+    for line in Path(path).read_text().splitlines():
+        fields = line.split()
+        separator = fields.index("-")
+        if separator < 6 or len(fields) < separator + 4:
+            raise ValueError("invalid mountinfo at " + str(path))
+        unescape = lambda value: re.sub(r"\\([0-7]{3})", lambda m: chr(int(m[1], 8)), value)
+        rows.append({"device": fields[2], "path": unescape(fields[4]),
+                     "fstype": fields[separator + 1]})
+    return rows
 
+
+def mounted_device(target):
+    # An unmounted directory shares the root filesystem with unrelated paths.
+    # Only use filesystem identity if this exact target is a real mountpoint.
+    if any(row["path"] == target for row in mountinfo("/proc/self/mountinfo")):
+        device = os.stat(target).st_dev
+        return "%s:%s" % (os.major(device), os.minor(device))
+    return None
+
+
+def container_references(detail, target, target_device):
+    info = detail.get("info") or {}
+    mounts = (detail.get("status") or {}).get("mounts") or []
+    if not mounts:
+        mounts = (info.get("runtimeSpec") or {}).get("mounts") or []
+    hits, ancestors = [], []
+    for mount in mounts:
+        source = mount.get("hostPath") or mount.get("source") or ""
+        destination = mount.get("containerPath") or mount.get("destination") or ""
+        # OCI pseudo-filesystem sources such as 'proc' are not host paths.
+        if not isinstance(source, str) or not os.path.isabs(source):
+            continue
+        source = os.path.realpath(source)
+        label = "hostPath=%s -> %s" % (source, destination)
+        if at_or_below(source, target):
+            # Keep detecting direct references after a host mount is detached.
+            hits.append(label + " (target path)")
+        elif at_or_below(target, source):
+            if not isinstance(destination, str) or not posixpath.isabs(destination):
+                raise ValueError("ancestor hostPath has no absolute container destination")
+            mapped = posixpath.normpath(posixpath.join(destination, os.path.relpath(target, source)))
+            ancestors.append((mapped, label))
+        elif target_device is not None:
+            try:
+                device = os.stat(source).st_dev
+            except FileNotFoundError:
+                continue
+            if "%s:%s" % (os.major(device), os.minor(device)) == target_device:
+                hits.append(label + " (same mounted filesystem)")
+    if hits:
+        return hits
+    if not ancestors and target_device is None:
+        return []
+    # A container binding '/' does not automatically hold every possible future
+    # child mount. Inspect its namespace for an actual mapped mount, including
+    # a retained FUSE mount that has already been detached on the host.
+    pid = str(info.get("pid", ""))
+    if not re.fullmatch(r"[1-9][0-9]*", pid):
+        raise ValueError("container PID is unavailable; cannot inspect mount namespace")
+    rows = mountinfo("/proc/%s/mountinfo" % pid)
+    for mapped, label in ancestors:
+        for row in rows:
+            if at_or_below(row["path"], mapped):
+                hits.append(label + " (mounted in container at %s)" % row["path"])
+    if target_device is not None and not hits:
+        # Covers bind aliases that no longer exist at their original host path.
+        for row in rows:
+            if row["device"] == target_device:
+                hits.append("mount_path_in_ns=%s (same mounted filesystem)" % row["path"])
+    return hits
+
+
+def check(target, strict=False):
+    target = os.path.realpath(target)
+    target_device = mounted_device(target)
+    pod_response = cri("pods", "-o", "json")
+    container_response = cri("ps", "-o", "json", "--state", "Running")
+    for response, key in [(pod_response, "items"), (container_response, "containers")]:
+        if not isinstance(response, dict) or (response and key not in response):
+            raise ValueError("unrecognized CRI response for " + key)
+    pods = pod_response.get("items", [])
+    containers = container_response.get("containers", [])
+    if not isinstance(pods, list) or not isinstance(containers, list):
+        raise ValueError("invalid CRI list response")
     pod_meta = {}
     for pod in pods:
         meta = pod.get("metadata") or {}
-        pod_meta[pod.get("id", "")] = (
-            meta.get("namespace", ""),
-            meta.get("name", ""),
-        )
-
-    qualified = []
+        pod_meta[pod.get("id", "")] = (meta.get("namespace", ""), meta.get("name", ""))
+    hits = []
     for container in containers:
-        pod_id = container.get("podSandboxId", "")
-        namespace, pod_name = pod_meta.get(pod_id, ("", ""))
-        if not strict and not namespace.startswith("cci-"):
-            continue
-        qualified.append((container.get("id", ""), namespace, pod_name))
+        namespace, pod_name = pod_meta.get(container.get("podSandboxId", ""), ("", ""))
+        if not strict:
+            if not namespace:
+                raise ValueError("cannot determine Kubernetes namespace for container " + container.get("id", ""))
+            if not namespace.startswith("cci"):
+                continue
+        container_id = container.get("id", "")
+        if not container_id:
+            raise ValueError("running container has no ID")
+        detail = cri("inspect", "-o", "json", container_id)
+        for reference in container_references(detail, target, target_device):
+            hits.append("    pod=%s/%s container=%s %s" %
+                        (namespace, pod_name, container_id[:13], reference))
+    if hits:
+        log("IN USE (containers referencing %s, via crictl):" % target)
+        for hit in hits:
+            log(hit)
+        return 1
+    scope = "all namespaces" if strict else "'cci*' namespaces"
+    log("OK: no container in %s references %s." % (scope, target))
+    return 0
 
-    if not qualified:
-        scope = "all namespaces" if strict else "'cci-*' namespaces"
-        log("OK: no container in %s holds %s." % (scope, mountpoint))
-    else:
-        hits = []
-        for container_id, namespace, pod_name in qualified:
-            try:
-                detail = cri("inspect", "-o", "json", container_id)
-            except Exception as exc:
-                log("ERROR: cannot inspect container %s: %s" % (container_id, exc))
-                sys.exit(2)
 
-            mounts = (detail.get("status") or {}).get("mounts") or []
-            if not mounts:
-                spec_mounts = ((detail.get("info") or {}).get("runtimeSpec") or {}).get("mounts") or []
-                mounts = [
-                    {"hostPath": m.get("source", ""), "containerPath": m.get("destination", "")}
-                    for m in spec_mounts
-                ]
+def main():
+    try:
+        return check(sys.argv[1], sys.argv[2] == "1")
+    except Exception as exc:
+        print("ERROR: cannot establish container mount usage: %s" % exc, file=sys.stderr)
+        return 2
 
-            for mount in mounts:
-                host_path = mount.get("hostPath") or mount.get("source") or ""
-                container_path = mount.get("containerPath") or mount.get("destination") or ""
-                if under(host_path, mountpoint):
-                    hits.append(
-                        "    pod=%s/%s container=%s hostPath=%s -> %s"
-                        % (namespace, pod_name, container_id[:13], host_path, container_path)
-                    )
 
-        if hits:
-            log("IN USE (containers with hostPath at/under %s, via crictl):" % mountpoint)
-            for hit in hits:
-                log(hit)
-            sys.exit(1)
-
-    log("OK: no inspected container binds %s directly." % mountpoint)
-    sys.exit(0)
-except Exception as exc:
-    print("ERROR: cannot establish container mount usage: %s" % exc, file=sys.stderr)
-    sys.exit(2)
-
+if __name__ == "__main__":
+    sys.exit(main())
 PY
     # Python contract: 0 = idle, 1 = busy. This script's callers use the
     # opposite convention (0 = busy), so invert it here.
@@ -328,6 +374,11 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 log "Checking $MOUNTPOINT"
+if $STRICT; then
+    log "Container scope: all Kubernetes namespaces (--strict)."
+else
+    log "Container scope: Kubernetes namespaces beginning with cci."
+fi
 
 if [ ! -e "$MOUNTPOINT" ] || ! mountpoint -q "$MOUNTPOINT" 2>/dev/null; then
     # Containers may retain a bind mount after the host path was detached.
@@ -371,10 +422,15 @@ else
     log "Host process check completed."
 fi
 
-if namespace_users_busy "$MOUNTPOINT"; then
-    busy=true
-else
-    [ "$?" -eq 1 ] || unknown=true
+# The unrestricted /proc scan would count infrastructure containers even when
+# the caller selected cci-only policy. Default mode inspects namespaces only
+# for the selected CRI containers in container_users_busy instead.
+if $STRICT; then
+    if namespace_users_busy "$MOUNTPOINT"; then
+        busy=true
+    else
+        [ "$?" -eq 1 ] || unknown=true
+    fi
 fi
 
 if container_users_busy "$MOUNTPOINT"; then

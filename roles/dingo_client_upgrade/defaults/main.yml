@@ -11,3 +11,4 @@ dingo_client_upgrade_dry_run: false
 dingo_client_upgrade_script_path: /tmp/dingofs_restart_check.sh
 
 dingo_client_mount_check_script: /tmp/dingofs_mount_usage_check.sh
+dingo_client_mount_check_strict: false

@@ -21,7 +21,7 @@ fi
 # operator recovery before this service can create another mount at the path.
 if mountpoint -q "${g_mnt}" 2>/dev/null; then
 {% if dingo_client_mount_check_enabled | default(true) | bool %}
-    if ! bash "{{ dingo_client_mount_check_script | default('/root/dingofs/script/check/dingofs_mount_usage_check.sh') }}" "${g_mnt}" --dry-run --strict; then
+    if ! bash "{{ dingo_client_mount_check_script | default('/root/dingofs/script/check/dingofs_mount_usage_check.sh') }}" "${g_mnt}" --dry-run{{ ' --strict' if dingo_client_mount_check_strict | default(false) | bool else '' }}; then
         echo "Mount usage is busy or unknown; refusing automatic remount" >&2
         exit 1
     fi

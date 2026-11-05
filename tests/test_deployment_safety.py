@@ -131,13 +131,13 @@ class RdmaTests(unittest.TestCase):
 
 
 class MountTests(unittest.TestCase):
-    def run_cri(self, mode):
+    def run_cri(self, mode, strict=True, namespace='default'):
         source = (REPO / 'roles/common/files/dingofs_mount_usage_check.sh').read_text()
         function = source[source.index('container_users_busy() {'):source.index('# --- Main')]
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             binary = root / 'crictl'
-            responses = {'pods': {'items': [{'id': 'pod', 'metadata': {'namespace': 'default', 'name': 'job'}}]},
+            responses = {'pods': {'items': [{'id': 'pod', 'metadata': {'namespace': namespace, 'name': 'job'}}]},
                          'ps': {'containers': [{'id': 'container', 'podSandboxId': 'pod'}]},
                          'inspect': {'status': {'mounts': [{'hostPath': '/fixture/data', 'containerPath': '/data'}]}}}
             if mode == 'empty':
@@ -147,7 +147,9 @@ class MountTests(unittest.TestCase):
                               + 'if mode == "query_error" or (mode == "inspect_error" and sys.argv[1] == "inspect"): sys.exit(1)\n'
                               + 'print(json.dumps(responses[sys.argv[1]]))\n')
             binary.chmod(0o755)
-            result = subprocess.run(['/bin/bash'], input='STRICT=true\nlog() { echo "$*"; }\n' + function
+            # The subprocess fixture also runs on non-Linux controllers.
+            function = function.replace('target_device = mounted_device(target)', 'target_device = None')
+            result = subprocess.run(['/bin/bash'], input='STRICT=' + str(strict).lower() + '\nlog() { echo "$*"; }\n' + function
                                     + '\ncontainer_users_busy /fixture\nexit $?\n', text=True,
                                     capture_output=True, env=dict(os.environ, PATH=str(root) + ':' + os.environ['PATH']))
             return result
@@ -157,6 +159,12 @@ class MountTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn('default/job', result.stdout)
 
+    def test_default_scope_only_checks_cci_prefix(self):
+        for namespace, busy in [('cci-job', True), ('cci123', True),
+                                ('gpu-operator', False), ('default', False)]:
+            with self.subTest(namespace=namespace):
+                self.assertEqual(self.run_cri('mounted', False, namespace).returncode, 0 if busy else 1)
+
     def test_empty_runtime_is_idle(self):
         self.assertEqual(self.run_cri('empty').returncode, 1)
 
@@ -164,6 +172,55 @@ class MountTests(unittest.TestCase):
         for mode in ['query_error', 'inspect_error']:
             with self.subTest(mode=mode):
                 self.assertEqual(self.run_cri(mode).returncode, 2)
+
+
+class MountReferenceTests(unittest.TestCase):
+    def setUp(self):
+        self.code = embedded('roles/common/files/dingofs_mount_usage_check.sh', 'PY')
+
+    def detail(self, source='/', destination='/host', pid=123):
+        return {'info': {'pid': pid}, 'status': {'mounts': [
+            {'hostPath': source, 'containerPath': destination}]}}
+
+    def test_root_bind_does_not_hold_a_new_child_mount(self):
+        rows = [{'path': '/host', 'device': '8:1', 'fstype': 'ext4'},
+                {'path': '/host/mnt/public-fs', 'device': '0:10', 'fstype': 'fuse.dingofs'}]
+        with patch.dict(self.code, mountinfo=lambda _: rows):
+            self.assertEqual(self.code['container_references'](
+                self.detail(), '/mnt/new/public-fs', None), [])
+
+    def test_retained_child_mount_below_root_bind_is_busy(self):
+        rows = [{'path': '/host/mnt/new/public-fs', 'device': '0:11', 'fstype': 'fuse.dingofs'}]
+        with patch.dict(self.code, mountinfo=lambda _: rows):
+            self.assertTrue(self.code['container_references'](self.detail(), '/mnt/new/public-fs', None))
+
+    def test_direct_or_descendant_reference_survives_detached_mount(self):
+        for source in ['/mnt/new', '/mnt/new/data']:
+            self.assertTrue(self.code['container_references'](self.detail(source, '/data', None), '/mnt/new', None))
+
+    def test_unmounted_siblings_on_root_device_are_not_aliases(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'old').mkdir(); (root / 'new').mkdir()
+            self.assertEqual(self.code['container_references'](
+                self.detail(str(root / 'old'), '/data', None), str(root / 'new'), None), [])
+
+    def test_namespace_device_alias_is_preserved_for_mounted_target(self):
+        rows = [{'path': '/some-alias', 'device': '0:11', 'fstype': 'fuse.dingofs'}]
+        with patch.dict(self.code, mountinfo=lambda _: rows):
+            self.assertTrue(self.code['container_references'](
+                {'info': {'pid': 123}, 'status': {'mounts': []}}, '/mnt/new', '0:11'))
+
+    def test_missing_namespace_information_is_unknown_not_idle(self):
+        with self.assertRaises(ValueError):
+            self.code['container_references'](self.detail(pid=None), '/mnt/new', None)
+        with patch.dict(self.code, mountinfo=lambda _: (_ for _ in ()).throw(PermissionError('denied'))):
+            with self.assertRaises(PermissionError):
+                self.code['container_references'](self.detail(), '/mnt/new', None)
+
+    def test_empty_and_pseudo_sources_do_not_resolve_to_current_directory(self):
+        for source in ['', 'proc', 'tmpfs']:
+            self.assertEqual(self.code['container_references'](self.detail(source), '/mnt/new', None), [])
 
 
 if __name__ == '__main__':

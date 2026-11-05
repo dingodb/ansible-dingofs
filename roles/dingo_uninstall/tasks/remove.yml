@@ -1,0 +1,185 @@
+---
+- name: Create private uninstall ownership state directory
+  file:
+    path: "{{ dingo_uninstall_state_dir }}"
+    state: directory
+    mode: '0700'
+
+- name: Save ownership before removing installation files
+  copy:
+    content: "{{ _uninstall_plan.metadata | to_nice_json }}\n"
+    dest: "{{ _uninstall_plan.state_file }}"
+    mode: '0600'
+
+- name: Stop and disable only the selected managed service
+  systemd:
+    name: "{{ _uninstall_plan.service }}.service"
+    state: stopped
+    enabled: false
+  when: _uninstall_plan.unit_exists
+
+- name: Check whether the selected client mount remains attached
+  command:
+    argv: [mountpoint, -q, "{{ _u_mount }}"]
+  register: _u_mounted_after_stop
+  changed_when: false
+  failed_when: _u_mounted_after_stop.rc not in [0, 1]
+  when: dingo_uninstall_kind == 'client'
+
+- name: Normally unmount only the selected client path
+  command:
+    argv: [umount, '--', "{{ _u_mount }}"]
+  when:
+    - dingo_uninstall_kind == 'client'
+    - _u_mounted_after_stop.rc == 0
+
+- name: Verify the client mount is detached before any removal
+  command:
+    argv: [mountpoint, -q, "{{ _u_mount }}"]
+  register: _u_detached
+  changed_when: false
+  failed_when: _u_detached.rc != 1
+  when: dingo_uninstall_kind == 'client'
+
+- name: Verify no executable or startup script from this installation remains running
+  shell: |
+    python3 - <<'PY'
+    import os, pathlib, sys
+    base = os.environ['DINGO_UNINSTALL_BASE']
+    live = []
+    for proc in pathlib.Path('/proc').glob('[0-9]*'):
+        try:
+            exe = os.readlink(str(proc / 'exe'))
+            if exe.endswith(' (deleted)'):
+                exe = exe[:-10]
+            args = (proc / 'cmdline').read_bytes().decode(errors='replace').split('\0')
+        except FileNotFoundError:
+            continue
+        if exe.startswith(base + '/') or any(a in (base + '/dingo-cache-start.sh', base + '/dingofs-mount.sh') for a in args):
+            live.append(proc.name)
+    if live:
+        print('Installation still has running processes: ' + ','.join(live))
+        sys.exit(1)
+    PY
+  environment:
+    DINGO_UNINSTALL_BASE: "{{ _u_base }}"
+  changed_when: false
+
+- name: Read cache membership after stopping the service
+  command:
+    argv: ["{{ dingo_uninstall_cli }}", cache, member, list, "--mdsaddr={{ _uninstall_plan.metadata.mds_addrs }}", "--group={{ _uninstall_plan.metadata.group }}", --format=json]
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  register: _u_members_after
+  when: _uninstall_plan.unregister
+
+- name: Validate the cache response and select only this endpoint
+  assert:
+    that:
+      - (_u_members_after.stdout | from_json).error.code | int == 0
+  when: _uninstall_plan.unregister
+
+- name: Identify this exact cache registration
+  set_fact:
+    _u_matching_members: >-
+      {{ (_u_members_after.stdout | from_json).result.members | default([])
+         | selectattr('member_id', 'equalto', _uninstall_plan.metadata.member_id)
+         | selectattr('ip', 'equalto', _uninstall_plan.metadata.listen_ip)
+         | selectattr('port', 'equalto', _uninstall_plan.metadata.port | int) | list }}
+  when: _uninstall_plan.unregister
+
+- name: Leave only this cache member from its configured group
+  command:
+    argv: ["{{ dingo_uninstall_cli }}", cache, member, leave, "--mdsaddr={{ _uninstall_plan.metadata.mds_addrs }}", "--group={{ _uninstall_plan.metadata.group }}", "--memberid={{ _uninstall_plan.metadata.member_id }}", "--ip={{ _uninstall_plan.metadata.listen_ip }}", "--port={{ _uninstall_plan.metadata.port }}", --format=json]
+  delegate_to: localhost
+  become: false
+  register: _u_leave
+  when:
+    - _uninstall_plan.unregister
+    - _u_matching_members | length > 0
+
+- name: Require a successful leave before deleting cache files
+  assert:
+    that: (_u_leave.stdout | from_json).error.code | int == 0
+  when:
+    - _uninstall_plan.unregister
+    - _u_matching_members | length > 0
+
+- name: Revalidate paths immediately before removing files
+  dingofs_uninstall_plan:
+    state_dir: "{{ dingo_uninstall_state_dir }}"
+    kind: "{{ dingo_uninstall_kind }}"
+    service: "{{ _u_service }}"
+    base_dir: "{{ _u_base }}"
+    mount_point: "{{ _u_mount }}"
+    fsname: "{{ _u_fsname }}"
+    mds_addrs: "{{ _u_mds }}"
+    group: "{{ _u_group }}"
+    remove_installation: "{{ dingo_uninstall_remove_installation }}"
+    remove_data: "{{ dingo_uninstall_remove_data }}"
+    remove_logs: "{{ dingo_uninstall_remove_logs }}"
+    remove_mountpoint: "{{ dingo_uninstall_remove_mountpoint }}"
+    unregister: "{{ dingo_uninstall_unregister_cache }}"
+  register: _u_revalidated
+
+- name: Verify the selected cache endpoint has left its group
+  command:
+    argv: ["{{ dingo_uninstall_cli }}", cache, member, list, "--mdsaddr={{ _uninstall_plan.metadata.mds_addrs }}", "--group={{ _uninstall_plan.metadata.group }}", --format=json]
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  register: _u_members_final
+  when: _uninstall_plan.unregister
+
+- name: Require confirmed removal of this cache registration
+  assert:
+    that:
+      - (_u_members_final.stdout | from_json).error.code | int == 0
+      - >-
+        ((_u_members_final.stdout | from_json).result.members | default([])
+         | selectattr('member_id', 'equalto', _uninstall_plan.metadata.member_id)
+         | selectattr('ip', 'equalto', _uninstall_plan.metadata.listen_ip)
+         | selectattr('port', 'equalto', _uninstall_plan.metadata.port | int) | list | length) == 0
+  when: _uninstall_plan.unregister
+
+- name: Remove the selected managed service unit
+  file:
+    path: "{{ _uninstall_plan.unit_path }}"
+    state: absent
+  register: _u_unit_removed
+
+- name: Reload systemd after removing the unit
+  systemd:
+    daemon_reload: true
+  when: _u_unit_removed.changed
+
+- name: Remove only the verified installation or opted-in data and log directories
+  file:
+    path: "{{ uninstall_path }}"
+    state: absent
+  loop: "{{ _u_revalidated.remove_paths }}"
+  loop_control:
+    loop_var: uninstall_path
+
+- name: Check for a remaining empty client mountpoint directory
+  stat:
+    path: "{{ _u_mount }}"
+  register: _u_mount_dir
+  when:
+    - dingo_uninstall_kind == 'client'
+    - dingo_uninstall_remove_mountpoint | bool
+
+- name: Remove only an empty unmounted client directory
+  command:
+    argv: [rmdir, '--', "{{ _u_mount }}"]
+  when:
+    - dingo_uninstall_kind == 'client'
+    - dingo_uninstall_remove_mountpoint | bool
+    - _u_mount_dir.stat.exists
+
+- name: Retain ownership information for a later optional data purge
+  copy:
+    content: "{{ _uninstall_plan.metadata | combine({'unregistered': (_uninstall_plan.metadata.unregistered | default(false)) or _uninstall_plan.unregister}) | to_nice_json }}\n"
+    dest: "{{ _uninstall_plan.state_file }}"
+    mode: '0600'

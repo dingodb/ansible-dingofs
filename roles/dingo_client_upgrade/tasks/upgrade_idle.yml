@@ -56,7 +56,7 @@
   block:
     - name: Recheck mount usage immediately before restart
       command:
-        argv: [bash, "{{ dingo_client_mount_check_script }}", "{{ client_instance.mount_point }}", --dry-run, --strict]
+        argv: "{{ ['bash', dingo_client_mount_check_script, client_instance.mount_point, '--dry-run'] + (['--strict'] if dingo_client_mount_check_strict | default(false) | bool else []) }}"
       changed_when: false
 
     - name: Restart this client service

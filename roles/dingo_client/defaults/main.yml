@@ -152,7 +152,7 @@ IB_WAIT_TIMEOUT: 60
 # container hostPath), that instance is skipped entirely. Deployed once per
 # host; see roles/common/files/dingofs_mount_usage_check.sh.
 dingo_client_mount_check_enabled: true
-# Mount checks inspect all container namespaces.
-# The strict flag remains accepted for compatibility.
-dingo_client_mount_check_strict: true
+# Default: only cci* Kubernetes containers; host process checks still apply.
+# Opt in to all containers and other process mount namespaces with true.
+dingo_client_mount_check_strict: false
 dingo_client_mount_check_script: /root/dingofs/script/check/dingofs_mount_usage_check.sh
