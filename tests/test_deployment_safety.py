@@ -57,6 +57,7 @@ class CpuTests(unittest.TestCase):
                                       (900002, '/opt/self/dingo-cache', '4-5')]:
             self.write('/proc/%s/cmdline' % pid, executable + '\0--cpuset=' + cpus)
             self.write('/proc/%s/status' % pid, 'Cpus_allowed_list:\t' + cpus)
+            self.write('/proc/%s/task/%s/status' % (pid, pid), 'Cpus_allowed_list:\t' + cpus)
             (self.root / ('proc/%s/exe' % pid)).symlink_to(executable)
         online, nodes, siblings, claims, _ = self.collect()
         self.assertEqual(set(claims), {0, 1})

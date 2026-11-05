@@ -715,6 +715,22 @@ whose existing allocation may be reused; `-S` remains accepted for command-line
 compatibility. Preferred and fallback NUMA selection use one snapshot. Forced
 allocation is computed only with `--force` and preserves sibling exclusions.
 
+Cache and Client use the same CPU detector. It inspects every live user-process
+thread's `Cpus_allowed_list` under `/proc/<pid>/task/<tid>/status`, including when
+the leader is unbound and only worker threads are pinned. This covers Cache
+processes launched with `--flagfile`: current thread affinity is checked rather
+than rereading a configuration file that may have changed since startup.
+Explicit `--cpuset` argv reservations and observed thread affinities are combined;
+whole-NUMA allowed masks keep their existing non-exclusive interpretation.
+
+Automatic selection and manual `-c` checks both reject occupied SMT siblings.
+`--no-busy` disables load sampling only, not ownership checks. A disappearing
+thread does not discard other threads' claims; unreadable or incomplete live
+ownership fails with exit code 3, including under force policy. Conflict output
+includes PID/TID samples. Collection remains a current snapshot, not a lock
+against another deployment concurrently claiming cores. See the Linux
+[per-thread proc interface](https://man7.org/linux/man-pages/man5/proc_pid_task.5.html).
+
 ### Uninstall selected client/cache instances
 
 Use the same site inventory that deployed the instances and an explicit
