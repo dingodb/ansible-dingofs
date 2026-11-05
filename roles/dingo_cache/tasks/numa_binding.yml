@@ -1,0 +1,88 @@
+---
+- name: Initialize Cache binding topology
+  set_fact:
+    _cache_binding_nodes: []
+
+- name: Read NUMA nodes of the manual Cache cpuset
+  set_fact:
+    _cache_binding_nodes: "{{ (cpuset_check.stdout_lines | default([]) | select('match', '^NODES=') | first | default('NODES=') | regex_replace('^NODES=', '') | trim).split() }}"
+  when:
+    - dingo_cache_pin_cpu | default(true) | bool
+    - (dingo_cache_cpuset | default('')) | length > 0
+
+- name: Read NUMA nodes of the retained Cache cpuset
+  set_fact:
+    _cache_binding_nodes: "{{ (cpuset_recheck.stdout_lines | default([]) | select('match', '^NODES=') | first | default('NODES=') | regex_replace('^NODES=', '') | trim).split() }}"
+  when:
+    - dingo_cache_pin_cpu | default(true) | bool
+    - _cache_keep_existing_cpuset | default(false) | bool
+
+- name: Read NUMA node of the allocated Cache cpuset
+  set_fact:
+    _cache_binding_nodes: "{{ [dingo_cache_numa_node_effective | string] }}"
+  when:
+    - dingo_cache_pin_cpu | default(true) | bool
+    - (dingo_cache_cpuset | default('')) | length == 0
+    - not (_cache_keep_existing_cpuset | default(false) | bool)
+    - dingo_cache_cpuset_effective | default('NONE') not in ['', 'NONE']
+
+- name: Resolve the Cache process CPU and memory-policy node
+  set_fact:
+    dingo_cache_numactl_node_effective: >-
+      {{ _cache_ib_node if _cache_require_ib | bool
+         else ((dingo_cache_numactl_node | default('') | string | trim)
+               or (_cache_binding_nodes | first if _cache_binding_nodes | length == 1 else '')) }}
+
+- name: Enforce the required Cache process locality
+  assert:
+    that:
+      - dingo_cache_numactl_enabled | default(true) | bool
+      - dingo_cache_numactl_node_effective == _cache_ib_node
+      - _cache_binding_nodes | length == 0 or _cache_binding_nodes == [_cache_ib_node]
+    fail_msg: "Cache CPU and memory-policy targets must stay on IB NUMA {{ _cache_ib_node }}."
+  when: _cache_require_ib | bool
+
+- name: Install numactl for Cache process binding
+  package:
+    name: numactl
+    state: present
+  when:
+    - dingo_cache_numactl_enabled | default(true) | bool
+    - dingo_cache_numactl_node_effective | length > 0
+    - ansible_os_family | default('') in ['Debian', 'RedHat']
+
+- name: Check numactl is available for Cache process binding
+  shell: command -v numactl
+  register: _cache_numactl_bin
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when:
+    - dingo_cache_numactl_enabled | default(true) | bool
+    - dingo_cache_numactl_node_effective | length > 0
+
+- name: Require numactl before writing a bound Cache startup script
+  assert:
+    that: _cache_numactl_bin.rc | default(1) | int == 0
+    fail_msg: "Cache process binding requires numactl. Install numactl before deployment."
+  when:
+    - dingo_cache_numactl_enabled | default(true) | bool
+    - dingo_cache_numactl_node_effective | length > 0
+
+- name: Report Cache process NUMA locality
+  debug:
+    msg: >-
+      NUMA locality: require_ib={{ _cache_require_ib }} ib_node={{ _cache_ib_node | default('unknown', true) }}
+      cpu_nodes={{ _cache_binding_nodes }} process_node={{ dingo_cache_numactl_node_effective | default('unbound', true) }}
+      memory_policy={{ 'bind' if dingo_cache_numactl_membind | default(false) | bool else 'preferred (may spill)' }}.
+
+- name: Alert on Cache NUMA memory pressure without changing locality
+  debug:
+    msg: >-
+      WARNING: NUMA {{ dingo_cache_numactl_node_effective }} estimated memory-used
+      {{ (_cache_node_mem | default({})).get(dingo_cache_numactl_node_effective | string, 'unknown') }}%
+      exceeds {{ _cache_mem_thr | default(80) }}%. Free local capacity or resize
+      the workload; required IB locality does not migrate CPUs because of memory pressure.
+  when:
+    - dingo_cache_numactl_node_effective | length > 0
+    - ((_cache_node_mem | default({})).get(dingo_cache_numactl_node_effective | string, 0) | int) > (_cache_mem_thr | default(80) | int)

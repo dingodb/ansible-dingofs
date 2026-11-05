@@ -230,12 +230,14 @@ def collect(args):
     return online, nodes, siblings, claims, usage
 
 
-def choose(nodes, siblings, unavailable, shards, preferred):
+def choose(nodes, siblings, unavailable, shards, preferred, preferred_only=False):
     cores = {}
     for node, cpus in nodes.items():
         cores[node] = sorted(cpu for cpu in cpus if cpu == min(siblings[cpu]) and not (siblings[cpu] & unavailable))
     node = preferred
-    if node not in cores or len(cores[node]) < shards:
+    if preferred_only and node not in cores:
+        raise ValueError('required NUMA node %s has no CPU topology' % node)
+    if not preferred_only and (node not in cores or len(cores[node]) < shards):
         node = max(cores, key=lambda n: (len(cores[n]), -n))
     return node, cores[node][-shards:] if len(cores[node]) >= shards else [], cores[node]
 
@@ -252,9 +254,13 @@ def main():
     parser.add_argument('--siblings', action='store_true')
     parser.add_argument('--no-busy', action='store_true')
     parser.add_argument('--force', action='store_true')
+    parser.add_argument('--preferred-only', action='store_true',
+                        help='never select/check CPUs outside the node specified by -n, including --force')
     args = parser.parse_args()
     if args.shards < 1:
         raise ValueError('shards must be positive')
+    if args.preferred_only and args.node is None:
+        raise ValueError('--preferred-only requires an explicit NUMA node (-n)')
     online, nodes, siblings, claims, usage = collect(args)
     if args.check:
         cpus = expand(args.check)
@@ -271,11 +277,15 @@ def main():
                 bad = True
                 reasons = set().union(*(claims[sibling] for sibling in occupied))
                 print('CONFLICT %s SMT_CPUS=%s %s' % (cpu, compact(occupied), '; '.join(sorted(reasons))))
-        print('NODES=' + ' '.join(str(n) for n, members in sorted(nodes.items()) if members & cpus))
+        selected_nodes = [n for n, members in sorted(nodes.items()) if members & cpus]
+        print('NODES=' + ' '.join(map(str, selected_nodes)))
+        if args.preferred_only and selected_nodes != [args.node]:
+            print('CONFLICT NOT-LOCAL-NUMA required=%s actual=%s' % (args.node, selected_nodes))
+            bad = True
         if not bad:
             print('OK ' + args.check)
         return int(bad)
-    node, selected, cores = choose(nodes, siblings, set(claims), args.shards, args.node)
+    node, selected, cores = choose(nodes, siblings, set(claims), args.shards, args.node, args.preferred_only)
     pick = set().union(*(siblings[c] for c in selected)) if args.siblings else set(selected)
     print('NODE=%s' % node)
     print('FREE=' + compact(nodes[node] - claims.keys()))
@@ -284,7 +294,7 @@ def main():
     forced, forced_node = set(), ''
     if not pick and args.force:
         excluded = expand(args.exclude)
-        forced_node, candidates, all_cores = choose(nodes, siblings, excluded, args.shards, args.node)
+        forced_node, candidates, all_cores = choose(nodes, siblings, excluded, args.shards, args.node, args.preferred_only)
         if candidates:
             selected = sorted(all_cores, key=lambda c: (max(usage.get(s, 0) for s in siblings[c]), -c))[:args.shards]
             forced = set().union(*(siblings[c] for c in selected)) if args.siblings else set(selected)
