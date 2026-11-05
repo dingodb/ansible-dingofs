@@ -26,7 +26,7 @@
 
 - name: Check mount usage before upgrading this instance
   command:
-    argv: [bash, "{{ dingo_client_mount_check_script }}", "{{ client_instance.mount_point }}", --dry-run, --strict]
+    argv: "{{ ['bash', dingo_client_mount_check_script, client_instance.mount_point, '--dry-run'] + (['--strict'] if dingo_client_mount_check_strict | default(false) | bool else []) }}"
   register: _upgrade_usage
   changed_when: false
   failed_when: _upgrade_usage.rc not in [0, 1]

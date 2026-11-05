@@ -695,12 +695,68 @@ Existing rqlite units containing a literal `~/` data argument require verificati
 and migration of the actual database directory before redeployment. Configure an
 absolute `rqlite_node_dir` and retain the database state during that migration.
 
-Mount safety checks cover all Kubernetes namespaces and return 2 when required
-checks cannot complete. Client deployment, upgrade and automatic remount paths
-use this result to prevent changes when usage is busy or unknown. Upgrades retain
-a per-instance restart marker until the new mount has been verified.
+Mount safety checks inspect Kubernetes namespaces beginning with `cci` by default.
+Set `dingo_client_mount_check_strict: true` (or pass `--strict` to the checker) to
+include all containers and other process mount namespaces. Deployment, upgrade,
+manual restart helpers and automatic remount scripts honor the same setting.
+Host process usage is still checked in both modes; an unavailable required check
+returns 2 and prevents changes. Upgrades retain a per-instance restart marker
+until the new mount has been verified.
+
+A container mapping `/` to `/host` is not evidence that an uncreated child mount
+is busy. The checker inspects its actual namespace at the corresponding child
+path. Direct references and retained child mounts remain protected even after
+the host path is detached. Unmounted directories sharing the root filesystem
+are not treated as the same mounted filesystem. Filesystem names alone are not
+used to associate independent mounts or services.
 
 CPU detection runs in one Python process. `--self-exe` identifies the instance
 whose existing allocation may be reused; `-S` remains accepted for command-line
 compatibility. Preferred and fallback NUMA selection use one snapshot. Forced
 allocation is computed only with `--force` and preserves sibling exclusions.
+
+### Uninstall selected client/cache instances
+
+Use the same site inventory that deployed the instances and an explicit
+`--limit`. Client selection comes from `dingo_clients`; cache selection uses
+`dingo_cache_service_name` and `dingo_cache_base_dir`. There is no inferred
+default client filesystem. Start with a read-only plan:
+
+```bash
+SITE=/path/to/site
+ansible-playbook -i "$SITE/hosts.py" playbooks/client_08_uninstall.yml --limit GPU-HOST --check
+ansible-playbook -i "$SITE/hosts.py" playbooks/cache_07_uninstall.yml --limit GPU-HOST --check
+```
+
+Remove `--check` to apply. By default this stops/disables the selected service,
+removes its unit and installation files, and **retains cache data and logs**.
+The deletion switches are independent:
+
+| Variable | Default | Effect |
+| --- | --- | --- |
+| `dingo_uninstall_remove_data` | `false` | Delete this cache instance's deployed data directories; never delete a client's remote filesystem contents |
+| `dingo_uninstall_remove_logs` | `false` | Delete this instance's deployed log directories |
+| `dingo_uninstall_remove_installation` | `true` | Delete the verified version/instance installation directory |
+| `dingo_uninstall_remove_mountpoint` | `true` | Remove an empty, detached client mountpoint using `rmdir` |
+| `dingo_uninstall_unregister_cache` | `true` | After stopping cache, leave its exact member/IP/port from its configured MDS cache group |
+| `dingo_uninstall_cli` | `dingo_client_dingo_bin_local_src` | Controller-side CLI used for cache registration queries and leave |
+
+For an explicitly approved cache data/log purge:
+
+```bash
+ansible-playbook -i "$SITE/hosts.py" playbooks/cache_07_uninstall.yml --limit GPU-HOST \
+  -e dingo_uninstall_remove_data=true -e dingo_uninstall_remove_logs=true
+```
+
+Uninstall checks the unit's startup path and deployed configuration before
+changing anything. Shared directories, symlinked paths and mounted directory
+trees are rejected. If retained data/logs are inside the installation directory,
+set `dingo_uninstall_remove_installation=false`. Client usage must be idle and
+unmounting must succeed normally; no force/lazy unmount is used. Other versions,
+LVM/filesystem layouts, shared tools and MDS filesystem contents are preserved.
+
+Private ownership records in `/var/lib/dingofs-uninstall` allow a later run to
+purge retained data/logs even after installation files have been removed.
+Repeating a completed uninstall is a no-op. `--check` performs ownership/usage
+and registration queries and prints exact removal/retention paths, without
+stopping services, unmounting or deleting files.

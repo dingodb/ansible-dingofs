@@ -1,0 +1,11 @@
+---
+- name: Uninstall explicitly selected DingoFS client instances
+  hosts: client_servers
+  remote_user: root
+  become: false
+  gather_facts: false
+  serial: 1
+  any_errors_fatal: true
+  roles:
+    - role: dingo_uninstall
+      dingo_uninstall_kind: client

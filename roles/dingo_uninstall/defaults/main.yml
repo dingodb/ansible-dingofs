@@ -1,0 +1,10 @@
+---
+# Service/unit and installation files are removed; data/log deletion is opt-in.
+dingo_uninstall_remove_installation: true
+dingo_uninstall_remove_data: false
+dingo_uninstall_remove_logs: false
+dingo_uninstall_unregister_cache: true
+dingo_uninstall_remove_mountpoint: true
+dingo_uninstall_state_dir: /var/lib/dingofs-uninstall
+dingo_uninstall_cli: "{{ dingo_client_dingo_bin_local_src | default('/root/dingofs/pkg/dingo') }}"
+dingo_client_mount_check_strict: false

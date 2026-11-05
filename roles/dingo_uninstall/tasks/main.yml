@@ -1,0 +1,38 @@
+---
+- name: Require an explicit uninstall host limit
+  assert:
+    that:
+      - ansible_limit | default('') | length > 0
+      - dingo_uninstall_kind in ['client', 'cache']
+    fail_msg: "Use --limit to explicitly select uninstall targets."
+
+- name: Require an explicit client instance list
+  assert:
+    that: dingo_clients is defined
+    fail_msg: "Define dingo_clients; uninstall never invents a default filesystem."
+  when: dingo_uninstall_kind == 'client'
+
+- name: Uninstall each explicitly configured client
+  include_tasks: instance.yml
+  vars:
+    _u_service: "{{ item.service_name | default('dingofs-mount-' ~ item.fsname ~ (dingo_client_version_suffix | default(''))) }}"
+    _u_base: "{{ item.base_dir | default('/root/dingofs/dingo-client/' ~ item.fsname ~ (dingo_client_version_suffix | default(''))) }}"
+    _u_mount: "{{ item.mount_point }}"
+    _u_fsname: "{{ item.fsname }}"
+    _u_mds: "{{ item.mds_addrs | default(dingo_client_mds_addrs | default('')) }}"
+    _u_group: ""
+  loop: "{{ dingo_clients | default([]) }}"
+  loop_control:
+    label: "{{ item.fsname }} -> {{ item.mount_point }}"
+  when: dingo_uninstall_kind == 'client'
+
+- name: Uninstall the explicitly configured cache instance
+  include_tasks: instance.yml
+  vars:
+    _u_service: "{{ dingo_cache_service_name }}"
+    _u_base: "{{ dingo_cache_base_dir }}"
+    _u_mount: ""
+    _u_fsname: ""
+    _u_mds: "{{ dingo_cache_mds_addrs | default('') }}"
+    _u_group: "{{ dingo_cache_group_name | default('') }}"
+  when: dingo_uninstall_kind == 'cache'

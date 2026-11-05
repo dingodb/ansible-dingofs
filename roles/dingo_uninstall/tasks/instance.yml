@@ -1,0 +1,60 @@
+---
+- name: Verify instance ownership and prepare exact removal paths
+  dingofs_uninstall_plan:
+    state_dir: "{{ dingo_uninstall_state_dir }}"
+    kind: "{{ dingo_uninstall_kind }}"
+    service: "{{ _u_service }}"
+    base_dir: "{{ _u_base }}"
+    mount_point: "{{ _u_mount }}"
+    fsname: "{{ _u_fsname }}"
+    mds_addrs: "{{ _u_mds }}"
+    group: "{{ _u_group }}"
+    remove_installation: "{{ dingo_uninstall_remove_installation }}"
+    remove_data: "{{ dingo_uninstall_remove_data }}"
+    remove_logs: "{{ dingo_uninstall_remove_logs }}"
+    remove_mountpoint: "{{ dingo_uninstall_remove_mountpoint }}"
+    unregister: "{{ dingo_uninstall_unregister_cache }}"
+  register: _uninstall_plan
+
+- name: Display the uninstall plan
+  debug:
+    msg:
+      service: "{{ _uninstall_plan.service }}"
+      mount_point: "{{ _uninstall_plan.mount_point }}"
+      remove_paths: "{{ _uninstall_plan.remove_paths }}"
+      retain_paths: "{{ _uninstall_plan.retained_paths }}"
+      leave_cache_group: "{{ _uninstall_plan.unregister }}"
+      already_absent: "{{ _uninstall_plan.noop }}"
+
+- name: Check client usage without modifying the mount
+  script:
+    cmd: "{{ role_path }}/../common/files/dingofs_mount_usage_check.sh {{ _u_mount | quote }} --dry-run{{ ' --strict' if dingo_client_mount_check_strict | bool else '' }}"
+    executable: /bin/bash
+  check_mode: false
+  changed_when: false
+  when:
+    - dingo_uninstall_kind == 'client'
+    - not _uninstall_plan.noop
+
+- name: Verify cache registration is reachable before changing local services
+  command:
+    argv: ["{{ dingo_uninstall_cli }}", cache, member, list, "--mdsaddr={{ _uninstall_plan.metadata.mds_addrs }}", "--group={{ _uninstall_plan.metadata.group }}", --format=json]
+  delegate_to: localhost
+  become: false
+  check_mode: false
+  changed_when: false
+  register: _uninstall_members_before
+  when: _uninstall_plan.unregister
+
+- name: Require a successful cache registration query
+  assert:
+    that:
+      - (_uninstall_members_before.stdout | from_json).error.code | int == 0
+      - (_uninstall_members_before.stdout | from_json).result.members | default([]) is sequence
+  when: _uninstall_plan.unregister
+
+- name: Apply this uninstall after all read-only checks pass
+  include_tasks: remove.yml
+  when:
+    - not ansible_check_mode
+    - not _uninstall_plan.noop
