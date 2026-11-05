@@ -52,7 +52,8 @@
 
 # --- Copy binaries from control node ---
 #
-# These two are registered because the restart decision further down needs them.
+# The client copy is registered for the service restart decision below.
+# The independent CLI can be updated without restarting a FUSE mount.
 # The destination is per-fsname (dest includes dingo_client_base_dir), so each
 # mountpoint on a host keeps its own copy -- changing one instance's binary
 # cannot affect another's.
@@ -70,7 +71,6 @@
     src: "{{ dingo_client_dingo_bin_local_src }}"
     dest: "{{ dingo_client_base_dir }}/bin/dingo"
     mode: "0755"
-  register: _dingo_bin
 
 # (The preferred node is decided once per host in main.yml from the RDMA
 # device's NUMA node + memory headroom; each instance only applies its own
@@ -489,7 +489,8 @@
 #    dies and Restart=always brings up the new binary. Very hard to diagnose by
 #    then. And the trigger is mundane: bumping the client version changes
 #    dingo_client_bin_local_src while the mount-script template stays identical.
-#    => the two copy results must be part of the condition.
+#    => the client copy result must be part of the condition. Updating only
+#    the independent dingo CLI does not change the running FUSE client.
 #
 # 2) Whether it is safe to restart right now.
 #    Do NOT just systemctl restart: this mountpoint is very likely in use by a
@@ -502,7 +503,7 @@
   set_fact:
     _restart_needed: >-
       {{ _mount_sh.changed or _mount_service.changed
-         or _client_bin.changed or _dingo_bin.changed }}
+         or _client_bin.changed }}
 
 - name: Record the last usage check before a required restart
   import_tasks: ../../common/tasks/client_report.yml

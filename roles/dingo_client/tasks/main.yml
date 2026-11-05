@@ -76,6 +76,13 @@
 # identical "file not found" errors, easily mistaken for a network or
 # permissions problem. Hit exactly this on 2026-09-16. Checking up front reports
 # it once and names the paths.
+- name: Prepare the latest independent CLI on the control node
+  include_role:
+    name: dingo_cli_download
+  vars:
+    dingo_cli_download_dest: "{{ dingo_client_dingo_bin_local_src }}"
+  when: inventory_hostname not in (groups.get('meta_servers', []) + groups.get('admin', []))
+
 - name: Check the dingo-client binary exists on the control node
   delegate_to: localhost
   become: false

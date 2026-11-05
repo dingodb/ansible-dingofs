@@ -28,7 +28,7 @@ dingo_monitor_config_file: "{{ dingo_monitor_config_dir }}/monitor.yaml"
 
 # Lives in the dingo_cli and dingofs_cluster role defaults; declared here too so
 # this role does not depend on group_vars happening to define it.
-dingo_cli_bin_dir: "{{ dingofs_home }}/.dingo/bin"
+dingo_cli_bin_dir: "{{ dingofs_home }}/.dingo/bin/server-{{ dingofs_cluster_name | default(dingofs_version | default('default')) }}"
 
 # node_exporter runs on all of these; the central services go to the first.
 dingo_monitor_hosts: "{{ groups['meta_servers'] }}"

@@ -1,11 +1,12 @@
 ---
-# Playbook: Configure the `dingo` command environment on remote nodes
+# Playbook: Configure latest `dingo` on cache/client workers. Explicit admin
+# targets use the manually prepared compatible server CLI without downloading.
 # Independent task: initializes ~/.dingo, installs the dingo binary into
 # ~/.dingo/bin, adds it to PATH, and writes ~/.dingo/dingo.yaml (mdsaddr
 # sourced from dingo_client_mds_addrs). Run standalone or as part of
 # client_site.yml.
 - name: Configure dingo command environment
-  hosts: "{{ target_hosts | default('client_servers') }}"
+  hosts: "{{ target_hosts | default('client_servers:cache_servers:!meta_servers:!admin') }}"
   remote_user: root
   become: false
   roles:

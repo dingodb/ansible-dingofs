@@ -1,6 +1,6 @@
 ---
-# Existing hosts: update the executable only, preserving shared CLI configuration.
-- name: Validate and update the shared Dingo CLI executable
+# Existing hosts: stage the manually prepared server CLI, preserving config.
+- name: Validate and stage the compatible server Dingo CLI executable
   hosts: admin
   gather_facts: false
   become: true
@@ -13,5 +13,5 @@
   tasks:
     - name: Explain shared CLI update check mode
       debug:
-        msg: "Check mode: executable download/update skipped; run without --check to validate, back up and update the shared CLI."
+        msg: "Check mode: server CLI staging skipped. Prepare the compatible binary at dingo_cli_pkg_path on the controller; run without --check to validate and stage it. No server CLI URL is downloaded."
       when: ansible_check_mode

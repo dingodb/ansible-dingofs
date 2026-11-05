@@ -1,0 +1,48 @@
+---
+# Cache deployment uses this entry point without rewriting dingo.yaml.
+- name: Prepare the latest client CLI on the control node
+  include_role:
+    name: dingo_cli_download
+  vars:
+    dingo_cli_download_dest: "{{ dingo_env_bin_src }}"
+  when: dingo_env_use_latest | bool
+
+- name: Validate the manually prepared server CLI for an admin environment
+  include_role:
+    name: dingo_cli
+    tasks_from: validate_source
+  when: not (dingo_env_use_latest | bool)
+
+- name: Ensure ~/.dingo/bin directory exists
+  file:
+    path: "{{ dingo_env_bin_dir }}"
+    state: directory
+    mode: "0755"
+
+# copy compares the controller and target SHA1, including existing targets.
+- name: Copy dingo binary into ~/.dingo/bin/ when content differs
+  copy:
+    src: "{{ dingo_env_bin_src }}"
+    dest: "{{ dingo_env_bin_dir }}/dingo"
+    mode: "0755"
+  register: _dingo_env_copy
+
+- name: Initialize ~/.dingo env dir via `dingo --version`
+  command: "{{ dingo_env_bin_dir }}/dingo --version"
+  register: dingo_init
+  changed_when: false
+  when: _dingo_env_copy is changed
+
+- name: Report dingo env binary already matches the control node
+  debug:
+    msg: "dingo env binary at {{ dingo_env_bin_dir }}/dingo is unchanged; skipping binary transfer and init"
+  when: _dingo_env_copy is not changed
+
+- name: Add ~/.dingo/bin to PATH in ~/.bashrc
+  lineinfile:
+    path: "{{ dingo_env_home }}/.bashrc"
+    line: 'export PATH=$PATH:{{ dingo_env_bin_dir }}'
+    regexp: '^export PATH=\$PATH:.*\.dingo/bin.*$'
+    state: present
+    create: true
+    mode: "0644"
