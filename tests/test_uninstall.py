@@ -110,6 +110,13 @@ class UninstallTests(unittest.TestCase):
         mounts = self.root / 'mountinfo'; mounts.write_text('')
         code = code.replace("MOUNTINFO = Path('/proc/self/mountinfo')", 'MOUNTINFO = Path(' + repr(str(mounts)) + ')')
         module.write_text(code)
+        # Isolate process inspection too: CI runs unprivileged and must not
+        # inspect the runner's real /proc or depend on its current processes.
+        proc = self.root / 'proc'; proc.mkdir()
+        remove = role / 'tasks/remove.yml'
+        source = remove.read_text()
+        self.assertIn("pathlib.Path('/proc')", source)
+        remove.write_text(source.replace("pathlib.Path('/proc')", 'pathlib.Path(' + repr(str(proc)) + ')'))
         library = self.root / 'library'; library.mkdir()
         events = self.root / 'events'
         (library / 'systemd.py').write_text('''from ansible.module_utils.basic import AnsibleModule
@@ -147,6 +154,16 @@ m.exit_json(changed=not m.check_mode)
             return r.stdout
         run(['--check'])
         self.assertFalse(events.exists()); self.assertTrue(self.unit.exists()); self.assertTrue(self.base.exists())
+        live = proc / '98765'; live.mkdir()
+        (live / 'exe').symlink_to(self.base / 'dingo-cache')
+        (live / 'cmdline').write_bytes((str(self.base / 'dingo-cache') + '\0').encode())
+        refused = subprocess.run(['ansible-playbook', '-i', 'fixture,', str(play), '--limit', 'fixture'],
+                                 cwd=self.root, env=env, text=True, capture_output=True, timeout=120)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn('still has running processes', refused.stdout + refused.stderr)
+        self.assertTrue(self.unit.exists()); self.assertTrue(self.base.exists()); self.assertTrue(self.data.exists())
+        self.assertEqual(registry.read_text(), 'present')
+        shutil.rmtree(live)
         run([])
         self.assertFalse(self.unit.exists()); self.assertFalse(self.base.exists())
         self.assertTrue(self.data.exists()); self.assertTrue(self.logs.exists())
