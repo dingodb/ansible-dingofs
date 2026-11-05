@@ -77,7 +77,7 @@ dingo_client_cpuset_busy_pct: 30
 # an overlapping manual list is dropped back to auto-detect instead.
 # force = pin onto OCCUPIED CPUs anyway (least-busy pick by sampled usage,
 # fully-shared boxes; shards will contend until CPUs are freed.
-dingo_client_cpuset_on_insufficient: fail
+dingo_client_cpuset_on_insufficient: force
 # true = cpuset expands to all sibling threads of the chosen cores (e.g. 8
 # cores -> 16 ids like 100-115 on adjacent-pair HT layouts); false (default) =
 # first-thread ids only, one shard per physical core, no hyperthread sharing.

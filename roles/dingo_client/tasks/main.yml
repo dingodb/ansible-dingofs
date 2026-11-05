@@ -217,7 +217,7 @@
 - name: Validate cpuset insufficiency policy (client hosts)
   assert:
     that:
-      - (dingo_client_cpuset_on_insufficient | default('fail')) in ['fail', 'warn', 'force']
+      - (dingo_client_cpuset_on_insufficient | default('force')) in ['fail', 'warn', 'force']
     fail_msg: >-
       dingo_client_cpuset_on_insufficient must be one of fail|warn|force, got
       '{{ dingo_client_cpuset_on_insufficient }}'. fail = stop the deploy;

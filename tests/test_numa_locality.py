@@ -126,7 +126,6 @@ class RoleLocalityTests(unittest.TestCase):
             prefix + "_node_mem": {"0": 85, "1": 10},
             component + "_base_dir": str(base), component + "_shards": 2,
             component + "_mds_addrs": "127.0.0.1:7000",
-            component + "_cpuset_on_insufficient": "fail",
             "client_instance": {"fsname": "fixture"},
             "dingo_client_fsname": "fixture", "dingo_client_cpusets_claimed": [],
             "dingo_client_scripts_processed": [],
@@ -197,6 +196,13 @@ class RoleLocalityTests(unittest.TestCase):
         for component in ("dingo_cache", "dingo_client"):
             self.render(component, {component + "_cpuset_on_insufficient": "force"}, expected=[component + "_cpuset_effective == '0,2'"])
         self.render("dingo_client", {"dingo_client_cpuset_on_insufficient": "force", "dingo_client_cpusets_claimed": ["0"]}, succeeds=False)
+
+    def test_default_shares_claimed_local_cpus_but_explicit_fail_is_respected(self):
+        self.reserve_local_cpus()
+        for component in ("dingo_cache", "dingo_client"):
+            _, script = self.render(component, expected=[component + "_cpuset_effective == '0,2'"])
+            self.assertIn('numactl --cpunodebind=0 --preferred=0', script)
+            self.render(component, {component + '_cpuset_on_insufficient': 'fail'}, succeeds=False)
 
     def test_required_locality_rejects_manual_remote_masks_and_unknown_topology(self):
         for component in ("dingo_cache", "dingo_client"):
