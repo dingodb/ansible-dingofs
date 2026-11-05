@@ -2,7 +2,8 @@
 
 [`scripts/check_performance.py`](../scripts/check_performance.py) 是唯一需要带到现场的文件：
 Python 3 标准库、单文件、无依赖。它只负责检查、对比和生成报告，具体配置修改与持久化由
-基础设施同事处理。原有 `roles/tune`、inventory、调优 playbook 和 CI 保持原样。
+基础设施同事处理。检查器自身不调用调优 role；明确需要执行的 C1E 调优已接入
+`roles/tune`，使用方式见 [CPU idle tuning](../README.md#cpu-idle-tuning)。
 不提供 apply 模式，不安装服务、不修改 sysfs/sysctl/BIOS、不重启机器。
 
 ## 准备与执行
@@ -94,8 +95,10 @@ Markdown 报告是自包含的：主机概览、基础设施处理清单、当�
 ## 原实现问题的交接依据
 
 旧 `cpupower idle-set -D 3` 中的 3 是退出延迟阈值（µs），可能漏掉退出延迟为 2µs 的 C1E；
-原有“任一状态已 DISABLED 就跳过”的判断也可能留下部分未禁用状态。按职责要求，原代码保持原样，
-新的检查器独立发现这些差距，并提供给基础设施处理。
+原有“任一状态已 DISABLED 就跳过”的判断也可能留下部分未禁用状态。
+调优 role 现已逐在线 CPU、逐状态处理：按名称禁用 C1E，并保留原退出延迟阈值规则，
+写入后读回验证，支持 `--tags cpu_idle --check`。这只修改运行态 OS 策略，重启后需重新执行；
+不能代替 BIOS C1E 核实。本文检查器继续只读，独立发现未达标状态。
 
 - [Linux CPU idle 管理](https://docs.kernel.org/admin-guide/pm/cpuidle.html)
 - [intel_idle 与固件状态关系](https://docs.kernel.org/admin-guide/pm/intel_idle.html)
