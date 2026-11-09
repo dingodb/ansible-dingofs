@@ -1,0 +1,47 @@
+---
+# Read-only discovery; the inventory chooses hosts, never expected filesystems.
+- name: Discover DingoFS client mounts independently of deployment configuration
+  hosts: "{{ dingo_client_discover_hosts | default('client_servers') }}"
+  remote_user: root
+  become: false
+  gather_facts: false
+  vars:
+    dingofs_discovery_compact_output: true
+  tasks:
+    - name: Discover kernel mounts, system services and live clients
+      dingofs_client_discover:
+        command_timeout: "{{ dingo_client_discover_command_timeout | default(15) }}"
+      register: _client_discovery
+      failed_when: false
+      ignore_unreachable: true
+      tags: [discovery_scan]
+
+    - name: Build host discovery report
+      ansible.builtin.set_fact:
+        dingo_client_discovery:
+          host: "{{ inventory_hostname }}"
+          address: "{{ ansible_host | default(inventory_hostname) }}"
+          scan_status: "{{ 'unreachable' if _client_discovery.unreachable | default(false) else ('failed' if _client_discovery.summary is not defined else ('ok' if _client_discovery.summary.complete else 'partial')) }}"
+          error: "{{ _client_discovery.msg | default('') if _client_discovery.summary is not defined else '' }}"
+          summary: "{{ _client_discovery.summary | default({}) }}"
+          mounts: "{{ _client_discovery.mounts | default([]) }}"
+          services: "{{ _client_discovery.services | default([]) }}"
+          processes: "{{ _client_discovery.processes | default([]) }}"
+          other_fuse_mounts: "{{ _client_discovery.other_fuse_mounts | default([]) }}"
+          warnings: "{{ _client_discovery.warnings | default([]) }}"
+
+    - name: Save complete reports and print a grouped discovery summary
+      dingofs_client_discovery_report:
+        hosts: "{{ ansible_play_hosts_all | map('extract', hostvars, 'dingo_client_discovery') | list }}"
+        report_dir: "{{ dingo_client_discover_report_dir | default(playbook_dir ~ '/../reports/client-discovery') }}"
+        display_limit: "{{ dingo_client_discover_display_limit | default(20) }}"
+      delegate_to: localhost
+      run_once: true
+      become: false
+
+    - name: Require a complete scan when strict discovery is requested
+      ansible.builtin.assert:
+        that: dingo_client_discovery.scan_status == 'ok'
+        fail_msg: "{{ inventory_hostname }} discovery is {{ dingo_client_discovery.scan_status }}; inspect the saved report."
+      when: dingo_client_discover_strict | default(false) | bool
+      tags: [discovery_strict]

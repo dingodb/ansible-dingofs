@@ -5,6 +5,11 @@ __pycache__/
 *.vault
 .env
 /reports/
+# Controller-local Ansible collections and runtime caches.
+/.ansible/
+.DS_Store
+.pytest_cache/
+.venv/
 
 # claude
 .claude
