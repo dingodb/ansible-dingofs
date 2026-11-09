@@ -68,6 +68,7 @@ ansible-dingofs/
 │   ├── client_05_label.yml      # Client: node labels
 │   ├── client_06_dingocli.yml   # Client: ~/.dingo/dingo.yaml + dingo binary
 │   ├── client_07_upgrade.yml    # Client: upgrade binaries, restart mounts
+│   ├── client_98_discover.yml   # Client: discover actual mounts without fs config
 │   ├── client_99_status.yml     # Client: health check
 │   │                            # --- cross-cutting / standalone ---
 │   ├── config_podman_rootless.yml  # Rootless podman + systemd linger
@@ -450,6 +451,81 @@ ansible-playbook playbooks/client_99_status.yml
 ```
 
 All client playbooks connect with `remote_user: root`.
+
+### Discover mounts without knowing filesystem names
+
+`client_98_discover.yml` scans the selected nodes without reading `dingo_clients`,
+the configured filesystem name, mountpoint or version suffix. It discovers
+DingoFS mounts across versions, including manual mounts and bind mounts, and
+reports stopped/failed client systemd services as well as running clients.
+
+```bash
+SITE=../ansible-dingofs-env/xn01/v5.2
+ansible-playbook -i "$SITE/hosts.py" playbooks/client_98_discover.yml --limit NODE
+
+# Scan every host in a supplied inventory, including hosts outside client_servers
+ansible-playbook -i /path/to/hosts.yml playbooks/client_98_discover.yml \
+  -e dingo_client_discover_hosts=all
+```
+
+The kernel's `/proc/self/mountinfo` is the source of actual mount records.
+System systemd units (including installed inactive units) and `/proc` client
+processes supply additional identity and service associations. Literal
+`g_mnt`/`g_fsname` assignments in startup scripts and direct client startup
+arguments help locate services whose clients are stopped. Arbitrary shell
+expressions and symlinked scripts are left unresolved. Custom units are detected
+by client names/descriptions, startup commands or a direct running client as their
+main process; opaque wrappers may remain unassociated.
+
+The terminal prints node/mount totals, findings first, and identical mount
+layouts grouped with node counts and example hostnames. It shows at most 20
+findings and 20 layouts; `-e dingo_client_discover_display_limit=50` changes that
+limit. Per-host task output and the full play recap are suppressed for discovery.
+Use `-v` to show normal task details. The `dingofs` stdout callback configured in
+`ansible.cfg` preserves default output for other plays; use the same callback and
+plugin directory when supplying a custom Ansible configuration.
+
+Full records retain `mounts`, `services`, `processes`, `other_fuse_mounts` and
+`warnings`. Service `mount_state` is `mounted`, `not_mounted`,
+`different_filesystem` or `unknown`. Other FUSE mounts are listed separately;
+they are not assumed to be DingoFS. Mounted records preserve filesystem type,
+source, bind root, mount ID, read-only state and associated services/PIDs.
+An empty successful scan is valid. `scan_status: partial`, `failed` and
+`unreachable` distinguish missing evidence from a node with no client mounts.
+
+The controller writes private reports for **this invocation's selected hosts**
+to `reports/client-discovery/run-*/` and prints the exact directory. Terminal
+limits do not truncate these artifacts:
+
+| File | Contents |
+| --- | --- |
+| `summary.txt` | Compact terminal summary |
+| `hosts.tsv` | Every node, scan status, layout group and counts |
+| `mounts.tsv` | Every DingoFS mount with filesystem, path, service and PID |
+| `issues.tsv` | Every finding, including scan failures and stopped/unmounted services |
+| `layouts.tsv` | Every layout and its complete node membership |
+| `report.json` | Full discovery evidence, totals, layouts and findings |
+
+Scan failures and unreachable nodes are excluded from layout grouping, so they
+cannot appear in the "no mounts" group. Partial scans retain their observed
+layout and also appear in the findings table. Inactive services and unresolved
+mount identity are findings to inspect, rather than proof of an application fault.
+
+Override the report root with `-e dingo_client_discover_report_dir=/path/to/reports`.
+Reports are also written in `--check` mode. Optional
+`-e dingo_client_discover_strict=true` fails incomplete scans **after** saving the
+report; it does not assert that discovered services are active. Each systemctl
+query has a 15-second timeout, configurable with
+`dingo_client_discover_command_timeout`.
+
+Scanning changes no remote services or filesystems and does not run startup
+scripts, `df`, directory traversal or filesystem I/O probes. `mounted` means
+present in the kernel table; filesystem responsiveness and application I/O health
+require a separate check. Mounts cover the scanner's current mount namespace;
+clients found in other namespaces are marked `mount_namespace: other`, without
+attributing their mountpoints to the host. Container-private mounts and per-user
+systemd managers are outside this scan's scope. Inventory filtering and `--limit`
+still determine which nodes are inspected.
 
 ### Client restart and skip reports
 
