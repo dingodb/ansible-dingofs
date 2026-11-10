@@ -28,6 +28,8 @@ service rather than erroring out cleanly. Override for a deliberate one-off:
 - **Target nodes**: CentOS/RHEL/Rocky Linux (3 nodes minimum for HA)
 - **Network**: All target nodes reachable via SSH from the control node
 - **Privileges**: Root or sudo access on target nodes
+- **Credentials**: Configure rqlite authentication and the Grafana administrator
+  password in Vault before deployment; see [Operational security and recovery](#operational-security-and-recovery).
 
 ## Repository Structure
 
@@ -814,7 +816,9 @@ Failures that are easy to misread:
 - **Data ends up on the system disk.** `/mnt/diskN` was never mounted;
   `dingofs_cluster` does not check.
 - **`Error-Code: 410009 / cluster already exist`.** A previous run left the cluster
-  registered. Re-running is safe -- the role treats this as success.
+  registered. Existing registrations must have matching topology and healthy
+  services. Incomplete registrations require explicit inspection and recovery;
+  the role never retries initialization over an existing cluster.
 - **`Error-Code: 100000 / init SQLite database failed`.** `~/.dingo/dingocli.cfg`
   still points at an old rqlite address. The role writes the config before
   invoking the CLI, so re-running `04_dingo_cli.yml` fixes it.
@@ -926,3 +930,81 @@ purge retained data/logs even after installation files have been removed.
 Repeating a completed uninstall is a no-op. `--check` performs ownership/usage
 and registration queries and prints exact removal/retention paths, without
 stopping services, unmounting or deleting files.
+
+## Operational security and recovery
+
+SSH host key verification is enabled. Add verified host keys to the controller's
+`known_hosts` before deployment. For an isolated disposable lab, explicitly set
+`ANSIBLE_HOST_KEY_CHECKING=False`; production inventories should keep verification.
+
+CLI downloads remain disabled by default. Enabling `dingo_cli_download_enabled`
+also requires `dingo_cli_download_checksum: "sha256:<trusted release hash>"`.
+A moving `latest` URL alone is not reproducible. The role downloads to a private
+candidate, checks its hash and `--version`, and installs it with a backup of the
+previous file. A changed release needs a new trusted hash. Rqlite and jemalloc
+archives are checked on every staging run, including local/offline archives;
+version overrides must supply their own `*_download_checksum`.
+
+New rqlite deployments use the `rqlite` service account and
+`/var/lib/rqlite/node`. Existing data is never moved automatically: back it up,
+stop the service, migrate and chown the verified database directory, update the
+existing unit to the verified absolute path, and then apply the role. Keep
+`rqlite_node_dir` unchanged until that migration is complete. A legacy root
+service requires the explicit `rqlite_allow_insecure: true` exception.
+
+Put rqlite credentials in Ansible Vault, for example:
+
+```yaml
+rqlite_auth_users:
+  - username: dingo
+    password: "{{ vault_rqlite_password }}"
+    perms: [execute, query, status, ready]
+  - username: cluster_join
+    password: "{{ vault_rqlite_join_password }}"
+    perms: [join]
+rqlite_join_username: cluster_join
+dingo_cli_db_url: "rqlite://dingo:{{ vault_rqlite_password | urlencode }}@{{ rqlite_master_host }}:{{ rqlite_http_port }}"
+```
+
+HTTP basic authentication does not encrypt traffic, and the Raft port is also
+plaintext. These ports are trusted management-network services: firewall TCP
+4001 to the admin/CLI hosts and rqlite peers, and TCP 4002 to the rqlite peers
+only. Use an isolated management network or an encrypted network tunnel across
+untrusted links. Never expose either port publicly. An unauthenticated legacy
+cluster requires `rqlite_allow_insecure: true` and the same network restrictions;
+that exception does not add authentication or encryption.
+
+Monitor images use fixed version tags; sites should verify compatibility with
+their prepared server CLI and can override them with registry digests. Set
+`dingo_monitor_grafana_admin_password` in Vault (at least 12 characters). The
+current CLI requires `admin:admin` during initial datasource synchronization;
+the role changes the persistent account password immediately afterwards.
+Restrict port 3000 to management clients throughout bootstrap, and recover a
+failed bootstrap before exposing Grafana. For a pre-existing password, set
+`dingo_monitor_grafana_current_password` to the current value. Changing a Vault
+password on an existing stack requires that current password too. Once the
+configured password works, reruns leave it alone and do not redeploy the stack.
+
+Cache upgrades and client deployments persist `.restart-required` before changing
+service files. An interrupted or busy restart retains this marker for the next
+run, including when all files already match. Busy client instances are deferred
+individually so other instances can proceed. The `.bak` upgrade backup retains
+the oldest saved binary; it is not necessarily the immediately preceding build.
+
+`lvm_data_repair: true` activates and remounts an existing formatted data LV and
+repairs a missing fstab entry. It never formats a managed LV. Missing LVs,
+unknown filesystems, conflicting mounts or nonempty target directories require
+manual recovery. Cache allocation skips occupied VG names, mountpoints and
+fstab targets and refuses to hide files in an unmounted target directory.
+
+A limited `01_prepare.yml --limit ...` run exchanges SSH keys only among active
+meta hosts in that play. Run preparation against all intended meta peers to
+establish their full mutual trust; limiting a play does not modify excluded
+nodes.
+
+THP policy is persisted through `/etc/tmpfiles.d/dingofs-thp.conf`. CPU idle/C1E
+settings remain runtime settings as documented above. Cache/client units set
+`LimitCORE=infinity` and `LimitNPROC=4194304`; the shared core directory uses
+mode `1777`. Client OOM eligibility stays at the normal score 0, configurable
+with `dingo_client_oom_score_adjust`; setting -1000 makes it ineligible for OOM
+killing and requires a site-specific memory policy.

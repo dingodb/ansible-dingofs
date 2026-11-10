@@ -32,6 +32,8 @@ prometheus:
 
 grafana:
   config:
+    username: admin
+    password: admin
     container_image: {{ dingo_monitor_grafana_image }}
     listen_port: {{ dingo_monitor_grafana_port }}
   deploy:

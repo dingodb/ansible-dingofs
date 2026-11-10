@@ -27,12 +27,14 @@
         src: ../roles/lvm_cache/files/remap-dingo-mounts-by-size.sh
         dest: /tmp/remap-dingo-mounts-by-size.sh
         mode: "0755"
+      check_mode: false
 
     # rc: 0 = layout OK, 2 = remap needed, 1 = script died. A die with
     # 'No matching' means the host has no dingo_cache fstab entries at all
     # (no cache disks provisioned) — not an error, just nothing to remap.
     - name: Check current mount layout (dry run; exit 2 means remap needed)
       shell: bash /tmp/remap-dingo-mounts-by-size.sh
+      check_mode: false
       register: remap_check
       changed_when: false
       failed_when: >-
@@ -57,7 +59,7 @@
     # hold file handles that would block the unmount). Stopped services are
     # recorded and restarted after a successful remap.
     - name: Serialize filesystem remapping on this host
-      when: remap_apply | default(false) | bool and remap_check.rc == 2
+      when: not ansible_check_mode and remap_apply | default(false) | bool and remap_check.rc == 2
       block:
         - name: Acquire the remap lock
           command: mkdir -m 0700 /run/lock/ansible-dingo-remap.lock
@@ -110,19 +112,6 @@
                 var: remap_apply_result.stdout_lines
               when: remap_apply_result is defined and remap_apply_result.changed
 
-            - name: Restart services stopped before the remap
-              shell: |
-                set -e
-                started=0
-                for s in $(cat /run/lock/ansible-dingo-remap.lock/stopped-services 2>/dev/null); do
-                  systemctl start "$s"
-                  echo "restarted $s"
-                  started=$((started+1))
-                done
-                echo "total restarted: $started"
-              register: service_restart
-              changed_when: "'restarted ' in service_restart.stdout"
-              when: remap_apply_result is defined and remap_apply_result.changed
 
           rescue:
             - name: Report services stopped by this remap attempt
@@ -142,14 +131,15 @@
 
             - name: Restart services stopped before the remap
               shell: |
-                set -e
+                failed=0
                 started=0
                 for s in $(cat /run/lock/ansible-dingo-remap.lock/stopped-services 2>/dev/null); do
-                  systemctl start "$s"
+                  if ! systemctl start "$s"; then echo "FAILED: $s" >&2; failed=1; continue; fi
                   echo "restarted $s"
                   started=$((started+1))
                 done
                 echo "total restarted: $started"
+                exit "$failed"
               register: service_restart
               changed_when: "'restarted ' in service_restart.stdout"
 
@@ -157,6 +147,21 @@
             - name: Report the failed remap after restoring services
               fail:
                 msg: "Remap failed. Original mounts were verified and recorded services restarted; inspect the original failure."
+
+        - name: Restart services stopped before the remap
+          shell: |
+            failed=0
+            started=0
+            for s in $(cat /run/lock/ansible-dingo-remap.lock/stopped-services 2>/dev/null); do
+              if ! systemctl start "$s"; then echo "FAILED: $s" >&2; failed=1; continue; fi
+              echo "restarted $s"
+              started=$((started+1))
+            done
+            echo "total restarted: $started"
+            exit "$failed"
+          register: service_restart
+          changed_when: "'restarted ' in service_restart.stdout"
+          when: remap_apply_result is defined and remap_apply_result.changed
 
         - name: Remind about conf sync after remap
           debug:

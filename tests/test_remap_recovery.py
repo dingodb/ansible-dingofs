@@ -15,15 +15,15 @@ REPO = Path(__file__).resolve().parents[1]
 @unittest.skipUnless(shutil.which('ansible-playbook'), 'requires Ansible')
 class RemapTests(unittest.TestCase):
     def test_services_restart_only_after_original_mounts_are_verified(self):
-        for restored in (True, False):
-            with self.subTest(restored=restored), tempfile.TemporaryDirectory() as directory:
+        for restored, applied, start_fails in [(True, False, False), (False, False, False), (False, True, True), (True, True, False)]:
+            with self.subTest(restored=restored, applied=applied, start_fails=start_fails), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 fakebin = root / 'fakebin'
                 fakebin.mkdir()
                 events = root / 'events'
                 events.write_text('')
                 scripts = {
-                    'systemctl': 'if [ "$1" = list-units ]; then echo "dingofs-mount-a.service loaded active running"; else echo "$*" >> "' + str(events) + '"; fi',
+                    'systemctl': 'if [ "$1" = list-units ]; then printf "dingofs-mount-a.service loaded active running\\ndingofs-mount-b.service loaded active running\\n"; else echo "$*" >> "' + str(events) + '"; ' + ('[ "$1 $2" != "start dingofs-mount-a.service" ]' if start_fails else 'true') + '; fi',
                     'findmnt': 'if [ "$4" != --mountpoint ]; then echo "/dev/original /mnt/disk1"; else echo "' + ('/dev/original' if restored else '/dev/wrong') + '"; fi',
                     'readlink': 'echo "$2"',
                 }
@@ -32,7 +32,7 @@ class RemapTests(unittest.TestCase):
                     p.write_text('#!/bin/sh\n' + content + '\n')
                     p.chmod(0o755)
                 stub = root / 'source.sh'
-                stub.write_text('#!/bin/sh\nif [ "$1" = --apply ]; then exit 1; else exit 2; fi\n')
+                stub.write_text('#!/bin/sh\nif [ "$1" = --apply ]; then exit ' + ('0' if applied else '1') + '; else exit 2; fi\n')
                 tasks = yaml.safe_load((REPO / 'playbooks/cache_02b_remap.yml').read_text())[0]['tasks']
                 def adapt(value):
                     if isinstance(value, str):
@@ -61,12 +61,19 @@ class RemapTests(unittest.TestCase):
                 result = subprocess.run(['ansible-playbook', '-i', 'localhost,', str(path)], cwd=REPO,
                                         env=dict(os.environ, ANSIBLE_CONFIG=str(REPO / 'ansible.cfg')),
                                         capture_output=True, text=True, timeout=45)
-                self.assertNotEqual(result.returncode, 0)
-                expected = ['stop dingofs-mount-a.service']
-                if restored:
-                    expected.append('start dingofs-mount-a.service')
+                self.assertEqual(result.returncode == 0, applied and not start_fails, result.stdout + result.stderr)
+                expected = ['stop dingofs-mount-a.service', 'stop dingofs-mount-b.service']
+                if applied or restored:
+                    expected.extend(['start dingofs-mount-a.service', 'start dingofs-mount-b.service'])
                 self.assertEqual(events.read_text().splitlines(), expected, result.stdout + result.stderr)
                 self.assertFalse((root / 'lock').exists())
+                events.write_text('')
+                preview = subprocess.run(['ansible-playbook', '-i', 'localhost,', str(path), '--check'], cwd=REPO,
+                                         env=dict(os.environ, ANSIBLE_CONFIG=str(REPO / 'ansible.cfg')),
+                                         capture_output=True, text=True, timeout=45)
+                self.assertEqual(preview.returncode, 0, preview.stdout + preview.stderr)
+                self.assertIn('NEEDS REMAP', preview.stdout)
+                self.assertEqual(events.read_text(), '')
 
     def test_partial_unmount_failure_calls_restore(self):
         version = subprocess.check_output(['/bin/bash', '-c', 'echo ${BASH_VERSINFO[0]}'], text=True)

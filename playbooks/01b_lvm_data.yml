@@ -3,19 +3,20 @@
 # Playbook: LVM data disks for DingoFS meta server nodes
 #
 # Creates vg_diskN/lv on unused NVMe devices, XFS, mounted at
-# /mnt/disk0 .. /mnt/disk<N-1>. Counterpart to cache_02_lvm.yml.
+# /mnt/disk<offset> .. /mnt/disk<offset+N-1> (offset defaults to 1). Counterpart to cache_02_lvm.yml.
 #
 # Naming follows production: vg_diskN / lv / /mnt/diskN, with data under
 # /mnt/disk<N>/dingofs-v<X.Y>/{data,logs,raft}/{mds,store,coordinator,executor}.
 # Verified against 8 hosts across 4 regions. Note that none of them mount
 # /mnt/data*, even though inventory/group_vars defaults dingofs_data_dir to
 # "/mnt/data${service_replica_sequence}/...". When using this playbook, set
-# dingofs_data_dir/log_dir/raft_dir to /mnt/disk${service_replica_sequence}/...
+# dingofs_data_dir/log_dir/raft_dir to /mnt/disk${service_replica_sequence_with_offset}/...
 # so the two agree.
 #
-# Index starts at 0 because dingo CLI expands service_replica_sequence from 0:
-# `server.port: 690${service_replica_sequence}` with mds_base_port=690 yields
-# 6900/6901/6902, matching bj09's MDS ports.
+# Index starts at lvm_data_mount_index_offset (default 1; explicitly use 0
+# for existing zero-based sites). Match topology sequence_offset and use
+# ${service_replica_sequence_with_offset} for disk paths. Port numbering can
+# still use ${service_replica_sequence}, independently of disk numbering.
 #
 # This step is required: dingofs_cluster creates its data/log/raft directories
 # under /mnt/diskN, and when those mounts are missing it does not fail -- it

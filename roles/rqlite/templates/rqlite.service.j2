@@ -3,12 +3,13 @@ Description=Rqlite Database Service
 After=network.target
 
 [Service]
-User=root
-Group=root
+User={{ rqlite_service_user }}
+Group={{ rqlite_service_group }}
+NoNewPrivileges=true
 {% if rqlite_join_address is defined and rqlite_join_address %}
-ExecStart={{ rqlite_bin_dest }} -node-id {{ rqlite_node_id }} -http-addr {{ ansible_host }}:{{ rqlite_http_port }} -raft-addr {{ ansible_host }}:{{ rqlite_raft_port }} -join {{ rqlite_join_address }}:{{ rqlite_raft_port }} {{ rqlite_node_dir }}
+ExecStart={{ rqlite_bin_dest }} -node-id {{ rqlite_node_id }} -http-addr {{ ansible_host }}:{{ rqlite_http_port }}{% if rqlite_auth_users | length > 0 %} -auth {{ rqlite_auth_file }}{% endif %} -raft-addr {{ ansible_host }}:{{ rqlite_raft_port }} -join {{ rqlite_join_address }}:{{ rqlite_http_port }}{% if rqlite_join_username | length > 0 %} -join-as {{ rqlite_join_username }}{% endif %} {{ rqlite_node_dir }}
 {% else %}
-ExecStart={{ rqlite_bin_dest }} -node-id {{ rqlite_node_id }} -http-addr {{ ansible_host }}:{{ rqlite_http_port }} -raft-addr {{ ansible_host }}:{{ rqlite_raft_port }} {{ rqlite_node_dir }}
+ExecStart={{ rqlite_bin_dest }} -node-id {{ rqlite_node_id }} -http-addr {{ ansible_host }}:{{ rqlite_http_port }}{% if rqlite_auth_users | length > 0 %} -auth {{ rqlite_auth_file }}{% endif %} -raft-addr {{ ansible_host }}:{{ rqlite_raft_port }} {{ rqlite_node_dir }}
 {% endif %}
 Restart=always
 RestartSec=5

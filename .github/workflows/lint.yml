@@ -59,7 +59,7 @@ jobs:
 
           files = sorted(
               p for p in pathlib.Path(".").rglob("*")
-              if p.suffix in (".yml", ".yaml") and ".git" not in p.parts
+              if p.suffix in (".yml", ".yaml") and not {".git", ".ansible", ".venv"}.intersection(p.parts)
           )
 
           bad = []

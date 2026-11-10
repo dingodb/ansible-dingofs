@@ -3,6 +3,11 @@
 # Role: rqlite - Deploy rqlite database cluster
 # ============================================================
 
+- name: Require a trusted rqlite release checksum
+  assert:
+    that: rqlite_download_checksum is match('^sha256:[0-9a-fA-F]{64}$')
+    fail_msg: "Provide rqlite_download_checksum for the selected release before staging or extraction."
+
 - name: Require an absolute rqlite data directory
   assert:
     that: rqlite_node_dir is match('^/')
@@ -33,12 +38,44 @@
     fail_msg: "The installed rqlite data path differs. Verify and migrate the database before changing this unit."
   when: _rqlite_unit.stat.exists
 
+# --- Security preflight (before download, ownership or service changes) ---
+- name: Require authenticated rqlite or an explicit isolated-network exception
+  assert:
+    that:
+      - rqlite_auth_users | length > 0 or rqlite_allow_insecure | bool
+      - rqlite_service_user != 'root' or rqlite_allow_insecure | bool
+      - rqlite_service_user == 'root' or not rqlite_node_dir.startswith('/root/')
+    fail_msg: >-
+      Configure rqlite_auth_users and an unprivileged service account. Existing
+      /root data needs a backed-up, explicit migration; it is never moved or
+      reinitialized automatically. rqlite_allow_insecure=true is only for an
+      isolated network with firewall rules for ports 4001/4002.
+
+- name: Require nonanonymous rqlite credentials and a joining identity
+  assert:
+    that:
+      - rqlite_auth_users | selectattr('username', 'equalto', '*') | list | length == 0
+      - inventory_hostname not in groups.get('rqlite_slaves', []) or rqlite_join_username | length > 0
+      - inventory_hostname not in groups.get('rqlite_slaves', []) or rqlite_join_username in (rqlite_auth_users | map(attribute='username') | list)
+  no_log: true
+  when: rqlite_auth_users | length > 0
+
+- name: Require complete rqlite credential entries
+  assert:
+    that:
+      - item.username is match('^[A-Za-z0-9_.-]+$')
+      - item.password | default('') | length >= 12
+      - item.perms | default([]) | length > 0
+  loop: "{{ rqlite_auth_users }}"
+  no_log: true
+
 # --- Download & Extract ---
 - name: Prepare rqlite tarball (download first, fallback to local)
   block:
     - name: Download rqlite tarball
       get_url:
         url: "{{ rqlite_download_url }}"
+        checksum: "{{ rqlite_download_checksum }}"
         dest: "{{ rqlite_pkg_dir }}/{{ rqlite_tarball }}"
         mode: "0644"
       when: 
@@ -63,15 +100,17 @@
     - name: Ensure rqlite tarball exists after download/fallback
       stat:
         path: "{{ rqlite_pkg_dir }}/{{ rqlite_tarball }}"
+        checksum_algorithm: sha256
       register: rqlite_tarball_stat
 
     - name: Assert rqlite tarball is available
       assert:
         that:
-          - rqlite_tarball_stat.stat.exists
+          - rqlite_tarball_stat.stat.isreg | default(false)
+          - rqlite_tarball_stat.stat.checksum | default('') == rqlite_download_checksum.split(':')[1]
         fail_msg: >-
-          Failed to prepare rqlite tarball. Download URL failed and local file
-          {{ rqlite_local_src }} is not available on control node.
+          Failed to prepare a checksum-verified rqlite tarball. Download URL failed or local file
+          {{ rqlite_local_src }} is unavailable or does not match rqlite_download_checksum.
 
 - name: Create rqlite extract directory
   file:
@@ -94,14 +133,49 @@
     mode: "0755"
     remote_src: true
 
+- name: Create the dedicated rqlite service group
+  group:
+    name: "{{ rqlite_service_group }}"
+    system: true
+
+- name: Create the dedicated rqlite service account
+  user:
+    name: "{{ rqlite_service_user }}"
+    group: "{{ rqlite_service_group }}"
+    home: /var/lib/rqlite
+    create_home: false
+    system: true
+    shell: /usr/sbin/nologin
+  when: rqlite_service_user != 'root'
+
+- name: Create the private rqlite configuration directory
+  file:
+    path: "{{ rqlite_auth_file | dirname }}"
+    state: directory
+    owner: root
+    group: "{{ rqlite_service_group }}"
+    mode: "0750"
+
+- name: Install rqlite API and join credentials
+  copy:
+    content: "{{ rqlite_auth_users | to_nice_json }}"
+    dest: "{{ rqlite_auth_file }}"
+    owner: root
+    group: "{{ rqlite_service_group }}"
+    mode: "0640"
+  diff: false
+  no_log: true
+  when: rqlite_auth_users | length > 0
+  notify: restart rqlite
+
 # --- Create data directory ---
 - name: Create rqlite node directory
   file:
     path: "{{ rqlite_node_dir }}"
     state: directory
-    owner: root
-    group: root
-    mode: "0755"
+    owner: "{{ rqlite_service_user }}"
+    group: "{{ rqlite_service_group }}"
+    mode: "0700"
 
 # --- Deploy systemd service ---
 - name: Deploy rqlite systemd service (master - no join)

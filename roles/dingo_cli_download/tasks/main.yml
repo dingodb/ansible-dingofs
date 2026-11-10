@@ -41,16 +41,48 @@
           differ from the manually staged server CLI path
           {{ dingo_cli_pkg_path | default('/root/dingofs/pkg/dingo') }}.
 
+    - name: Require a verified worker CLI download
+      assert:
+        that: dingo_cli_download_checksum is match('^sha256:[0-9a-fA-F]{64}$')
+        fail_msg: "Set dingo_cli_download_checksum=sha256:<trusted hash> before enabling downloads."
+
     - name: Ensure the controller CLI download directory exists
       file:
         path: "{{ dingo_cli_download_dest | dirname }}"
         state: directory
         mode: "0755"
 
-    - name: Download the latest CLI to the control node
-      get_url:
-        url: "{{ dingo_cli_download_url }}"
-        dest: "{{ dingo_cli_download_dest }}"
-        force: true
-        checksum: "{{ dingo_cli_download_checksum if dingo_cli_download_checksum | length > 0 else omit }}"
-        mode: "0755"
+    - name: Allocate a private candidate path beside the staged CLI
+      tempfile:
+        state: file
+        path: "{{ dingo_cli_download_dest | dirname }}"
+        prefix: .dingo-candidate-
+      register: _dingo_cli_candidate
+
+    - name: Verify the candidate before replacing the staged worker CLI
+      block:
+        - name: Download the latest CLI to the control node
+          get_url:
+            url: "{{ dingo_cli_download_url }}"
+            dest: "{{ _dingo_cli_candidate.path }}"
+            force: true
+            checksum: "{{ dingo_cli_download_checksum }}"
+            mode: "0755"
+
+        - name: Validate that the candidate CLI can execute
+          command:
+            argv: ["{{ _dingo_cli_candidate.path }}", --version]
+          changed_when: false
+
+        - name: Install the verified worker CLI and preserve the previous file
+          copy:
+            src: "{{ _dingo_cli_candidate.path }}"
+            dest: "{{ dingo_cli_download_dest }}"
+            remote_src: true
+            backup: true
+            mode: "0755"
+      always:
+        - name: Remove the temporary CLI candidate
+          file:
+            path: "{{ _dingo_cli_candidate.path }}"
+            state: absent

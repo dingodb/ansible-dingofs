@@ -5,3 +5,11 @@
 * hard core unlimited
 * soft nproc 4194304
 * hard nproc 4194304
+
+# PAM wildcard entries do not cover root; system services use unit limits.
+root soft nofile 1048576
+root hard nofile 1048576
+root soft core unlimited
+root hard core unlimited
+root soft nproc 4194304
+root hard nproc 4194304

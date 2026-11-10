@@ -11,6 +11,8 @@
 # Validate before probing the host or changing any files/services.
 - import_tasks: validate_rdma.yml
 
+- import_tasks: preflight_binary.yml
+
 - name: Configure the latest dingo command on cache workers without rewriting dingo.yaml
   include_role:
     name: dingo_env
@@ -44,6 +46,7 @@
   shell: grep '^--id=' "{{ dingo_cache_base_dir }}/dingo-cache.conf" | sed 's/^--id=//'
   register: existing_id
   changed_when: false
+  check_mode: false
   when: existing_conf.stat.exists
 
 # Deterministic per-machine ID so the SAME host always gets the SAME id no
@@ -77,7 +80,7 @@
 #       even when the seed is not.
 #
 # NOTE: existing dingo-cache.conf files keep their recorded --id (the task
-# below returns early when the conf exists), so changing this formula does not
+# below returns early when a nonempty ID exists), so changing this formula does not
 # move the cache of an already-deployed node. It only affects nodes that have
 # no conf yet, plus any node whose --id is removed to force a regeneration.
 - name: Generate deterministic config ID (stable per machine)
@@ -91,11 +94,12 @@
     python3 -c "import sys, uuid; print(uuid.uuid5(uuid.NAMESPACE_DNS, 'dingofs-cache:' + sys.argv[1] + ':' + sys.argv[2]))" "$seed" "$(hostname)"
   register: generated_uuid
   changed_when: false
-  when: not existing_conf.stat.exists
+  check_mode: false
+  when: existing_id.stdout | default('') | trim | length == 0
 
 - name: Set config ID fact
   set_fact:
-    dingo_cache_config_id: "{{ existing_id.stdout | default(generated_uuid.stdout) }}"
+    dingo_cache_config_id: "{{ (existing_id.stdout | default('') | trim) or (generated_uuid.stdout | default('') | trim) }}"
 
 # Required IB locality ignores memory pressure for node selection. Disabling
 # the shared switch restores memory-aware selection and CPU fallback.

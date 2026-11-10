@@ -9,7 +9,7 @@ fi
 
 # ================= CONFIGURATION =================
 # Define protected filenames (files to never delete or compress)
-PROTECTED_FILES=({% for f in cron_cleanup_protected_files %}"{{ f }}" {% endfor %})
+PROTECTED_FILES=({% for f in cron_cleanup_protected_files %}{{ f | quote }} {% endfor %})
 
 # Configure compression: files older than this many days will be compressed
 # Set to a number (e.g., 7). To disable compression, set to 0.
@@ -155,12 +155,15 @@ clean_directory() {
             echo "Compressing $compressed_count files into $archive_name..."
 
             # Use --null and -T to read the exact filenames safely from the temp file
-            if tar -czf "$archive_name" --null -T "$compress_list"; then
+            local archive_tmp
+            archive_tmp=$(mktemp "./.archive_XXXXXXXX.tar.gz") || return 1
+            if tar -czf "$archive_tmp" --null -T "$compress_list" && mv -- "$archive_tmp" "$archive_name"; then
                 echo "Compression successful. Removing original files..."
                 # Only delete the original files if tar succeeded
                 xargs -0 rm -f < "$compress_list"
             else
-                echo "Error: Failed to create archive $archive_name."
+                rm -f -- "$archive_tmp"
+                echo "Error: Failed to create archive $archive_name." >&2
             fi
         else
             echo "No files needed compression."

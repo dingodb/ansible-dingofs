@@ -67,7 +67,10 @@
   template:
     src: dingo.yaml.j2
     dest: "{{ dingo_env_config }}"
-    mode: "0644"
+    owner: "{{ _env_home_owner.stdout | trim }}"
+    mode: "0600"
+  diff: false
+  no_log: true
 
 # --- Step 5: verify config is usable ---
 # Use absolute path — .bashrc has an early-exit guard for non-interactive

@@ -199,18 +199,18 @@ sys.exit(code)
         self.assertFalse((Path(client["base_dir"]) / ".restart-required").exists())
         self.assertEqual(self.service_restarts(), [])
 
-    def test_usage_becoming_busy_after_copy_preserves_failure_and_restart_obligation(self):
+    def test_usage_becoming_busy_after_copy_defers_without_failing_the_host(self):
         client = self.client("node-a", "alpha", (0, 1))
         result, report = self.run_play(self.upgrade_tasks())
-        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         row = report["records"][0]
         self.assertEqual(row["status"], "restart_deferred_busy")
         self.assertIs(row["changed_on_disk"], True)
         self.assertIs(row["pending_restart"], True)
-        self.assertIs(row["task_failed"], True)
+        self.assertIs(row["task_failed"], False)
         self.assertEqual(len(report["skipped"]), 1)
-        self.assertTrue(report["errors"])
-        self.assertIn("node-a", report["failed_hosts"])
+        self.assertEqual(report["errors"], [])
+        self.assertEqual(report["failed_hosts"], [])
         self.assertEqual((Path(client["base_dir"]) / "bin/dingo-client").read_text(),
                          "new client binary\n")
         self.assertTrue((Path(client["base_dir"]) / ".restart-required").exists())
@@ -219,7 +219,7 @@ sys.exit(code)
     def configure_tail(self):
         tasks = yaml.safe_load(CONFIGURE.read_text())
         start = next(i for i, task in enumerate(tasks)
-                     if task.get("name", "").startswith("Set whether a restart is needed"))
+                     if task.get("name", "").startswith("Inspect the persistent client restart obligation"))
 
         def absolute_imports(value):
             if isinstance(value, list):
@@ -234,6 +234,7 @@ sys.exit(code)
 
     def deployment_tail_variables(self, client):
         return dict(
+            dingo_client_base_dir=client["base_dir"],
             dingo_client_fsname=client["fsname"], dingo_client_mount_point=client["mount_point"],
             dingo_client_service_name=client["service_name"], dingo_client_mds_addrs="fixture:7000",
             _dingofs_client_report_context=dict(operation="deploy", fsname=client["fsname"],
@@ -253,6 +254,19 @@ sys.exit(code)
         self.assertEqual(len(report["skipped"]), 1)
         self.assertEqual(report["errors"], [])
         self.assertEqual(self.service_restarts(), [])
+
+    def test_deployment_retry_applies_a_persisted_restart_with_unchanged_files(self):
+        client = self.client("node-a", "alpha")
+        marker = Path(client["base_dir"]) / ".restart-required"
+        marker.write_text("restart required\n")
+        variables = self.deployment_tail_variables(client)
+        variables.update(_client_bin={"changed": False})
+        result, report = self.run_play(self.configure_tail(), extra=variables)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.service_restarts(), [client["service_name"]])
+        self.assertFalse(marker.exists())
+        self.assertIs(report["records"][0]["pending_restart"], False)
+        self.assertIs(report["records"][0]["changed_on_disk"], False)
 
     def test_independent_cli_update_does_not_restart_the_fuse_client(self):
         client = self.client("node-a", "alpha")

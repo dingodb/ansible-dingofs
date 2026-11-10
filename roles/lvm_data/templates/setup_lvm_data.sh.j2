@@ -34,15 +34,68 @@ MOUNT_END=$((MOUNT_OFFSET + MOUNT_COUNT))
 MIN_BYTES={{ lvm_data_min_disk_gb | int * 1000000000 }}
 PREFIX="{{ lvm_data_mount_prefix }}"
 
+# Refuse to hide files when mounting a new or recovered LV.
+require_empty_target() {
+    local target="$1"
+    if [ -d "$target" ] && [ -n "$(find "$target" -mindepth 1 -maxdepth 1 -print -quit)" ]; then
+        echo "Error: $target contains files; refusing to hide them under a mount" >&2
+        exit 1
+    fi
+}
+
+# --- Recover existing managed volumes BEFORE considering any new disk ---
+i="$MOUNT_OFFSET"
+while [ "$i" -lt "$MOUNT_END" ]; do
+    vg="{{ lvm_data_vg_prefix }}${i}"
+    lv="/dev/$vg/{{ lvm_data_lv_name }}"
+    target="${PREFIX}${i}"
+    if vgs "$vg" >/dev/null 2>&1; then
+        actual=$(findmnt -rno SOURCE --mountpoint "$target" 2>/dev/null)
+        if [ -n "$actual" ] && [ "$(readlink -f "$actual")" != "$(readlink -f "$lv")" ]; then
+            echo "Error: $target is occupied by $actual, expected $lv" >&2; exit 1
+        fi
+        uuid=$(blkid -o value -s UUID "$lv" 2>/dev/null)
+        if [ -z "$actual" ] || ! awk -v t="$target" -v u="UUID=$uuid" -v l="$lv" '$1 !~ /^#/ && $2 == t && ($1 == u || $1 == l) {found=1} END {exit !found}' /etc/fstab; then
+            if [ "{{ lvm_data_repair | default(false) | bool | lower }}" != true ]; then
+                echo "HALF-PROVISIONED: $vg exists but its mount or fstab entry is missing. Re-run with lvm_data_repair=true; no new disk will be formatted." >&2
+                exit 1
+            fi
+            vgchange -ay "$vg" || exit 1
+            fs=$(blkid -o value -s TYPE "$lv" 2>/dev/null)
+            uuid=$(blkid -o value -s UUID "$lv" 2>/dev/null)
+            if [ "$fs" != "{{ lvm_data_fs_type }}" ] || [ -z "$uuid" ]; then
+                echo "Error: $lv has no verified {{ lvm_data_fs_type }} filesystem; recover manually. Repair never formats existing volumes." >&2; exit 1
+            fi
+            if awk -v t="$target" -v u="UUID=$uuid" -v l="$lv" '$1 !~ /^#/ && $2 == t && $1 != u && $1 != l {conflict=1} END {exit !conflict}' /etc/fstab; then
+                echo "Error: conflicting fstab entry for $target" >&2; exit 1
+            fi
+            if [ -z "$actual" ]; then
+                require_empty_target "$target"
+                mkdir -p "$target" || exit 1
+                mount "$lv" "$target" || exit 1
+            fi
+            if ! awk -v t="$target" '$1 !~ /^#/ && $2 == t {found=1} END {exit !found}' /etc/fstab; then
+                printf 'UUID=%s %s {{ lvm_data_fs_type }} defaults,noatime 0 0\n' "$uuid" "$target" >> /etc/fstab || exit 1
+            fi
+            echo "Done: recovered $lv at $target without formatting"
+        fi
+    fi
+    i=$((i + 1))
+done
+
 # --- 1. Which mount indices still need creating ---
 echo "=== Checking existing mounts ==="
 pending_indices=()
 i="$MOUNT_OFFSET"
 while [ "$i" -lt "$MOUNT_END" ]; do
     target="${PREFIX}${i}"
-    if findmnt -rno SOURCE "$target" >/dev/null 2>&1; then
-        echo "  ${target} already mounted ($(findmnt -rno SOURCE "$target")), skipping"
+    if findmnt -rno SOURCE --mountpoint "$target" >/dev/null 2>&1; then
+        echo "  ${target} already mounted ($(findmnt -rno SOURCE --mountpoint "$target")), skipping"
     else
+        require_empty_target "$target"
+        if awk -v t="$target" '$1 !~ /^#/ && $2 == t {found=1} END {exit !found}' /etc/fstab; then
+            echo "Error: $target already has an fstab entry; recover its existing filesystem instead of allocating a new disk" >&2; exit 1
+        fi
         echo "  ${target} not mounted, will create"
         pending_indices+=("$i")
     fi
@@ -171,9 +224,9 @@ echo "=== Final layout ==="
 i="$MOUNT_OFFSET"
 while [ "$i" -lt "$MOUNT_END" ]; do
     target="${PREFIX}${i}"
-    if findmnt -rno SOURCE "$target" >/dev/null 2>&1; then
+    if findmnt -rno SOURCE --mountpoint "$target" >/dev/null 2>&1; then
         avail=$(df -h --output=avail "$target" 2>/dev/null | tail -1 | tr -d ' ')
-        printf '  %-16s <- %-28s avail %s\n' "$target" "$(findmnt -rno SOURCE "$target")" "$avail"
+        printf '  %-16s <- %-28s avail %s\n' "$target" "$(findmnt -rno SOURCE --mountpoint "$target")" "$avail"
     else
         printf '  %-16s <- not mounted\n' "$target"
     fi
