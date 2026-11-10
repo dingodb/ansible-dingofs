@@ -53,8 +53,3 @@ dingo_monitor_grafana_port: 3000
 
 # monitor_sync ships inside the dingofs server image.
 dingo_monitor_sync_image: "{{ dingofs_container_image }}"
-
-# Store this in Ansible Vault. The CLI bootstraps with admin:admin; the role
-# rotates the password through Grafana's API immediately after deployment.
-dingo_monitor_grafana_admin_password: ""
-dingo_monitor_grafana_current_password: admin

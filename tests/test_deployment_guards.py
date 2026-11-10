@@ -53,7 +53,7 @@ class GuardTests(unittest.TestCase):
                     unit.unlink(missing_ok=True)
                     if old_path:
                         unit.write_text('ExecStart=/usr/local/bin/rqlited -node-id 1 ' + old_path + '\n')
-                    result = self.run_tasks(tasks, {'rqlite_node_dir': wanted, 'rqlite_download_checksum': 'sha256:' + 'a' * 64, 'rqlite_auth_users': [], 'rqlite_service_user': 'root', 'rqlite_allow_insecure': True})
+                    result = self.run_tasks(tasks, {'rqlite_node_dir': wanted, 'rqlite_download_checksum': 'sha256:' + 'a' * 64})
                     self.assertEqual(result.returncode == 0, success, result.stdout + result.stderr)
 
     def test_cache_health_requires_service_port_and_address(self):

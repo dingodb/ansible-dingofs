@@ -25,11 +25,11 @@ The working tree was clean and matched `origin/main` before this review.
 | #64 | Valid. An available VG name did not imply an available mount target. | Recheck VG, exact mountpoint and fstab reservations for every allocation; refuse nonempty unmounted targets. |
 | #65 | Valid despite downloads being opt-in. | Require SHA256, stage privately, validate execution, atomically replace and back up the previous CLI. |
 | #66 | Valid. Credential files and diffs exposed secrets. | Enforce owner-only modes, intended ownership, no_log and disabled diffs. |
-| #67 | Valid. Floating images and bootstrap credentials were unmanaged. | Fix image versions, require a Vault password, and rotate the Grafana account after the CLI's required bootstrap flow. |
+| #67 | Partially addressed; credential changes are deferred by request. | Keep fixed image references. Preserve the original Grafana credential behavior; no required Vault password or password rotation. Leave the issue open. |
 | #68 | Valid. Local/staged archives were trusted without verification. | Supply hashes for pinned defaults, verify staged archives, redownload corrupt online caches and reject bad local archives. |
 | #69 | Valid. A failed restart entered remap rollback validation. | Separate successful-remap restarts from remap rescue; attempt every recorded service even if one start fails. |
 | #70 | Valid. Check mode returned a false layout all-clear. | Run the read-only probe for real and prevent apply/stop/lock work in check mode. |
-| #71 | Valid. Network trust and process privileges were implicit. | Use an unprivileged account for new installs; require HTTP authentication or an explicit isolated-network exception; protect auth files and document firewall/encryption boundaries. Existing data migration remains explicit. |
+| #71 | Deferred by request to preserve existing deployment behavior. | Restore the original root service, data directory, join parameters and authentication. Do not create an account/auth file, require new credentials or migrate data. Leave the issue open. |
 | #72 | Valid hardening issue. | Enable host key checking, remove the unconditional SSH override and document verified known_hosts preparation. |
 | #73 | Valid. Shell interpolation and failed archives were unsafe. | Quote arguments/protected names, escape cron percent signs and remove failed temporary archives before retaining source files. |
 | #74 | Valid. THP was volatile and core directories lacked sticky protection. | Persist THP using tmpfiles.d and use mode 1777 for the shared core directory. |
@@ -43,13 +43,18 @@ Validation uses local Ansible fixtures and command substitutes: no production
 inventory is contacted and no real disk, mount or service is modified. It covers
 busy rechecks, unchanged retries with pending restarts, failed service starts,
 check-mode probes, corrupt/unexecutable CLI downloads, exact mount identities,
-failed archives, nonformatting disk repair and authenticated rqlite unit rendering.
-All playbooks also receive Ansible syntax checks. Real fleet rollout, Grafana image
-compatibility and rqlite data migration require the site's normal deployment
-verification; see the README for changed defaults and required Vault settings.
+failed archives and nonformatting disk repair.
+All playbooks also receive Ansible syntax checks. Real fleet rollout and monitor
+image compatibility require the site's normal deployment verification; see the
+README and deployment impact review for the remaining behavior changes.
 
-Local verification completed: 116 YAML files parsed, all 36 playbooks passed
-`ansible-playbook --syntax-check`, and all 200 discovered regression cases were
-accounted for (197 passed, 3 platform skips). The suite ran in four shards with
-targeted reruns after fixture updates; new recovery/security scenarios were also
-run separately. Linux CI exercises the three cases skipped on this macOS host.
+Validation results below are refreshed for the revised PR after restoring the
+rqlite/Grafana credential and rqlite runtime behavior. See
+[the deployment impact review](deployment-impact-review-2026-11-10.md) for the
+remaining behavior changes and their triggers.
+
+Revised local validation: all 13 focused data-path/recovery/monitor tests passed,
+116 YAML files parsed and all 36 playbooks passed syntax checks. The rqlite unit,
+monitor configuration template and example inventory match the pre-PR baseline
+byte for byte. The revised suite contains 199 regression cases; see PR checks
+for the current Linux CI result.

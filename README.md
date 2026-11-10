@@ -28,8 +28,6 @@ service rather than erroring out cleanly. Override for a deliberate one-off:
 - **Target nodes**: CentOS/RHEL/Rocky Linux (3 nodes minimum for HA)
 - **Network**: All target nodes reachable via SSH from the control node
 - **Privileges**: Root or sudo access on target nodes
-- **Credentials**: Configure rqlite authentication and the Grafana administrator
-  password in Vault before deployment; see [Operational security and recovery](#operational-security-and-recovery).
 
 ## Repository Structure
 
@@ -945,45 +943,11 @@ previous file. A changed release needs a new trusted hash. Rqlite and jemalloc
 archives are checked on every staging run, including local/offline archives;
 version overrides must supply their own `*_download_checksum`.
 
-New rqlite deployments use the `rqlite` service account and
-`/var/lib/rqlite/node`. Existing data is never moved automatically: back it up,
-stop the service, migrate and chown the verified database directory, update the
-existing unit to the verified absolute path, and then apply the role. Keep
-`rqlite_node_dir` unchanged until that migration is complete. A legacy root
-service requires the explicit `rqlite_allow_insecure: true` exception.
-
-Put rqlite credentials in Ansible Vault, for example:
-
-```yaml
-rqlite_auth_users:
-  - username: dingo
-    password: "{{ vault_rqlite_password }}"
-    perms: [execute, query, status, ready]
-  - username: cluster_join
-    password: "{{ vault_rqlite_join_password }}"
-    perms: [join]
-rqlite_join_username: cluster_join
-dingo_cli_db_url: "rqlite://dingo:{{ vault_rqlite_password | urlencode }}@{{ rqlite_master_host }}:{{ rqlite_http_port }}"
-```
-
-HTTP basic authentication does not encrypt traffic, and the Raft port is also
-plaintext. These ports are trusted management-network services: firewall TCP
-4001 to the admin/CLI hosts and rqlite peers, and TCP 4002 to the rqlite peers
-only. Use an isolated management network or an encrypted network tunnel across
-untrusted links. Never expose either port publicly. An unauthenticated legacy
-cluster requires `rqlite_allow_insecure: true` and the same network restrictions;
-that exception does not add authentication or encryption.
-
-Monitor images use fixed version tags; sites should verify compatibility with
-their prepared server CLI and can override them with registry digests. Set
-`dingo_monitor_grafana_admin_password` in Vault (at least 12 characters). The
-current CLI requires `admin:admin` during initial datasource synchronization;
-the role changes the persistent account password immediately afterwards.
-Restrict port 3000 to management clients throughout bootstrap, and recover a
-failed bootstrap before exposing Grafana. For a pre-existing password, set
-`dingo_monitor_grafana_current_password` to the current value. Changing a Vault
-password on an existing stack requires that current password too. Once the
-configured password works, reruns leave it alone and do not redeploy the stack.
+Rqlite keeps the existing root service account, configured data directory
+(default `/root/rqlite/node`) and authentication behavior. Grafana credentials
+also keep their existing behavior; this change does not require credentials,
+rotate passwords or migrate database data. Monitor image versions remain pinned
+and should be checked against the site's existing versions before first deployment.
 
 Cache upgrades and client deployments persist `.restart-required` before changing
 service files. An interrupted or busy restart retains this marker for the next

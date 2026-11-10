@@ -10,19 +10,10 @@ rqlite_bin_dest: /usr/local/bin/rqlited
 
 rqlite_http_port: 4001
 rqlite_raft_port: 4002
-rqlite_node_dir: /var/lib/rqlite/node
+rqlite_node_dir: /root/rqlite/node
 
 rqlite_master_host: "{{ hostvars[groups['rqlite_master'][0]]['ansible_host'] }}"
 
 # A version override must provide its own trusted SHA256. Never trust a cached
 # tarball merely because the path already exists.
 rqlite_download_checksum: "{{ 'sha256:96c82652929085af49d1ebc8d14891a02105d063be7eee25a9bb90af4e5f9f3b' if rqlite_version == 'v9.4.5' else '' }}"
-
-# Existing /root data must be explicitly migrated with a verified backup.
-rqlite_service_user: rqlite
-rqlite_service_group: rqlite
-rqlite_auth_file: /etc/rqlite/auth.json
-rqlite_auth_users: []
-rqlite_join_username: ""
-# Explicit exception for isolated, firewalled legacy networks only.
-rqlite_allow_insecure: false

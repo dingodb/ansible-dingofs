@@ -161,7 +161,7 @@ class CacheIdentityTests(unittest.TestCase):
             self.assertEqual(ids[3], 'keep-existing')
 
 @unittest.skipUnless(shutil.which('ansible-playbook'), 'requires Ansible')
-class SecurityTests(unittest.TestCase):
+class MonitorDeploymentTests(unittest.TestCase):
     def test_monitor_first_install_is_distinct_from_a_failed_status_query(self):
         tasks=yaml.safe_load((REPO / 'roles/dingo_monitor/tasks/main.yml').read_text())
         start=next(i for i,t in enumerate(tasks) if t.get('name') == 'Read the stored monitor configuration')
@@ -185,36 +185,6 @@ class SecurityTests(unittest.TestCase):
                 self.assertEqual(result.returncode == 0,success,result.stdout+result.stderr)
                 self.assertEqual(witness.exists(),success)
 
-    def test_rqlite_rejects_implicit_insecure_defaults_and_renders_authenticated_join(self):
-        defaults = yaml.safe_load((REPO / 'roles/rqlite/defaults/main.yml').read_text())
-        tasks = yaml.safe_load((REPO / 'roles/rqlite/tasks/main.yml').read_text())
-        start = next(i for i,t in enumerate(tasks) if t.get('name','').startswith('Require authenticated rqlite'))
-        end = next(i for i,t in enumerate(tasks) if t.get('name','').startswith('Prepare rqlite tarball'))
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            variables = dict(defaults, ansible_connection='local', ansible_become=False,
-                             ansible_python_interpreter=sys.executable, rqlite_node_id=2,
-                             ansible_host='10.0.0.2', rqlite_join_address='10.0.0.1')
-            users = [{'username':'operator','password':'fixture-secret-123','perms':['all']}]
-            cases = [({}, False), ({'rqlite_auth_users': users, 'rqlite_join_username':'operator'}, True),
-                     ({'rqlite_auth_users': [dict(users[0], username='*')], 'rqlite_join_username':'*'}, False),
-                     ({'rqlite_auth_users': users, 'rqlite_join_username':''}, False)]
-            inv = root / 'inventory.yml'
-            inv.write_text(yaml.safe_dump({'all':{'children':{'rqlite_slaves':{'hosts':{'fixture':{}}}}}}))
-            for override, success in cases:
-                play = root / 'play.yml'
-                play.write_text(yaml.safe_dump([{'hosts':'fixture','gather_facts':False,
-                    'vars':dict(variables, **override), 'tasks':tasks[start:end] + [
-                        {'template':{'src':str(REPO / 'roles/rqlite/templates/rqlite.service.j2'), 'dest':str(root / 'unit')}}]}]))
-                result = subprocess.run(['ansible-playbook','-i',str(inv),str(play)],cwd=REPO,
-                    env=dict(os.environ,ANSIBLE_CONFIG=str(REPO / 'ansible.cfg')),capture_output=True,text=True,timeout=30)
-                self.assertEqual(result.returncode == 0,success,result.stdout+result.stderr)
-                self.assertNotIn('fixture-secret-123',result.stdout+result.stderr)
-                if success:
-                    unit=(root / 'unit').read_text()
-                    self.assertIn('User=rqlite',unit)
-                    self.assertIn('-auth /etc/rqlite/auth.json',unit)
-                    self.assertIn('-join 10.0.0.1:4001 -join-as operator',unit)
 
 
 @unittest.skipUnless(shutil.which('ansible-playbook'), 'requires Ansible')
