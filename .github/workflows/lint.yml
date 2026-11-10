@@ -113,6 +113,10 @@ jobs:
           python-version: ${{ matrix.python }}
       - name: Install ansible-core
         run: pip install '${{ matrix.ansible }}'
+      # Ansible 2.10 imports environmentfilter, removed in Jinja2 3.1.
+      - name: Install compatible Jinja2 for Ansible 2.10
+        if: matrix.ansible == 'ansible-base==2.10.8'
+        run: pip install 'jinja2<3.1'
       - name: Run ordinary and compact callback playbooks
         env:
           PYTHONPATH: tests
