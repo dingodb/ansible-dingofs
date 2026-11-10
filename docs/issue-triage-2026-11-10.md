@@ -60,6 +60,6 @@ byte for byte. The revised suite contains 199 regression cases; see PR checks
 for the current Linux CI result.
 
 The operator confirmed the retained service/core/THP/SSH/permission/checksum and
-empty-ID policies. Client deployment and upgrade are now serial: 1. Monitor image
+empty-ID policies. Client deployment and upgrade use serial: "20%" as confirmed by the operator. Monitor image
 overrides are accepted without rejecting :latest. Disk repair/remap remain opt-in;
 the impact review explains which operational playbooks provision disks.

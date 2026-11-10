@@ -10,7 +10,7 @@
   remote_user: root
   become: false
   gather_facts: true
-  # Upgrade one host at a time; busy instances remain deferred.
-  serial: 1
+  # Upgrade in batches of 20%; busy instances remain deferred.
+  serial: "20%"
   roles:
     - dingo_client_upgrade

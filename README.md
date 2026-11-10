@@ -950,7 +950,8 @@ rotate passwords or migrate database data. Monitor image versions remain pinned
 by default. Inventory overrides, including `:latest`, are accepted.
 
 Client deployment (`client_04_deploy.yml`) and upgrade (`client_07_upgrade.yml`)
-run one host at a time (`serial: 1`); `client_site.yml` imports that deployment
+run in batches of 20% of the selected hosts (`serial: "20%"`);
+`client_site.yml` imports that deployment
 entry point. Cache deployment remains suitable for selecting hosts with `--limit`;
 its upgrade playbook also keeps `serial: 1`.
 

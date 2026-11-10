@@ -16,7 +16,7 @@
 
 | 改动 | 何时触发 | 实际影响与限制 |
 | --- | --- | --- |
-| Cache/Client 的 systemd 单元和客户端启动脚本更新 | 再次执行相应 deploy/site playbook | 文件内容变化会走原有重启流程。Cache 会通知 handler 并重启，没有客户端那样的忙挂载延后检查；普通 cache_05_deploy 没有 serial 分批限制，可能多个 Cache 节点同时重启，影响正在使用缓存的客户端。Client 部署和升级均为 serial: 1，通常只在检查为空闲时重启；原有 force_restart 开关仍可绕过忙检查。 |
+| Cache/Client 的 systemd 单元和客户端启动脚本更新 | 再次执行相应 deploy/site playbook | 文件内容变化会走原有重启流程。Cache 会通知 handler 并重启，没有客户端那样的忙挂载延后检查；普通 cache_05_deploy 没有 serial 分批限制，可能多个 Cache 节点同时重启，影响正在使用缓存的客户端。Client 部署和升级均为 serial: "20%"，通常只在检查为空闲时重启；原有 force_restart 开关仍可绕过忙检查。 |
 | 持久化待重启标记 `.restart-required` | 文件已更新但上次运行中断，或客户端因为忙而延后 | 即使本次 copy 显示 unchanged，也可能补做重启。这是修复漏重启的预期行为，不能再把 unchanged 理解为“绝不会重启”。缓存升级保留 serial: 1。 |
 | SSH 默认开启 host key checking | 所有使用本仓库 ansible.cfg 的 SSH 连接 | known_hosts 没有目标主机，或者密钥变化，会阻断连接；需要已有可信主机密钥。没有自动扫描/信任密钥的新增步骤。 |
 | 下载强制 SHA256 | 显式启用 CLI 下载；或运行 rqlite/jemalloc 角色的包准备阶段 | CLI 下载需要新增 checksum 配置。默认版本 rqlite v9.4.5 / jemalloc 5.3.0 已提供 hash；自定义版本、重新打包的本地包必须提供对应 hash，否则直接失败。jemalloc 即使已安装，也会先检查控制机的 staged 包。在线路径可能重新下载并替换不匹配的缓存包。 |
@@ -29,7 +29,7 @@
 | 空 Cache ID 自动再生成 | 已有 dingo-cache.conf 没有 --id 或值为空 | 生成稳定 UUID，并通过原有模板/handler 更新配置、重启服务。会改变该异常节点后续使用的 ID/缓存子目录；已有非空 ID 保持不变，也不删除旧缓存目录。 |
 | 更严格地报告错误 | Kubernetes 节点查询、监控 config/status 查询、Podman socket 或 linger 操作失败 | 原来部分错误被跳过或误当成功；现在会中止相应主机的执行。旧 CLI 不支持新用到的查询子命令、输出格式不兼容时也会失败，需要验证 CLI 兼容性。 |
 
-上述策略已经由操作者确认：Cache 可按选定主机或并发部署，Client 部署和升级逐台
+上述策略已经由操作者确认：Cache 可按选定主机或并发部署，Client 部署和升级按选定主机的 20% 分批
 执行；保留无限 core、THP 持久化、SSH 校验、0600 权限、SHA256 校验及空 ID 再生成。
 监控镜像允许 latest 覆盖。代码仍在 PR 中，没有自动部署。
 
@@ -55,8 +55,8 @@ linger 幂等、cron 五字段展示、性能报告真正输出纯文本、CI �
 
 | 用途 | 使用入口 | 会不会建盘/格式化 |
 | --- | --- | --- |
-| 已有机器加挂载、部署客户端 | client_04_deploy.yml，按需加 --limit | 不执行 LVM 建盘；逐台处理客户端。 |
-| 已有机器升级客户端二进制 | client_07_upgrade.yml，按需加 --limit | 不执行 LVM 建盘；逐台升级，忙实例延后。 |
+| 已有机器加挂载、部署客户端 | client_04_deploy.yml，按需加 --limit | 不执行 LVM 建盘；按选定主机的 20% 分批处理客户端。 |
+| 已有机器升级客户端二进制 | client_07_upgrade.yml，按需加 --limit | 不执行 LVM 建盘；按选定主机的 20% 分批升级，忙实例延后。 |
 | 已有机器部署/升级 Cache | cache_05_deploy.yml / cache_06_upgrade.yml | 这两个入口不执行 LVM 建盘；前者可并发，后者逐台。 |
 | 新机器从头部署或专门准备数据盘 | client_site.yml、cache_site.yml、cache_02_lvm.yml、01b_lvm_data.yml | 含建盘步骤，可能格式化检测到的可用设备。client_site 本来就包含 cache_02_lvm，不能把整套 site 当作仅更新客户端的入口。 |
 
