@@ -155,6 +155,19 @@ class CheckTests(unittest.TestCase):
         self.assertIn("x\\|&lt;script&gt;", md)
         self.assertIn("采集失败，不能判断", md)
 
+    def test_text_output_has_no_markdown_tables_or_html(self):
+        report = {"host": "fixture", "timestamp": "now", "checks": []}
+        with patch.object(sys, "argv", ["check_performance", "--format", "text"]), \
+                patch.object(perf.platform, "system", return_value="Linux"), \
+                patch.object(perf.Performance, "collect", return_value=report), \
+                contextlib.redirect_stdout(io.StringIO()) as stream:
+            self.assertEqual(perf.main(), 0)
+        output = stream.getvalue()
+        self.assertIn("主机: fixture", output)
+        self.assertNotIn("<details>", output)
+        self.assertNotIn("| ---", output)
+        self.assertFalse(output.startswith("#"))
+
     def test_compare_rejects_other_host(self):
         with self.assertRaises(ValueError):
             perf.compare_reports({"host": "a"}, {"host": "b"})

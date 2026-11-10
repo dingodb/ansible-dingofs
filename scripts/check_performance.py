@@ -533,6 +533,25 @@ def render_markdown(reports):
     return "\n".join(lines)
 
 
+def render_text(reports):
+    """Plain text without Markdown tables, markup or HTML."""
+    lines = ["GPU 智算中心性能模式检查报告", ""]
+    for report in reports:
+        lines.append("主机: " + str(report["host"]))
+        if "collection_error" in report:
+            lines.append("采集失败: " + str(report["collection_error"]))
+            continue
+        lines.append("采集时间: " + display_time(report.get("timestamp", "unknown")))
+        for check in report["checks"]:
+            title, current, expected, action = describe(check)
+            lines.extend(["[{}] {}".format(check["status"], title),
+                          "  当前: " + str(current), "  期望: " + str(expected)])
+        if report.get("comparison"):
+            lines.append("与上次快照相比变化 {} 项".format(len(report["comparison"]["checks"])))
+        lines.append("")
+    return "\n".join(lines)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -550,7 +569,7 @@ def main():
     report = Performance(policy).collect()
     if previous:
         report["comparison"] = compare_reports(previous, report)
-    output = json.dumps(report, indent=2, ensure_ascii=False) if args.format == "json" else render_markdown([report])
+    output = json.dumps(report, indent=2, ensure_ascii=False) if args.format == "json" else (render_text([report]) if args.format == "text" else render_markdown([report]))
     if args.output:
         Path(args.output).write_text(output + "\n", encoding="utf-8")
     print(output)

@@ -3,6 +3,11 @@
 # Role: rqlite - Deploy rqlite database cluster
 # ============================================================
 
+- name: Require a trusted rqlite release checksum
+  assert:
+    that: rqlite_download_checksum is match('^sha256:[0-9a-fA-F]{64}$')
+    fail_msg: "Provide rqlite_download_checksum for the selected release before staging or extraction."
+
 - name: Require an absolute rqlite data directory
   assert:
     that: rqlite_node_dir is match('^/')
@@ -39,6 +44,7 @@
     - name: Download rqlite tarball
       get_url:
         url: "{{ rqlite_download_url }}"
+        checksum: "{{ rqlite_download_checksum }}"
         dest: "{{ rqlite_pkg_dir }}/{{ rqlite_tarball }}"
         mode: "0644"
       when: 
@@ -63,15 +69,17 @@
     - name: Ensure rqlite tarball exists after download/fallback
       stat:
         path: "{{ rqlite_pkg_dir }}/{{ rqlite_tarball }}"
+        checksum_algorithm: sha256
       register: rqlite_tarball_stat
 
     - name: Assert rqlite tarball is available
       assert:
         that:
-          - rqlite_tarball_stat.stat.exists
+          - rqlite_tarball_stat.stat.isreg | default(false)
+          - rqlite_tarball_stat.stat.checksum | default('') == rqlite_download_checksum.split(':')[1]
         fail_msg: >-
-          Failed to prepare rqlite tarball. Download URL failed and local file
-          {{ rqlite_local_src }} is not available on control node.
+          Failed to prepare a checksum-verified rqlite tarball. Download URL failed or local file
+          {{ rqlite_local_src }} is unavailable or does not match rqlite_download_checksum.
 
 - name: Create rqlite extract directory
   file:

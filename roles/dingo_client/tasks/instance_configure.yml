@@ -59,6 +59,21 @@
 # cannot affect another's.
 #
 # src is a path on the CONTROL node (no remote_src), not on the target.
+- name: Preview the replacement client binary
+  copy:
+    src: "{{ dingo_client_bin_local_src }}"
+    dest: "{{ dingo_client_base_dir }}/bin/dingo-client"
+    mode: "0755"
+  check_mode: true
+  register: _client_binary_preview
+
+- name: Preserve a restart obligation before changing the client binary
+  copy:
+    content: "restart required\n"
+    dest: "{{ dingo_client_base_dir }}/.restart-required"
+    mode: "0600"
+  when: _client_binary_preview.changed
+
 - name: "Copy dingo-client binary to remote host for {{ dingo_client_fsname }}"
   copy:
     src: "{{ dingo_client_bin_local_src }}"
@@ -508,6 +523,28 @@
     - dingo_client_numactl_enabled | default(true) | bool
     - (_client_cpuset_nodes | default([]) | length) > 1
 
+- name: Preview the replacement mount script and service
+  template:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - src: dingofs-mount.sh.j2
+      dest: "{{ dingo_client_base_dir }}/dingofs-mount.sh"
+      mode: "0755"
+    - src: dingofs-mount.service.j2
+      dest: "/etc/systemd/system/{{ dingo_client_service_name }}.service"
+      mode: "0644"
+  check_mode: true
+  register: _client_templates_preview
+
+- name: Preserve a restart obligation before changing client configuration
+  copy:
+    content: "restart required\n"
+    dest: "{{ dingo_client_base_dir }}/.restart-required"
+    mode: "0600"
+  when: _client_templates_preview.changed
+
 # --- Deploy mount script ---
 - name: "Deploy dingofs-mount.sh for {{ dingo_client_fsname }}"
   template:
@@ -549,11 +586,16 @@
 #    approach as roles/dingo_client_upgrade's dingofs_restart_check.sh (the
 #    proven path for upgrades).
 #    Escape hatch: -e dingo_client_force_restart=true skips the check.
+- name: Inspect the persistent client restart obligation
+  stat:
+    path: "{{ dingo_client_base_dir }}/.restart-required"
+  register: _client_restart_pending
+
 - name: "Set whether a restart is needed for {{ dingo_client_fsname }}"
   set_fact:
     _restart_needed: >-
       {{ _mount_sh.changed or _mount_service.changed
-         or _client_bin.changed }}
+         or _client_bin.changed or _client_restart_pending.stat.exists }}
 
 - name: Record the last usage check before a required restart
   import_tasks: ../../common/tasks/client_report.yml
@@ -561,7 +603,7 @@
     client_report_stage: restart_check
     client_report_status: started
     client_report_reason: checking_mount_before_restart
-    client_report_changed_on_disk: true
+    client_report_changed_on_disk: "{{ (_mount_sh.changed or _mount_service.changed or _client_bin.changed) and not ansible_check_mode }}"
     client_report_pending_restart: true
   when: _restart_needed | bool
 
@@ -584,7 +626,7 @@
     client_report_stage: restart
     client_report_status: started
     client_report_reason: restarting_service
-    client_report_changed_on_disk: true
+    client_report_changed_on_disk: "{{ (_mount_sh.changed or _mount_service.changed or _client_bin.changed) and not ansible_check_mode }}"
     client_report_pending_restart: true
   when: >-
     _restart_needed | bool
@@ -595,6 +637,7 @@
   systemd:
     name: "{{ dingo_client_service_name }}"
     state: restarted
+    daemon_reload: true
   register: _client_restart_result
   when: >-
     _restart_needed | bool
@@ -636,7 +679,7 @@
     client_report_stage: verify
     client_report_status: started
     client_report_reason: verifying_service_and_mount
-    client_report_changed_on_disk: "{{ _restart_needed | bool and not ansible_check_mode }}"
+    client_report_changed_on_disk: "{{ (_mount_sh.changed or _mount_service.changed or _client_bin.changed) and not ansible_check_mode }}"
     client_report_pending_restart: "{{ _restart_needed | bool and not (_client_restart_result.changed | default(false) | bool) }}"
 
 - name: "Enable and start dingo-client service for {{ dingo_client_fsname }}"
@@ -649,14 +692,21 @@
 - name: "Wait for mount point to be active for {{ dingo_client_fsname }}"
   command: mountpoint -q {{ dingo_client_mount_point }}
   register: mount_check
-  retries: 10
+  retries: 40
   delay: 3
+  changed_when: false
   until: mount_check.rc == 0
 
 - name: "Display dingo-client service status for {{ dingo_client_fsname }}"
   shell: systemctl is-active {{ dingo_client_service_name }}
   register: service_status
   changed_when: false
+
+- name: Clear the client restart obligation after verified activation
+  file:
+    path: "{{ dingo_client_base_dir }}/.restart-required"
+    state: absent
+  when: _client_restart_result.changed | default(false) | bool
 
 - name: Record the final result for this client deployment
   import_tasks: ../../common/tasks/client_report.yml
@@ -672,7 +722,7 @@
          (('mount_in_use' if _mount_in_use.stdout | default('') == 'busy' else 'mount_usage_not_verified')
           if (_restart_needed | bool and not (_client_restart_result.changed | default(false) | bool))
           else ('restarted' if _client_restart_result.changed | default(false) | bool else 'unchanged')) }}
-    client_report_changed_on_disk: "{{ _restart_needed | bool and not ansible_check_mode }}"
+    client_report_changed_on_disk: "{{ (_mount_sh.changed or _mount_service.changed or _client_bin.changed) and not ansible_check_mode }}"
     client_report_pending_restart: "{{ _restart_needed | bool and not (_client_restart_result.changed | default(false) | bool) }}"
 
 - name: "Show deployment summary for {{ dingo_client_fsname }}"

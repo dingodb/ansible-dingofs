@@ -218,13 +218,24 @@ fi
 echo ""
 echo "=== Creating LVM for DingoFS cache ==="
 
-# Find the next available index (skip existing dingo_cache VGs)
+# Never mount over another filesystem, a reserved fstab target, or local files.
+require_empty_target() {
+    if [ -d "$1" ] && [ -n "$(find "$1" -mindepth 1 -maxdepth 1 -print -quit)" ]; then
+        echo "Error: $1 is nonempty; refusing to hide existing files" >&2; exit 1
+    fi
+}
+next_free_index() {
+    while vgs "{{ lvm_vg_prefix }}_${index}" >/dev/null 2>&1 ||
+          mountpoint -q "{{ lvm_mount_prefix }}${index}" ||
+          awk -v t="{{ lvm_mount_prefix }}${index}" '$1 !~ /^#/ && $2 == t {found=1} END {exit !found}' /etc/fstab; do
+        index=$((index + 1))
+    done
+    require_empty_target "{{ lvm_mount_prefix }}${index}"
+}
 index=1
-while vgs "{{ lvm_vg_prefix }}_${index}" &>/dev/null; do
-    index=$((index + 1))
-done
 
 for record in "${sorted_cache_records[@]}"; do
+    next_free_index
     device="${record#* }"
     vg_name="{{ lvm_vg_prefix }}_${index}"
     lv_name="{{ lvm_lv_name }}"

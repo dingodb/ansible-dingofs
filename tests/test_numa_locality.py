@@ -155,7 +155,7 @@ class RoleLocalityTests(unittest.TestCase):
             tasks.append({"include_tasks": str(REPO / "roles/dingo_cache/tasks/numa_binding.yml")})
         else:
             binding_start = next(i for i, task in enumerate(cpu_source) if task.get("name", "").startswith("Reset CPU-node metadata"))
-            binding_end = next(i for i, task in enumerate(cpu_source) if task.get("name", "").startswith("Deploy dingofs-mount.sh"))
+            binding_end = next(i for i, task in enumerate(cpu_source) if task.get("name", "").startswith("Preview the replacement mount script"))
             tasks.extend(copy.deepcopy(cpu_source[binding_start:binding_end]))
         if expected:
             tasks.append({"assert": {"that": expected}})

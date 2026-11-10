@@ -4,5 +4,7 @@
   hosts: client_servers
   remote_user: root
   become: false
+  # Process client hosts in batches of 20% of the selected fleet.
+  serial: "20%"
   roles:
     - dingo_client

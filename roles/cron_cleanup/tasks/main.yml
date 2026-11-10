@@ -24,7 +24,7 @@
 # --- Step 3: Setup cron job ---
 - name: Build directory arguments for cron command
   set_fact:
-    _cron_dir_args: "{{ cron_cleanup_directories | join(' ') }}"
+    _cron_dir_args: "{{ cron_cleanup_directories | map('quote') | join(' ') }}"
 
 - name: Setup cron job for log cleanup
   cron:
@@ -35,7 +35,7 @@
     month: "{{ cron_cleanup_cron_month }}"
     weekday: "{{ cron_cleanup_cron_weekday }}"
     user: root
-    job: "bash {{ cron_cleanup_script_path }} {{ _cron_dir_args }} {{ cron_cleanup_delete_days }}"
+    job: "{{ ('bash ' ~ (cron_cleanup_script_path | quote) ~ ' ' ~ _cron_dir_args ~ ' ' ~ (cron_cleanup_delete_days | string | quote)) | replace('%', '\\%') }}"
     state: present
 
 - name: Show cron job configuration
@@ -45,4 +45,4 @@
       - "Directories: {{ cron_cleanup_directories | join(', ') }}"
       - "Delete files older than: {{ cron_cleanup_delete_days }} days"
       - "Compress files older than: {{ cron_cleanup_compress_days }} days"
-      - "Schedule: {{ cron_cleanup_cron_minute }} {{ cron_cleanup_cron_hour }} * * {{ cron_cleanup_cron_month }} {{ cron_cleanup_cron_weekday }}"
+      - "Schedule: {{ cron_cleanup_cron_minute }} {{ cron_cleanup_cron_hour }} {{ cron_cleanup_cron_day }} {{ cron_cleanup_cron_month }} {{ cron_cleanup_cron_weekday }}"

@@ -76,14 +76,16 @@ m.exit_json(changed=True)
                                + 'test "$n" -ne 2\n')
             result = subprocess.run(['ansible-playbook', '-i', 'localhost,', str(play_path)],
                                     cwd=REPO, env=env, capture_output=True, text=True, timeout=60)
-            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            # The busy recheck defers a; b still upgrades in the same run.
+            self.assertEqual(events.read_text().splitlines(), ['dingofs-mount-a', 'dingofs-mount-b', 'dingofs-mount-b'])
             self.assertEqual((root / 'a/bin/dingo-client').read_text(), 'next')
             self.assertTrue((root / 'a/.restart-required').exists())
             checker.write_text('#!/bin/sh\nexit 0\n')
             result = subprocess.run(['ansible-playbook', '-i', 'localhost,', str(play_path)],
                                     cwd=REPO, env=env, capture_output=True, text=True, timeout=60)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertEqual(events.read_text().splitlines(), ['dingofs-mount-a', 'dingofs-mount-b'] * 2)
+            self.assertEqual(events.read_text().splitlines(), ['dingofs-mount-a', 'dingofs-mount-b', 'dingofs-mount-b', 'dingofs-mount-a'])
             self.assertFalse((root / 'a/.restart-required').exists())
 
 @unittest.skipUnless(shutil.which('ansible-playbook'), 'requires Ansible')

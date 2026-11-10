@@ -1,0 +1,19 @@
+---
+- name: Inspect the cache binary on the controller before changing hosts
+  delegate_to: localhost
+  become: false
+  run_once: true
+  stat:
+    path: "{{ dingo_cache_bin_local_src }}"
+    follow: true
+    get_checksum: false
+    get_mime: false
+  register: _cache_binary_source
+
+- name: Require a nonempty cache binary on the controller
+  run_once: true
+  assert:
+    that:
+      - _cache_binary_source.stat.isreg | default(false)
+      - _cache_binary_source.stat.size | default(0) | int > 0
+    fail_msg: "dingo_cache_bin_local_src={{ dingo_cache_bin_local_src }} must be a nonempty regular file on the CONTROL node."

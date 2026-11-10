@@ -1,0 +1,48 @@
+---
+- name: Inspect the persistent cache restart obligation
+  stat:
+    path: "{{ dingo_cache_base_dir }}/.restart-required"
+  register: _cache_restart_pending
+
+- name: Compare cache processes in this service with the installed binary
+  shell: |
+    main_pid=$(systemctl show -p MainPID --value {{ dingo_cache_service_name | quote }}) || exit 1
+    case "$main_pid" in ''|*[!0-9]*) exit 1;; esac
+    if [ "$main_pid" -eq 0 ]; then echo stopped; exit 0; fi
+    wanted={{ (dingo_cache_base_dir ~ '/' ~ dingo_cache_bin_name) | quote }}
+    wanted_name=$(basename "$wanted")
+    pending="$main_pid "
+    found=0
+    stale=0
+    while [ -n "$pending" ]; do
+      pid=${pending%% *}
+      pending=${pending#* }
+      case "$pid" in ''|*[!0-9]*) exit 1;; esac
+      if ! cache_exe_path=$(readlink "/proc/$pid/exe"); then
+        [ ! -d "/proc/$pid" ] && continue
+        exit 1
+      fi
+      cache_exe_path=${cache_exe_path% (deleted)}
+      if [ "${cache_exe_path##*/}" = "$wanted_name" ]; then
+        found=$((found + 1))
+        if cmp -s "/proc/$pid/exe" "$wanted"; then :
+        else
+          rc=$?
+          if [ "$rc" -eq 1 ]; then stale=1; else exit "$rc"; fi
+        fi
+        continue
+      fi
+      if ! children=$(cat "/proc/$pid/task/$pid/children"); then
+        [ ! -d "/proc/$pid" ] && continue
+        exit 1
+      fi
+      for child in $children; do pending="$pending$child "; done
+    done
+    if [ "$found" -eq 0 ]; then echo stopped
+    elif [ "$stale" -eq 1 ]; then echo stale
+    else echo current; fi
+  args:
+    executable: /bin/bash
+  register: _cache_running_image
+  changed_when: false
+  check_mode: false

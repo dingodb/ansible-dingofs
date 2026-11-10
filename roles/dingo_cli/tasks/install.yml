@@ -39,7 +39,11 @@
   template:
     src: dingocli.cfg.j2
     dest: "{{ dingofs_home }}/.dingo/dingocli.cfg"
-    mode: "0644"
+    owner: "{{ dingofs_user }}"
+    group: "{{ dingofs_user }}"
+    mode: "0600"
+  diff: false
+  no_log: true
 
 # --- Initialize dingo CLI ---
 - name: Initialize dingo CLI (creates ~/.dingo directory)

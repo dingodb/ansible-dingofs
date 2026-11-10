@@ -17,11 +17,17 @@
 # and the rescue below turned that into a misleading "download failed" message
 # (measured on bj11-gpu-300b-0041, 2026-09-20). Hoisting it keeps the run_once
 # scope free of per-host conditions.
+- name: Require a trusted jemalloc release checksum
+  assert:
+    that: jemalloc_download_checksum is match('^sha256:[0-9a-fA-F]{64}$')
+    fail_msg: "Provide jemalloc_download_checksum for the selected release before staging or extraction."
+
 - name: Prepare jemalloc tarball on the control node
   block:
     - name: Look for a pre-staged jemalloc tarball on the control node
       stat:
         path: "{{ jemalloc_local_src }}"
+        checksum_algorithm: sha256
       register: _jemalloc_staged
       delegate_to: localhost
       run_once: true
@@ -43,24 +49,26 @@
     # in the build block below then pushes it out over the internal network,
     # like every other artifact the roles stage under {{ jemalloc_remote_dir }}.
     #
-    # Skipped when the tarball is already there, so re-running a play does not
+    # Skipped only when the staged tarball matches the trusted hash, so reruns do not
     # hit the network again.
     - name: Download jemalloc tarball to the control node
       get_url:
         url: "{{ jemalloc_download_url }}"
+        checksum: "{{ jemalloc_download_checksum }}"
         dest: "{{ jemalloc_local_src }}"
         mode: "0644"
       delegate_to: localhost
       run_once: true
       become: false
       when:
-        - not _jemalloc_staged.stat.exists
+        - _jemalloc_staged.stat.checksum | default('') != jemalloc_download_checksum.split(':')[1]
         - not (jemalloc_use_local_pkg | default(false) | bool)
         - jemalloc_download_url | default('') | length > 0
 
     - name: Re-check the tarball on the control node
       stat:
         path: "{{ jemalloc_local_src }}"
+        checksum_algorithm: sha256
       register: _jemalloc_ready
       delegate_to: localhost
       run_once: true
@@ -69,17 +77,18 @@
     - name: Assert the jemalloc tarball is available on the control node
       assert:
         that:
-          - _jemalloc_ready.stat.exists
+          - _jemalloc_ready.stat.isreg | default(false)
+          - _jemalloc_ready.stat.checksum | default('') == jemalloc_download_checksum.split(':')[1]
         fail_msg: >-
-          No jemalloc tarball on the control node at {{ jemalloc_local_src }},
+          No verified jemalloc tarball on the control node at {{ jemalloc_local_src }},
           and the download did not produce one.
   rescue:
     - name: Explain how to recover from a failed download
       fail:
         msg: >-
-          Could not obtain the jemalloc tarball on the control node.
+          Could not obtain a checksum-verified jemalloc tarball on the control node.
           The download from {{ jemalloc_download_url }} failed and nothing
-          exists at {{ jemalloc_local_src }}.
+          verified exists at {{ jemalloc_local_src }}.
           Either let this control node reach the download URL, point
           jemalloc_download_url at a mirror it can reach, or pre-stage the
           tarball at that path and set jemalloc_use_local_pkg: true.
@@ -110,6 +119,16 @@
         src: "{{ jemalloc_local_src }}"
         dest: "{{ jemalloc_remote_dir }}/{{ jemalloc_tarball }}"
         mode: "0644"
+
+    - name: Verify the remote jemalloc archive before extraction
+      stat:
+        path: "{{ jemalloc_remote_dir }}/{{ jemalloc_tarball }}"
+        checksum_algorithm: sha256
+      register: _jemalloc_remote_archive
+
+    - name: Require the remote archive to match the trusted release
+      assert:
+        that: _jemalloc_remote_archive.stat.checksum == jemalloc_download_checksum.split(':')[1]
 
     - name: Ensure bzip2 is installed (required for extraction)
       package:

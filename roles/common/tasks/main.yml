@@ -103,7 +103,7 @@
     user: "{{ dingofs_user }}"
     key: "{{ hostvars[item]['ssh_pub_keys']['content'] | b64decode }}"
     state: present
-  loop: "{{ groups['meta_servers'] }}"
+  loop: "{{ ansible_play_hosts | intersect(groups['meta_servers']) }}"
 
 - name: Add root's public key to dingofs authorized_keys
   authorized_key:

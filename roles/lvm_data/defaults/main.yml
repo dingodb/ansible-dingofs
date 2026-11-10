@@ -3,7 +3,7 @@
 # Role: lvm_data - LVM data disks for DingoFS meta server nodes
 #
 # Layout: one VG per disk (vg_diskN), one LV (lv) per VG, XFS,
-# mounted at /mnt/diskN -- e.g. vg_disk0/lv -> /mnt/disk0.
+# mounted at /mnt/diskN -- e.g. vg_disk1/lv -> /mnt/disk1.
 #
 # Naming follows what production actually runs, verified by inspecting
 # 8 hosts across 4 regions (hd04-cpu-0008/0009/0010, hd05-cpu-0009/0010/0011,
@@ -13,16 +13,16 @@
 # NOTE: the repo's own inventory/group_vars defaults dingofs_data_dir to
 # "/mnt/data${service_replica_sequence}/...", but none of those hosts mount
 # /mnt/data* -- that convention does not exist in production. When using this
-# role, set dingofs_data_dir/log_dir/raft_dir to /mnt/disk${service_replica_sequence}/...
+# role, set dingofs_data_dir/log_dir/raft_dir to /mnt/disk${service_replica_sequence_with_offset}/...
 # accordingly. The two must agree.
 #
-# Mount index starts at 0 because dingo CLI expands service_replica_sequence
-# from 0: the topology template renders `server.port: 690${service_replica_sequence}`
-# with mds_base_port=690, giving 6900/6901/6902 -- which is what bj09's MDS
-# actually listens on.
+# Index starts at lvm_data_mount_index_offset (default 1; explicitly use 0
+# for existing zero-based sites). Match topology sequence_offset and use
+# ${service_replica_sequence_with_offset} for disk paths. Port numbering can
+# still use ${service_replica_sequence}, independently of disk numbering.
 #
 # Differences from lvm_cache (copying that role will not work):
-#   - index starts at 0 (cache starts at /mnt/disk1)
+#   - index starts at lvm_data_mount_index_offset (default 1)
 #   - creates a fixed lvm_data_mount_count mounts (= mds_replicas), not
 #     "one per disk found"; extra disks are left alone
 #   - no aux/small-disk handling: meta servers have uniform disks
@@ -30,7 +30,7 @@
 #   - fstab uses UUID (cache uses /dev/vg/lv), mount options add noatime
 # ============================================================
 
-# Resulting VG names: vg_disk0, vg_disk1, vg_disk2
+# Default VG names: vg_disk1, vg_disk2, vg_disk3
 lvm_data_vg_prefix: vg_disk
 lvm_data_lv_name: lv
 lvm_data_fs_type: xfs
@@ -104,3 +104,7 @@ lvm_data_subdir: ""
 lvm_data_subdir_owner: "{{ dingofs_user | default('root') }}"
 lvm_data_subdir_group: "{{ dingofs_user | default('root') }}"
 lvm_data_subdir_mode: "0755"
+
+# Recover an existing, formatted data LV without pvcreate or mkfs. Missing
+# LVs/filesystems require manual recovery; repair never formats existing data.
+lvm_data_repair: false

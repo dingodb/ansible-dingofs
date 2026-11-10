@@ -95,11 +95,16 @@
   when: podman_rootless_user != "root"
 
 # --- Step 4: Enable linger for the user ---
+- name: Inspect persistent linger state
+  stat:
+    path: "/var/lib/systemd/linger/{{ podman_rootless_user }}"
+    get_checksum: false
+  register: _linger_state
+
 - name: Enable linger for {{ podman_rootless_user }}
-  command: "loginctl enable-linger {{ podman_rootless_user }}"
-  register: linger_result
-  changed_when: "'already' not in (linger_result.stderr | default(''))"
-  failed_when: false
+  command:
+    argv: [loginctl, enable-linger, "{{ podman_rootless_user }}"]
+  when: not _linger_state.stat.exists
 
 # --- Step 4b: Make containers come back after a reboot ---
 #

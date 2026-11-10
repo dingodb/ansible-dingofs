@@ -57,7 +57,7 @@ ansible-dingofs/
 │   ├── cache_03_tune.yml        # Cache: performance tuning
 │   ├── cache_04_jemalloc.yml    # Cache: compile & install jemalloc
 │   ├── cache_05_deploy.yml      # Cache: dingo-cache service
-│   ├── cache_06_upgrade.yml     # Cache: upgrade binaries
+│   ├── cache_06_upgrade.yml     # Cache: optional legacy binary-only update
 │   ├── cache_99_status.yml      # Cache: health check
 │   │                            # --- client ---
 │   ├── client_site.yml          # Full client deployment (client_01 -> 06)
@@ -693,7 +693,12 @@ For an existing Cache deployment, apply configuration with
 `cache_05_deploy.yml --limit <canary-host>` during the chosen rollout window;
 changes notify a service restart. Verify the updated service and its membership
 in the intended MDS cache group after the run, then continue in small batches.
-`cache_06_upgrade.yml` only updates the binary and does not apply new settings.
+The same `cache_05_deploy.yml` entry point also updates the binary when its
+content changes; an unchanged, current service is not restarted. Interrupted
+binary/configuration updates retain a restart marker and converge on a rerun.
+`cache_06_upgrade.yml` is an optional legacy binary-only entry point, not a
+required upgrade phase. It additionally keeps a .bak and defaults to serial: 1,
+but does not apply new settings.
 When replacing a local template hotfix with this version, preserve any other
 local changes and carry the intended values into site variables.
 
@@ -775,10 +780,10 @@ Not referenced by any `*_site.yml`; they only run when invoked explicitly.
 | `config_podman_rootless.yml` | `client_servers` | Standalone entry point for the `podman_rootless` role: enables systemd linger for the service user, writes `storage.conf`, sets `XDG_RUNTIME_DIR`. The meta path does not need it -- `04_dingo_cli.yml` runs the same role for `meta_servers`. |
 | `config_cron_cleanup.yml` | `all` | Deploys `cleanup_and_compression.sh` plus a daily cron job. Defaults to cleaning `dingo_cache_log_dir`; override `cron_cleanup_directories` for other layouts. The script requires at least one directory argument, so an empty list will not work. |
 | `cache_02b_remap.yml` | `cache_servers` | Renumbers cache mounts by disk size (smallest -> `/mnt/disk1`). Check-only unless `-e remap_apply=true`. |
-| `cache_06_upgrade.yml` | `cache_servers` | Replaces cache binaries and restarts the service. |
+| `cache_06_upgrade.yml` | `cache_servers` | Optional legacy binary-only update with .bak and serial: 1. Normal updates use cache_05_deploy.yml. |
 | `client_05_label.yml` | `client_servers` | Applies node labels. |
 | `client_06_dingocli.yml` | `client_servers:cache_servers:!meta_servers:!admin` | Distributes the staged worker CLI, updates `~/.dingo/bin/dingo` by SHA1 comparison, and writes `~/.dingo/dingo.yaml`. Download is opt-in. Explicit admin targets use the manual server CLI in a cluster-specific binary directory. |
-| `client_07_upgrade.yml` | `client_servers` | Replaces client binaries and restarts mounts. Does not create missing mounts -- that is `client_04_deploy.yml`. |
+| `client_07_upgrade.yml` | `client_servers` | Optional binary-only update of existing mounts. Normal binary/config updates and new mounts use client_04_deploy.yml. |
 
 Override the target with `-e target_hosts=<group>`.
 
@@ -814,7 +819,9 @@ Failures that are easy to misread:
 - **Data ends up on the system disk.** `/mnt/diskN` was never mounted;
   `dingofs_cluster` does not check.
 - **`Error-Code: 410009 / cluster already exist`.** A previous run left the cluster
-  registered. Re-running is safe -- the role treats this as success.
+  registered. Existing registrations must have matching topology and healthy
+  services. Incomplete registrations require explicit inspection and recovery;
+  the role never retries initialization over an existing cluster.
 - **`Error-Code: 100000 / init SQLite database failed`.** `~/.dingo/dingocli.cfg`
   still points at an old rqlite address. The role writes the config before
   invoking the CLI, so re-running `04_dingo_cli.yml` fixes it.
@@ -926,3 +933,55 @@ purge retained data/logs even after installation files have been removed.
 Repeating a completed uninstall is a no-op. `--check` performs ownership/usage
 and registration queries and prints exact removal/retention paths, without
 stopping services, unmounting or deleting files.
+
+## Operational security and recovery
+
+SSH host key verification is enabled. Add verified host keys to the controller's
+`known_hosts` before deployment. For an isolated disposable lab, explicitly set
+`ANSIBLE_HOST_KEY_CHECKING=False`; production inventories should keep verification.
+
+CLI downloads remain disabled by default. Enabling `dingo_cli_download_enabled`
+also requires `dingo_cli_download_checksum: "sha256:<trusted release hash>"`.
+A moving `latest` URL alone is not reproducible. The role downloads to a private
+candidate, checks its hash and `--version`, and installs it with a backup of the
+previous file. A changed release needs a new trusted hash. Rqlite and jemalloc
+archives are checked on every staging run, including local/offline archives;
+version overrides must supply their own `*_download_checksum`.
+
+Rqlite keeps the existing root service account, configured data directory
+(default `/root/rqlite/node`) and authentication behavior. Grafana credentials
+also keep their existing behavior; this change does not require credentials,
+rotate passwords or migrate database data. Monitor image versions remain pinned
+by default. Inventory overrides, including `:latest`, are accepted.
+
+Client deployment (`client_04_deploy.yml`) and upgrade (`client_07_upgrade.yml`)
+run in batches of 20% of the selected hosts (`serial: "20%"`);
+`client_site.yml` imports that deployment
+entry point. Cache deployment remains suitable for selecting hosts with `--limit`;
+its upgrade playbook also keeps `serial: 1`.
+
+Cache deployment, optional binary-only updates and client deployment persist
+`.restart-required` before changing service files. An interrupted or busy restart retains this marker for the next
+run, including when all files already match. Busy client instances are deferred
+individually so other instances can proceed. For Cache, the live-process check
+follows the service main PID to its cache child process, so a Bash startup wrapper is not mistaken for an outdated cache
+binary. Optional upgrade entry points retain the oldest `.bak`; normal deploy
+does not add binary backups.
+
+`lvm_data_repair: true` activates and remounts an existing formatted data LV and
+repairs a missing fstab entry. It never formats a managed LV. Missing LVs,
+unknown filesystems, conflicting mounts or nonempty target directories require
+manual recovery. Cache allocation skips occupied VG names, mountpoints and
+fstab targets and refuses to hide files in an unmounted target directory.
+
+A limited `01_prepare.yml --limit ...` run exchanges SSH keys only among active
+meta hosts in that play. Run preparation against all intended meta peers to
+establish their full mutual trust; limiting a play does not modify excluded
+nodes.
+
+THP policy is persisted through `/etc/tmpfiles.d/dingofs-thp.conf`. CPU idle/C1E
+settings remain runtime settings as documented above. Cache/client units set
+`LimitCORE=infinity` and `LimitNPROC=4194304`; the shared core directory uses
+mode `1777`. Client OOM eligibility stays at the normal score 0, configurable
+with `dingo_client_oom_score_adjust`; setting -1000 makes it ineligible for OOM
+killing and requires a site-specific memory policy.

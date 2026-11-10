@@ -10,7 +10,7 @@
   failed_when: false
 
 - name: Install podman
-  yum:
+  package:
     name: podman
     state: present
   when: podman_check.rc != 0
@@ -20,7 +20,6 @@
     name: podman.socket
     enabled: true
     state: started
-  failed_when: false
 
 - name: Verify podman installation
   command: podman --version

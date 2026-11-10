@@ -174,9 +174,8 @@
     var: hosts_list.stdout_lines
 
 # --- Deploy cluster ---
-# `dingo cluster add` returns 410009 "cluster already exist" for an existing
-# cluster. Treat that as success, otherwise a re-run after a failed deployment
-# always stops here and never reaches the deploy step.
+# A registration appearing after the preflight is a concurrent change.
+# Fail on 410009 as well: continuing could initialize another deployment.
 - name: Create DingoFS cluster
   become: true
   become_user: "{{ dingofs_user }}"

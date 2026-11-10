@@ -13,3 +13,7 @@ rqlite_raft_port: 4002
 rqlite_node_dir: /root/rqlite/node
 
 rqlite_master_host: "{{ hostvars[groups['rqlite_master'][0]]['ansible_host'] }}"
+
+# A version override must provide its own trusted SHA256. Never trust a cached
+# tarball merely because the path already exists.
+rqlite_download_checksum: "{{ 'sha256:96c82652929085af49d1ebc8d14891a02105d063be7eee25a9bb90af4e5f9f3b' if rqlite_version == 'v9.4.5' else '' }}"

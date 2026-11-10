@@ -21,6 +21,8 @@ ExecStart={{ dingo_cache_base_dir }}/dingo-cache-start.sh
 Restart=always
 RestartSec=30
 LimitNOFILE=1000000
+LimitCORE=infinity
+LimitNPROC=4194304
 
 [Install]
 WantedBy=multi-user.target

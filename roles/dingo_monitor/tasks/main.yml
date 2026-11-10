@@ -62,7 +62,9 @@
     dest: "{{ dingo_monitor_config_file }}"
     owner: "{{ dingofs_user }}"
     group: "{{ dingofs_user }}"
-    mode: "0644"
+    mode: "0600"
+  diff: false
+  no_log: true
 
 # `dingo monitor deploy` only works once.
 #
@@ -77,18 +79,42 @@
 # even though the stack is up and `dingo monitor status` is happy. So check
 # first and only deploy when there is nothing there -- otherwise this role, and
 # anything that includes it, is not re-runnable.
+# An undeployed stack has no saved monitor configuration, and `status` then
+# fails to parse it. Only the CLI's explicit absence markers authorize a first
+# deploy; arbitrary command failures or empty output never do.
+- name: Read the stored monitor configuration
+  become: true
+  become_user: "{{ dingofs_user }}"
+  command:
+    argv: ["{{ dingo_cli_bin_dir }}/dingo", monitor, config, show]
+  register: _monitor_saved_config
+  changed_when: false
+  check_mode: false
+
+- name: Require an explicit monitor configuration response
+  assert:
+    that: _monitor_saved_config.stdout | trim | length > 0
+    fail_msg: "Empty monitor configuration response; refusing automatic deployment."
+
+- name: Initialize the confirmed monitor registration state
+  set_fact:
+    _monitor_registered: "{{ _monitor_saved_config.stdout | trim not in ['<empty monitor>', '-'] }}"
+    _monitor_existing_count: 0
+
 - name: Check whether the monitor stack is already deployed
   become: true
   become_user: "{{ dingofs_user }}"
-  shell: >
-    {{ dingo_cli_bin_dir }}/dingo monitor status 2>/dev/null
-    | grep -E '^ *[0-9a-f]{6,} +(node_exporter|prometheus|grafana|monitor_sync)'
-    | grep -vc 'Cleaned'
-  args:
-    executable: /bin/bash
+  command:
+    argv: ["{{ dingo_cli_bin_dir }}/dingo", monitor, status]
   register: monitor_existing
   changed_when: false
-  failed_when: false
+  check_mode: false
+  when: _monitor_registered | bool
+
+- name: Parse monitor status before deciding whether deployment is safe
+  set_fact:
+    _monitor_existing_count: "{{ monitor_existing.stdout | dingo_monitor_count }}"
+  when: _monitor_registered | bool
 
 - name: Deploy the monitor stack
   become: true
@@ -100,14 +126,14 @@
   args:
     executable: /bin/bash
   register: monitor_deploy
-  when: monitor_existing.stdout | default('0') | trim == '0'
+  when: _monitor_existing_count | int == 0
 
 - name: Report monitor deployment
   debug:
     msg: >-
       {{ 'monitor stack deployed'
          if monitor_deploy.changed | default(false)
-         else 'monitor stack already present (' ~ (monitor_existing.stdout | default('0') | trim)
+         else 'monitor stack already present (' ~ (_monitor_existing_count | string)
               ~ ' services) - left alone; run `dingo monitor deploy` by hand if you changed the config' }}
 
 # status is read-only and works on every run, unlike deploy, so it is the

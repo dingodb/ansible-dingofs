@@ -1,7 +1,7 @@
 ---
 # ============================================================
 # Role: lvm_data - LVM data disks for DingoFS meta server nodes
-# Creates vg_diskN/lv on unused NVMe devices, mounted at /mnt/disk0..N-1.
+# Creates vg_diskN/lv on unused NVMe devices, mounted at /mnt/disk<offset>..disk<offset+N-1> (default offset 1).
 # Requires: root
 # ============================================================
 

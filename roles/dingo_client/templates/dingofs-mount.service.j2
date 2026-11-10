@@ -19,6 +19,9 @@ ExecStart={{ dingo_client_base_dir }}/dingofs-mount.sh
 Restart=always
 RestartSec=30
 LimitNOFILE=1000000
+OOMScoreAdjust={{ dingo_client_oom_score_adjust | default(0) }}
+LimitCORE=infinity
+LimitNPROC=4194304
 
 [Install]
 WantedBy=multi-user.target

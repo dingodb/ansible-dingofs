@@ -226,6 +226,16 @@
     src: /sys/kernel/mm/transparent_hugepage/enabled
   register: thp_current
 
+- name: Validate the THP policy
+  assert:
+    that: tune_thp_mode in ['always', 'madvise', 'never']
+
+- name: Persist the THP policy across reboots
+  copy:
+    content: "w /sys/kernel/mm/transparent_hugepage/enabled - - - - {{ tune_thp_mode }}\n"
+    dest: /etc/tmpfiles.d/dingofs-thp.conf
+    mode: "0644"
+
 - name: Set THP to {{ tune_thp_mode }} (only if not already set)
   shell: echo "{{ tune_thp_mode }}" > /sys/kernel/mm/transparent_hugepage/enabled
   when: "'[' + tune_thp_mode + ']' not in (thp_current.content | b64decode)"
@@ -245,4 +255,4 @@
   file:
     path: "{{ tune_core_pattern | dirname }}"
     state: directory
-    mode: "0777"
+    mode: "1777"

@@ -1,8 +1,10 @@
 """Exercise CLI installation and upgrades through the real Ansible role."""
 import functools
+import hashlib
 import http.server
 import json
 import os
+import pwd
 from pathlib import Path
 import shlex
 import shutil
@@ -51,7 +53,7 @@ class DingoEnvTests(unittest.TestCase):
             fixture_bin = root / "bin"
             fixture_bin.mkdir()
             getent = fixture_bin / "getent"
-            entries = ["%s:x:1000:1000::%s:/bin/sh" % (name, home)
+            entries = ["%s:x:1000:1000::%s:/bin/sh" % (pwd.getpwuid(os.getuid()).pw_name, home)
                        for name, home in homes.items()]
             getent.write_text("#!/bin/sh\nprintf '%s\\n' " + " ".join(map(shlex.quote, entries)) + "\n")
             getent.chmod(0o755)
@@ -80,6 +82,8 @@ class DingoEnvTests(unittest.TestCase):
                        ANSIBLE_ROLES_PATH=str(REPO / "roles"), ANSIBLE_NOCOLOR="1")
 
             def run(*options):
+                play[0]["vars"]["dingo_cli_download_checksum"] = "sha256:" + hashlib.sha256(latest.read_bytes()).hexdigest()
+                play_path.write_text(json.dumps(play))
                 result = subprocess.run(
                     ["ansible-playbook", "-i", "node1,node2,", str(play_path), *options],
                     cwd=REPO, env=env, text=True, capture_output=True, timeout=60,
@@ -108,6 +112,23 @@ class DingoEnvTests(unittest.TestCase):
             self.assertEqual(len(requests), 3)
             self.assertEqual(server_source.read_text(), server_content)
 
+            # A corrupt response or a non-executable candidate must preserve
+            # both the staged CLI and all distributed copies.
+            trusted = source.read_bytes()
+            for bad_hash in [True, False]:
+                latest.write_text("this is not an executable CLI\n")
+                play[0]["vars"]["dingo_cli_download_checksum"] = "sha256:" + hashlib.sha256(
+                    trusted if bad_hash else latest.read_bytes()).hexdigest()
+                play_path.write_text(json.dumps(play))
+                result = subprocess.run(
+                    ["ansible-playbook", "-i", "node1,node2,", str(play_path)],
+                    cwd=REPO, env=env, text=True, capture_output=True, timeout=60)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(source.read_bytes(), trusted)
+                self.assertEqual(list(source.parent.glob('.dingo-candidate-*')), [])
+                for target in targets:
+                    self.assertEqual(target.read_bytes(), trusted)
+
             # An old/incorrect inventory alias must not let latest overwrite
             # the manually prepared server CLI, even through a symlink.
             alias = root / "server-alias"
@@ -120,7 +141,7 @@ class DingoEnvTests(unittest.TestCase):
             )
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("must differ", result.stdout)
-            self.assertEqual(len(requests), 3)
+            self.assertEqual(len(requests), 5)
             self.assertEqual(server_source.read_text(), server_content)
 
     def test_cache_binary_entry_preserves_config_and_admin_uses_manual_cli(self):
@@ -182,7 +203,7 @@ class DingoEnvTests(unittest.TestCase):
             fixture_bin = root / "bin"
             fixture_bin.mkdir()
             getent = fixture_bin / "getent"
-            passwd_entry = "fixture:x:1000:1000::%s:/bin/sh" % home
+            passwd_entry = "%s:x:1000:1000::%s:/bin/sh" % (pwd.getpwuid(os.getuid()).pw_name, home)
             getent.write_text("#!/bin/sh\nprintf '%s\\n' " + shlex.quote(passwd_entry) + "\n")
             getent.chmod(0o755)
             play = [{
@@ -212,6 +233,8 @@ class DingoEnvTests(unittest.TestCase):
 
             # First installation must copy before trying to execute the CLI.
             self.assertIn("fixture version one", run())
+            self.assertEqual(stat.S_IMODE((home / ".dingo/dingo.yaml").stat().st_mode), 0o600)
+            self.assertEqual((home / ".dingo/dingo.yaml").stat().st_uid, os.getuid())
             self.assertEqual(target.read_bytes(), source.read_bytes())
             self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o755)
             self.assertIn("127.0.0.1:7400", (home / ".dingo/dingo.yaml").read_text())

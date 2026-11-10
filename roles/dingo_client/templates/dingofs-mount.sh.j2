@@ -32,8 +32,22 @@ if mountpoint -q "${g_mnt}" 2>/dev/null; then
     fi
 fi
 
-# Get mountpoint info and umount via dingo CLI
-mnt_info=$(${g_dingo} fs mountpoint --mdsaddr=${g_mdsaddr} | grep "${g_mnt}" | grep "$(hostname)")
+# CLI mountpoint rows contain an exact host:port:path field. Match that field,
+# not a substring of a different path, hostname, client ID or filesystem name.
+if ! mountpoints=$("${g_dingo}" fs mountpoint --mdsaddr="${g_mdsaddr}"); then
+    echo "Cannot query registered mountpoints; refusing automatic remount" >&2
+    exit 1
+fi
+local_hosts="$(hostname) $(hostname -f 2>/dev/null) $(hostname -I 2>/dev/null)"
+mnt_info=$(printf '%s\n' "$mountpoints" | awk -v wanted="$g_mnt" -v hosts="$local_hosts" '
+    BEGIN { n = split(hosts, names, /[[:space:]]+/); for (i=1; i<=n; i++) local[names[i]]=1 }
+    { for (i=1; i<=NF; i++) {
+        count=split($i, part, ":")
+        if (count < 3 || part[count] != wanted || part[count-1] !~ /^[0-9]+$/) continue
+        host=part[1]; for (j=2; j<count-1; j++) host=host ":" part[j]
+        gsub(/^\[|\]$/, "", host)
+        if (host in local) print $i
+    }}')
 
 if [ -z "$mnt_info" ]; then
     echo "No existing mountpoint on $(hostname), skip umount..."
