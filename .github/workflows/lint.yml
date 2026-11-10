@@ -14,9 +14,8 @@ jobs:
     name: YAML & playbook syntax
     runs-on: ubuntu-latest
     env:
-      # ansible.cfg selects community.general.yaml as the stdout callback,
-      # which upstream has deprecated. CI only checks syntax, so use the
-      # built-in callback and skip the extra collection dependency.
+      # Syntax checks do not load stdout callbacks. The callback job below
+      # exercises the configured plugin through actual playbook runs.
       ANSIBLE_STDOUT_CALLBACK: ansible.builtin.default
     steps:
       - uses: actions/checkout@v4
@@ -93,6 +92,38 @@ jobs:
             fi
           done
           exit $fail
+
+  callback:
+    name: Callback compatibility (${{ matrix.ansible }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - python: '3.9'
+            ansible: ansible-base==2.10.8
+          - python: '3.9'
+            ansible: ansible-core==2.12.10
+          - python: '3.13'
+            ansible: ansible-core
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install ansible-core
+        run: pip install '${{ matrix.ansible }}'
+      # Ansible 2.10 imports environmentfilter, removed in Jinja2 3.1.
+      - name: Install compatible Jinja2 for Ansible 2.10
+        if: matrix.ansible == 'ansible-base==2.10.8'
+        run: pip install 'jinja2<3.1'
+      - name: Run ordinary and compact callback playbooks
+        env:
+          PYTHONPATH: tests
+        run: >-
+          python3 -m unittest -v
+          test_client_discovery_report.DefaultOutputTests
+          test_client_discovery.DiscoveryPlaybookTests
 
   regression:
     name: Regression tests (${{ matrix.shard }})
