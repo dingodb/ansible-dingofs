@@ -35,6 +35,7 @@ fi
 # CLI mountpoint rows contain an exact host:port:path field. Match that field,
 # not a substring of a different path, hostname, client ID or filesystem name.
 if ! mountpoints=$("${g_dingo}" fs mountpoint --mdsaddr="${g_mdsaddr}"); then
+    printf '%s\n' "$mountpoints" >&2
     echo "Cannot query registered mountpoints; refusing automatic remount" >&2
     exit 1
 fi

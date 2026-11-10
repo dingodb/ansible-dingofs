@@ -3,6 +3,8 @@ Description=DingoFS Mount {{ dingo_client_fsname }} Service
 After=network.target
 
 [Service]
+# Root services do not inherit HOME; the dingo CLI requires it at startup.
+Environment="HOME=/root"
 {% if IB_CHECK_ENABLED | default(true) | bool and dingo_client_use_rdma | default(true) | bool %}
 # Wait for the RDMA fabric (ACTIVE port + cluster IPv4) before starting.
 # Device names are auto-detected by the script; only the IP prefix and the
