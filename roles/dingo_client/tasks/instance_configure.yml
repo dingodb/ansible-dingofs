@@ -83,7 +83,7 @@
 
 - name: "Copy dingo CLI binary to remote host for {{ dingo_client_fsname }}"
   copy:
-    src: "{{ dingo_client_dingo_bin_local_src }}"
+    src: "{{ dingo_cli_resolved_source | default(dingo_client_dingo_bin_local_src) }}"
     dest: "{{ dingo_client_base_dir }}/bin/dingo"
     mode: "0755"
 

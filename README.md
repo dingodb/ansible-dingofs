@@ -259,7 +259,10 @@ a symlink. Cache deployment configures the command and PATH without rewriting
 an existing `dingo.yaml`; `client_06_dingocli.yml` also configures `dingo.yaml`.
 Updating only the CLI does not restart a running FUSE client.
 `dingo_cli_download_enabled` defaults to **false**: no URL is contacted, and a
-missing/empty controller source fails early with its path. To refresh the file
+missing latest file falls back to `dingo_cli_pkg_path` when
+`dingo_cli_auto_upgrade: false`. An existing empty/invalid source still fails
+early; an explicitly configured custom source does not fall back. If neither
+file exists, the error names both controller paths. To refresh the file
 from `dingo_cli_download_url` once per play, explicitly pass
 `-e dingo_cli_download_enabled=true`.
 Check mode uses the cached controller binary and does not fetch the latest URL.

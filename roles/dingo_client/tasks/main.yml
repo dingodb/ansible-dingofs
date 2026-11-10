@@ -97,7 +97,7 @@
   delegate_to: localhost
   become: false
   stat:
-    path: "{{ dingo_client_dingo_bin_local_src }}"
+    path: "{{ dingo_cli_resolved_source | default(dingo_client_dingo_bin_local_src) }}"
   register: _dingo_bin_src
   run_once: true
   changed_when: false
@@ -115,7 +115,8 @@
       dingo_client_bin_local_src = {{ dingo_client_bin_local_src }}
       (exists = {{ _client_bin_src.stat.exists }});
       dingo_client_dingo_bin_local_src = {{ dingo_client_dingo_bin_local_src }}
-      (exists = {{ _dingo_bin_src.stat.exists }}).
+      (selected source = {{ dingo_cli_resolved_source | default(dingo_client_dingo_bin_local_src) }};
+      exists = {{ _dingo_bin_src.stat.exists }}).
       Put the matching dingo-client / dingo there, or point these two variables
       elsewhere.
     success_msg: "client binaries present on the control node"
