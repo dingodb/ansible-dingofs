@@ -4,5 +4,7 @@
   hosts: client_servers
   remote_user: root
   become: false
+  # Finish each host before restarting client instances on the next host.
+  serial: 1
   roles:
     - dingo_client

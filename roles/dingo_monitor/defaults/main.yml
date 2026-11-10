@@ -39,7 +39,8 @@ dingo_monitor_central_host: "{{ dingo_monitor_hosts | first }}"
 dingo_monitor_data_dir: "/mnt/disk3/dingofs-monitor-{{ dingofs_cluster_name }}"
 
 # Fixed tags keep hosts on one release. Verify compatibility with the staged
-# server CLI before rollout; regions may override these with registry digests.
+# server CLI before rollout. Inventory overrides may use any reference,
+# including :latest; the role does not reject floating tags.
 dingo_monitor_node_exporter_image: "prom/node-exporter:v1.9.1"
 dingo_monitor_node_exporter_port: 9100
 

@@ -947,7 +947,12 @@ Rqlite keeps the existing root service account, configured data directory
 (default `/root/rqlite/node`) and authentication behavior. Grafana credentials
 also keep their existing behavior; this change does not require credentials,
 rotate passwords or migrate database data. Monitor image versions remain pinned
-and should be checked against the site's existing versions before first deployment.
+by default. Inventory overrides, including `:latest`, are accepted.
+
+Client deployment (`client_04_deploy.yml`) and upgrade (`client_07_upgrade.yml`)
+run one host at a time (`serial: 1`); `client_site.yml` imports that deployment
+entry point. Cache deployment remains suitable for selecting hosts with `--limit`;
+its upgrade playbook also keeps `serial: 1`.
 
 Cache upgrades and client deployments persist `.restart-required` before changing
 service files. An interrupted or busy restart retains this marker for the next

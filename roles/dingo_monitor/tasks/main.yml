@@ -3,17 +3,6 @@
 # Role: dingo_monitor - Deploy the dingo monitor stack
 # ============================================================
 
-- name: Require fixed monitoring image references
-  assert:
-    that:
-      - item is search('(:[^/:]+|@sha256:[0-9a-f]{64})$')
-      - not item.endswith(':latest')
-    fail_msg: "Use versioned or digest-pinned monitor images."
-  loop:
-    - "{{ dingo_monitor_node_exporter_image }}"
-    - "{{ dingo_monitor_prometheus_image }}"
-    - "{{ dingo_monitor_grafana_image }}"
-
 - name: Ensure monitor data directory exists on central host
   become: true
   file:

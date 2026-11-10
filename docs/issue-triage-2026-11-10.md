@@ -25,7 +25,7 @@ The working tree was clean and matched `origin/main` before this review.
 | #64 | Valid. An available VG name did not imply an available mount target. | Recheck VG, exact mountpoint and fstab reservations for every allocation; refuse nonempty unmounted targets. |
 | #65 | Valid despite downloads being opt-in. | Require SHA256, stage privately, validate execution, atomically replace and back up the previous CLI. |
 | #66 | Valid. Credential files and diffs exposed secrets. | Enforce owner-only modes, intended ownership, no_log and disabled diffs. |
-| #67 | Partially addressed; credential changes are deferred by request. | Keep fixed image references. Preserve the original Grafana credential behavior; no required Vault password or password rotation. Leave the issue open. |
+| #67 | Partially addressed; credential changes are deferred by request. | Keep fixed default image references, while accepting inventory overrides such as :latest. Preserve the original Grafana credential behavior; no required Vault password or password rotation. Leave the issue open. |
 | #68 | Valid. Local/staged archives were trusted without verification. | Supply hashes for pinned defaults, verify staged archives, redownload corrupt online caches and reject bad local archives. |
 | #69 | Valid. A failed restart entered remap rollback validation. | Separate successful-remap restarts from remap rescue; attempt every recorded service even if one start fails. |
 | #70 | Valid. Check mode returned a false layout all-clear. | Run the read-only probe for real and prevent apply/stop/lock work in check mode. |
@@ -58,3 +58,8 @@ Revised local validation: all 13 focused data-path/recovery/monitor tests passed
 monitor configuration template and example inventory match the pre-PR baseline
 byte for byte. The revised suite contains 199 regression cases; see PR checks
 for the current Linux CI result.
+
+The operator confirmed the retained service/core/THP/SSH/permission/checksum and
+empty-ID policies. Client deployment and upgrade are now serial: 1. Monitor image
+overrides are accepted without rejecting :latest. Disk repair/remap remain opt-in;
+the impact review explains which operational playbooks provision disks.
