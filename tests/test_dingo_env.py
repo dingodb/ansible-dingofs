@@ -15,12 +15,94 @@ import tempfile
 import threading
 import unittest
 
+import yaml
+
 
 REPO = Path(__file__).resolve().parents[1]
 
 
 @unittest.skipUnless(shutil.which("ansible-playbook"), "requires Ansible")
 class DingoEnvTests(unittest.TestCase):
+    def check_offline_cli_sources(self, entry):
+        client_tasks = yaml.safe_load((REPO / 'roles/dingo_client/tasks/main.yml').read_text())
+        start = next(i for i, task in enumerate(client_tasks)
+                     if task.get('name') == 'Prepare the latest independent CLI on the control node')
+        end = next(i for i, task in enumerate(client_tasks)
+                   if task.get('name') == 'Fail early if a client binary is missing on the control node')
+        configure = yaml.safe_load((REPO / 'roles/dingo_client/tasks/instance_configure.yml').read_text())
+        client_copy = next(task for task in configure
+                           if task.get('name', '').startswith('Copy dingo CLI binary'))
+        cases = [
+            ('prefer-latest', ['latest', 'manual'], False, False, 'latest'),
+            ('fallback', ['manual'], False, False, 'manual'),
+            ('both-missing', [], False, False, None),
+            ('empty-latest', ['latest', 'manual'], False, False, None),
+            ('auto-upgrade-enabled', ['manual'], True, False, None),
+            ('custom-source', ['manual', 'custom'], False, True, 'custom'),
+            ('missing-custom-source', ['manual'], False, True, None),
+        ]
+        for case, present, auto_upgrade, custom, expected in cases:
+            with self.subTest(entry=entry, case=case), tempfile.TemporaryDirectory(
+                    prefix='ansible-dingo-offline-') as directory:
+                root = Path(directory)
+                sources = {name: root / name for name in ('latest', 'manual', 'custom')}
+                for name in present:
+                    sources[name].write_text("#!/bin/sh\nprintf '%s\\n' '" + name + " CLI'\n")
+                if case == 'empty-latest':
+                    sources['latest'].write_text('')
+                original_sources = {name: path.read_bytes() for name, path in sources.items() if path.exists()}
+                client_binary = root / 'dingo-client'
+                client_binary.write_text('fixture client binary\n')
+                targets = []
+                for host in ('node1', 'node2'):
+                    target = root / host / ('.dingo/bin/dingo' if entry == 'environment' else 'bin/dingo')
+                    target.parent.mkdir(parents=True)
+                    target.write_text('existing CLI\n')
+                    targets.append(target)
+                variables = dict(
+                    ansible_connection='local', ansible_python_interpreter=sys.executable,
+                    dingo_cli_latest_pkg_path=str(sources['latest']),
+                    dingo_cli_pkg_path=str(sources['manual']), dingo_cli_auto_upgrade=auto_upgrade,
+                    dingo_cli_download_url='http://127.0.0.1:1/must-not-be-used',
+                    dingo_env_home=str(root) + '/{{ inventory_hostname }}',
+                    dingo_client_base_dir=str(root) + '/{{ inventory_hostname }}',
+                    dingo_client_bin_local_src=str(client_binary),
+                    dingo_client_dingo_bin_local_src='{{ dingo_cli_latest_pkg_path }}',
+                    dingo_client_fsname='fixture')
+                if custom:
+                    variables['dingo_env_bin_src' if entry == 'environment'
+                              else 'dingo_client_dingo_bin_local_src'] = str(sources['custom'])
+                tasks = ([{'include_role': {'name': 'dingo_env', 'tasks_from': 'binary'}}]
+                         if entry == 'environment' else client_tasks[start:end + 1] + [client_copy])
+                play = root / 'play.json'
+                play.write_text(json.dumps([dict(hosts='all', gather_facts=False, become=False,
+                                                 vars=variables, tasks=tasks)]))
+                result = subprocess.run(
+                    ['ansible-playbook', '-i', 'node1,node2,', str(play)], cwd=REPO,
+                    env=dict(os.environ, ANSIBLE_CONFIG=str(REPO / 'ansible.cfg'),
+                             ANSIBLE_ROLES_PATH=str(REPO / 'roles'), ANSIBLE_NOCOLOR='1'),
+                    text=True, capture_output=True, timeout=60)
+                diagnostic = result.stdout + result.stderr
+                if expected:
+                    self.assertEqual(result.returncode, 0, diagnostic)
+                    for target in targets:
+                        self.assertEqual(target.read_bytes(), sources[expected].read_bytes(), diagnostic)
+                else:
+                    self.assertNotEqual(result.returncode, 0, diagnostic)
+                    for target in targets:
+                        self.assertEqual(target.read_text(), 'existing CLI\n', diagnostic)
+                    if case == 'both-missing':
+                        for name in ('latest', 'manual'):
+                            self.assertIn(str(sources[name]), diagnostic)
+                self.assertEqual({name: path.read_bytes() for name, path in sources.items() if path.exists()},
+                                 original_sources, diagnostic)
+
+    def test_offline_environment_cli_source_selection(self):
+        self.check_offline_cli_sources('environment')
+
+    def test_offline_client_cli_source_selection(self):
+        self.check_offline_cli_sources('client')
+
     def test_latest_is_downloaded_once_then_distributed_to_all_hosts(self):
         with tempfile.TemporaryDirectory(prefix="ansible-dingo-download-") as directory:
             root = Path(directory)

@@ -52,6 +52,64 @@ class ShellTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.splitlines(), ['node1:103:/dingofs/a', '10.0.0.1:104:/dingofs/a'])
 
+    def test_mount_service_supplies_home_and_preserves_cli_query_errors(self):
+        with tempfile.TemporaryDirectory(prefix='mount-startup-') as directory:
+            root = Path(directory)
+            (root / 'bin').mkdir()
+            (root / 'mount').mkdir()
+            cli = root / 'bin/dingo'
+            cli.write_text('''#!/bin/sh
+if [ -z "${HOME:-}" ]; then
+    echo 'Error-Description: get user home dir failed'
+    echo 'Error-Clue: $HOME is not defined'
+    exit 1
+fi
+if [ "${FIXTURE_QUERY_FAIL:-}" = 1 ]; then
+    echo 'Error-Description: fixture MDS unavailable'
+    exit 1
+fi
+''')
+            cli.chmod(0o755)
+            variables = dict(
+                dingo_client_fsname='fixture', dingo_client_base_dir=str(root),
+                dingo_client_mount_point=str(root / 'mount'), dingo_client_mds_addrs='127.0.0.1:7000',
+                dingo_client_cache_group='fixture', dingo_client_port=13000,
+                dingo_client_log_dir=str(root / 'logs'), dingo_client_mount_check_enabled=False,
+                dingo_client_use_rdma=True, dingo_client_rdma_device='fixture', dingo_client_rdma_port_num=1)
+            source = (REPO / 'roles/dingo_client/templates/dingofs-mount.sh.j2').read_text()
+            environment = jinja2.Environment(undefined=jinja2.StrictUndefined)
+            environment.filters['bool'] = bool
+            # Execute the actual startup checks without any mount or FUSE operation.
+            script = ('mountpoint() { return 1; }\n'
+                      + environment.from_string(source.split('# NUMA binding:', 1)[0]).render(**variables)
+                      + '\necho FUSE_START_REACHED\n')
+            base_env = {key: value for key, value in os.environ.items() if key != 'HOME'}
+            result = subprocess.run(['/bin/bash'], input=script, env=base_env,
+                                    text=True, capture_output=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('$HOME is not defined', result.stderr)
+            self.assertNotIn('FUSE_START_REACHED', result.stdout)
+            for ib_enabled in (False, True):
+                with self.subTest(IB_CHECK_ENABLED=ib_enabled):
+                    unit = render('roles/dingo_client/templates/dingofs-mount.service.j2',
+                                  dict(variables, IB_CHECK_ENABLED=ib_enabled))
+                    service_env = dict(base_env)
+                    for line in unit.splitlines():
+                        if line.startswith('Environment='):
+                            for assignment in shlex.split(line.split('=', 1)[1]):
+                                name, value = assignment.split('=', 1)
+                                service_env[name] = value
+                    result = subprocess.run(['/bin/bash'], input=script, env=service_env,
+                                            text=True, capture_output=True)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn('FUSE_START_REACHED', result.stdout)
+                    result = subprocess.run(['/bin/bash'], input=script,
+                                            env=dict(service_env, FIXTURE_QUERY_FAIL='1'),
+                                            text=True, capture_output=True)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn('fixture MDS unavailable', result.stderr)
+                    self.assertNotIn('FUSE_START_REACHED', result.stdout)
+
     def test_protected_names_are_literal_shell_values(self):
         values = ['a"b', 'x$y', 'x;echo bad', '$(touch SHOULD_NOT_EXIST)', "quote'file"]
         template = (REPO / 'roles/cron_cleanup/templates/cleanup_and_compression.sh.j2').read_text()

@@ -22,7 +22,7 @@
 # copy compares the controller and target SHA1, including existing targets.
 - name: Copy dingo binary into ~/.dingo/bin/ when content differs
   copy:
-    src: "{{ dingo_env_bin_src }}"
+    src: "{{ dingo_cli_resolved_source if dingo_env_use_latest | bool else dingo_env_bin_src }}"
     dest: "{{ dingo_env_bin_dir }}/dingo"
     mode: "0755"
   register: _dingo_env_copy

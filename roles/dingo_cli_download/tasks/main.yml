@@ -1,13 +1,34 @@
 ---
+- name: Select the configured controller CLI source
+  set_fact:
+    dingo_cli_resolved_source: "{{ dingo_cli_download_dest }}"
+
 - name: Validate the existing controller CLI when downloads are disabled
   delegate_to: localhost
   become: false
   run_once: true
   when: not (dingo_cli_download_enabled | bool)
   block:
-    - name: Inspect the staged worker CLI on the controller
+    - name: Inspect the preferred worker CLI on the controller
       stat:
         path: "{{ dingo_cli_download_dest }}"
+        follow: true
+        get_checksum: false
+        get_mime: false
+      register: _dingo_cli_preferred_source
+
+    - name: Fall back to the staged CLI when latest is missing and auto-upgrade is disabled
+      set_fact:
+        dingo_cli_resolved_source: "{{ dingo_cli_pkg_path | default('/root/dingofs/pkg/dingo') }}"
+      when:
+        - not (dingo_cli_auto_upgrade | default(false) | bool)
+        - not _dingo_cli_preferred_source.stat.exists
+        - (dingo_cli_download_dest | realpath) == (dingo_cli_latest_pkg_path | realpath)
+
+    - name: Inspect the selected worker CLI on the controller
+      stat:
+        path: "{{ dingo_cli_resolved_source }}"
+        follow: true
         get_checksum: false
         get_mime: false
       register: _dingo_cli_staged_source
@@ -19,7 +40,9 @@
           - _dingo_cli_staged_source.stat.size | default(0) | int > 0
         fail_msg: >-
           CLI downloads are disabled. Prepare the worker CLI at
-          {{ dingo_cli_download_dest }} on the Ansible controller, or explicitly
+          {{ dingo_cli_resolved_source }} on the Ansible controller
+          (preferred source: {{ dingo_cli_download_dest }};
+          staged fallback: {{ dingo_cli_pkg_path | default('/root/dingofs/pkg/dingo') }}), or explicitly
           set dingo_cli_download_enabled=true for a download run.
 
 # Fetch latest on the controller once per play, then let copy compare each
