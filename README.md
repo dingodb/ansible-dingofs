@@ -882,6 +882,10 @@ processes launched with `--flagfile`: current thread affinity is checked rather
 than rereading a configuration file that may have changed since startup.
 Explicit `--cpuset` argv reservations and observed thread affinities are combined;
 whole-NUMA allowed masks keep their existing non-exclusive interpretation.
+An exited thread-group leader (`State: Z`) whose workers are still alive has no
+readable argv, so the detector claims the CPUs those surviving threads are
+allowed on instead of failing the host; if their affinity cannot be read, the
+collection still fails closed with exit code 3.
 
 Automatic selection and manual `-c` checks both reject occupied SMT siblings.
 `--no-busy` disables load sampling only, not ownership checks. A disappearing
