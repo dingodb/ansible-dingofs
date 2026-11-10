@@ -82,7 +82,37 @@ def ready(mapping, prefix):
                        for address in link.get('addr_info', [])) for link in links)
 
 
+def device_status(name):
+    """Kernel sysfs decides existence; ibv_devices only confirms the verbs stack.
+
+    The optional utilities package may be absent on a working host, so a
+    missing binary must not be reported as a missing device. A binary that
+    exists but fails or hangs is a different problem and is reported as such,
+    so a broken verbs stack is visible instead of looking like a clean host.
+    """
+    if not (Path('/sys/class/infiniband') / name).exists():
+        return 'missing-kernel'
+    try:
+        output = subprocess.check_output(['ibv_devices'], stderr=subprocess.PIPE, timeout=10)
+    except FileNotFoundError:
+        return 'present-no-ibv-devices'
+    except subprocess.CalledProcessError as error:
+        detail = (error.stderr or b'').decode(errors='replace').strip()
+        print('ibv_devices exited %s: %s' % (error.returncode, detail or 'no stderr'), file=sys.stderr)
+        return 'present-ibv-devices-error'
+    except subprocess.TimeoutExpired:
+        print('ibv_devices timed out after 10s', file=sys.stderr)
+        return 'present-ibv-devices-error'
+    except OSError as error:
+        print('ibv_devices could not be executed: %s' % error, file=sys.stderr)
+        return 'present-ibv-devices-error'
+    return 'present' if name in output.decode(errors='replace').split() else 'missing-verbs'
+
+
 def main():
+    if len(sys.argv) > 2 and sys.argv[1] == '--device-status':
+        print(device_status(sys.argv[2]))
+        return 0
     if len(sys.argv) > 1 and sys.argv[1] == '--resolve':
         print(json.dumps(resolve(sys.argv[2], int(sys.argv[3]))))
         return 0

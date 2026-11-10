@@ -332,26 +332,45 @@
 # --- RDMA device validation (v5.2+, once per host, only when RDMA is on) ---
 # Same rule as dingo_cache: the IB device name comes from the host's HCA layout.
 - name: Check RDMA device exists (client hosts)
-  shell: "ibv_devices 2>/dev/null | awk '{print $1}' | grep -qx '{{ dingo_client_rdma_device_effective | default(dingo_client_rdma_device) }}' && echo present || echo missing"
+  command:
+    argv: [bash, "{{ IB_CHECK_SCRIPT }}", --device-status, "{{ dingo_client_rdma_device_effective | default(dingo_client_rdma_device) }}"]
   register: _client_rdma_dev_check
   changed_when: false
   failed_when: false
   when: dingo_client_use_rdma | default(true) | bool
 
-- name: Fail when RDMA device is missing (client hosts)
-  assert:
-    that:
-      - _client_rdma_dev_check.stdout | trim == 'present'
-    fail_msg: >-
-      RDMA device {{ dingo_client_rdma_device | default('ib6s200p0') }} not found on
-      {{ inventory_hostname }} (ibv_devices says: {{ _client_rdma_dev_check.stdout | trim }};
-      if the ibv_devices tool itself is missing, the InfiniBand stack is not installed).
-      Set the right name per host via dingo_client_rdma_device in host_vars, or
-      dingo_client_use_rdma=false to deploy without RDMA.
+- name: Warn when the RDMA utilities are unavailable (client hosts)
+  debug:
+    msg: >-
+      WARNING: ibv_devices
+      {{ 'is not installed' if _client_rdma_dev_check.stdout | trim == 'present-no-ibv-devices'
+         else 'could not run' }}
+      on {{ inventory_hostname }}; /sys/class/infiniband/{{ dingo_client_rdma_device_effective | default(dingo_client_rdma_device) }}
+      exists, so deployment continues.
+      {{ _client_rdma_dev_check.stderr | default('') | trim }}
+      {{ 'Install the verbs utilities (libibverbs-utils / ibverbs-utils)'
+         if _client_rdma_dev_check.stdout | trim == 'present-no-ibv-devices'
+         else 'Check the verbs stack (driver, permissions, timeouts)' }}.
   when:
     - dingo_client_use_rdma | default(true) | bool
     - _client_rdma_dev_check.stdout is defined
-    - _client_rdma_dev_check.stdout | trim == 'missing'
+    - _client_rdma_dev_check.stdout | trim in ['present-no-ibv-devices', 'present-ibv-devices-error']
+
+- name: Fail when RDMA device is missing (client hosts)
+  assert:
+    that:
+      - _client_rdma_dev_check.stdout | trim is match('^present')
+    fail_msg: >-
+      RDMA device {{ dingo_client_rdma_device_effective | default(dingo_client_rdma_device) }}
+      is not usable on {{ inventory_hostname }} (status:
+      {{ _client_rdma_dev_check.stdout | trim }}). missing-kernel means
+      /sys/class/infiniband has no such device; missing-verbs means it exists
+      but ibv_devices cannot enumerate it. Set the right name per host via
+      dingo_client_rdma_device in host_vars, or dingo_client_use_rdma=false to
+      deploy without RDMA.
+  when:
+    - dingo_client_use_rdma | default(true) | bool
+    - _client_rdma_dev_check.stdout is defined
 
 - name: Set default list of dingo clients if not provided
   set_fact:

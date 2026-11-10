@@ -1,14 +1,19 @@
 """Regression fixtures for mount ownership, CPU allocation and RDMA mapping."""
 import argparse
+import contextlib
 import errno
+import io
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+
+import yaml
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -129,6 +134,120 @@ class RdmaTests(unittest.TestCase):
                         patch.object(sys, 'argv', ['check-ib-ready.sh']), \
                         patch('subprocess.check_output', return_value=json.dumps(links).encode()):
                     self.assertEqual(code['main'](), 0)
+
+    def device_status_fixture(self, status_calls):
+        """Run device_status() against a sysfs fixture and patched ibv_devices."""
+        code = embedded('roles/common/files/check-ib-ready.sh', 'PYRDMA')
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        (root / 'sys/class/infiniband/ib6s200p0').mkdir(parents=True)
+
+        def mapped(value):
+            value = str(value)
+            return root / value.lstrip('/') if value.startswith('/sys/') else Path(value)
+
+        with patch.dict(code, Path=mapped), patch('subprocess.check_output', **status_calls):
+            return code, code['device_status']('ib6s200p0')
+
+    def test_device_status_uses_kernel_inventory_and_optional_ibv_devices(self):
+        self.assertEqual(self.device_status_fixture(
+            {'side_effect': FileNotFoundError('ibv_devices')})[1], 'present-no-ibv-devices')
+        self.assertEqual(self.device_status_fixture(
+            {'return_value': b'device node GUID\nib6s200p0 1234\n'})[1], 'present')
+        self.assertEqual(self.device_status_fixture(
+            {'return_value': b'device node GUID\nmlx5_0 1234\n'})[1], 'missing-verbs')
+
+    def test_unknown_sysfs_device_is_missing_regardless_of_ibv_devices(self):
+        code = embedded('roles/common/files/check-ib-ready.sh', 'PYRDMA')
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            def mapped(value):
+                value = str(value)
+                return root / value.lstrip('/') if value.startswith('/sys/') else Path(value)
+
+            with patch.dict(code, Path=mapped), patch(
+                    'subprocess.check_output', return_value=b'ib0 1234\n'):
+                self.assertEqual(code['device_status']('ib0'), 'missing-kernel')
+
+    def test_ibv_devices_failure_is_distinct_from_an_absent_utility(self):
+        for error in [subprocess.CalledProcessError(1, ['ibv_devices'], stderr=b'no permission'),
+                      subprocess.TimeoutExpired(['ibv_devices'], 10),
+                      PermissionError(errno.EACCES, 'denied', 'ibv_devices')]:
+            with self.subTest(error=type(error).__name__):
+                self.assertEqual(self.device_status_fixture({'side_effect': error})[1],
+                                 'present-ibv-devices-error')
+
+    def test_device_status_cli_prints_the_status(self):
+        code = embedded('roles/common/files/check-ib-ready.sh', 'PYRDMA')
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'sys/class/infiniband/ib6s200p0').mkdir(parents=True)
+
+            def mapped(value):
+                value = str(value)
+                return root / value.lstrip('/') if value.startswith('/sys/') else Path(value)
+
+            output = io.StringIO()
+            with patch.object(sys, 'argv', ['check-ib-ready.sh', '--device-status', 'ib6s200p0']), \
+                    patch.dict(code, Path=mapped), \
+                    contextlib.redirect_stdout(output), \
+                    patch('subprocess.check_output', return_value=b'ib6s200p0 1234\n'):
+                self.assertEqual(code['main'](), 0)
+            self.assertEqual(output.getvalue().strip(), 'present')
+
+
+@unittest.skipUnless(shutil.which('ansible-playbook'), 'requires Ansible')
+class RdmaRoleContractTests(unittest.TestCase):
+    def run_status(self, status, stderr=''):
+        tasks = yaml.safe_load((REPO / 'roles/dingo_client/tasks/main.yml').read_text())
+        start = next(i for i, t in enumerate(tasks) if t.get('name') == 'Check RDMA device exists (client hosts)')
+        end = next(i for i, t in enumerate(tasks) if t.get('name') == 'Fail when RDMA device is missing (client hosts)')
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            helper = root / 'check-ib-ready.sh'
+            script = '#!/bin/bash\n'
+            if stderr:
+                script += "printf '%s\\n' '" + stderr + "' >&2\n"
+            script += 'printf "%s\\n" "' + status + '"\n'
+            helper.write_text(script)
+            helper.chmod(0o755)
+            play = root / 'play.yml'
+            play.write_text(yaml.safe_dump([{'hosts': 'localhost', 'gather_facts': False,
+                'vars': {'ansible_connection': 'local', 'ansible_become': False,
+                         'ansible_python_interpreter': sys.executable,
+                         'IB_CHECK_SCRIPT': str(helper),
+                         'dingo_client_use_rdma': True,
+                         'dingo_client_rdma_device': 'ib6s200p0',
+                         'dingo_client_rdma_device_effective': 'ib6s200p0'},
+                'tasks': tasks[start:end + 1]}]))
+            return subprocess.run(['ansible-playbook', '-i', 'localhost,', str(play)], cwd=REPO,
+                env=dict(os.environ, ANSIBLE_CONFIG=str(REPO / 'ansible.cfg')),
+                capture_output=True, text=True, timeout=60)
+
+    def test_kernel_presence_is_enough_when_the_utility_is_absent(self):
+        result = self.run_status('present-no-ibv-devices')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('ibv_devices is not installed', result.stdout)
+
+    def test_a_failing_utility_warns_with_its_reason_but_does_not_block(self):
+        result = self.run_status('present-ibv-devices-error', 'ibv_devices: permission denied')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('ibv_devices could not run', result.stdout)
+        self.assertIn('permission denied', result.stdout)
+
+    def test_a_confirmed_device_needs_no_warning(self):
+        result = self.run_status('present')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn('WARNING', result.stdout)
+
+    def test_missing_devices_still_fail_the_play(self):
+        for status in ['missing-kernel', 'missing-verbs']:
+            with self.subTest(status=status):
+                result = self.run_status(status)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn(status, result.stdout)
 
 
 class MountTests(unittest.TestCase):
