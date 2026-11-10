@@ -1,6 +1,7 @@
 ---
 # Playbook: Upgrade dingo-cache service binary
-# Standalone operational playbook — NOT included in cache_site.yml.
+# Optional legacy binary-only entry point; cache_05_deploy also handles updates.
+# NOT included in cache_site.yml.
 # Steps:
 #   1. Backup current binary: dingo-cache -> dingo-cache.bak
 #   2. Copy new binary from control node (dingo_cache_bin_local_src)
@@ -71,27 +72,9 @@
         mode: "0755"
       register: cache_bin_copy
 
-    # --- Step 3: restart service ---
-    # Markers survive an interrupted run. Also recognize upgrades interrupted
-    # before marker support was installed, by comparing the live executable.
-    - name: Inspect the persistent cache restart obligation
-      stat:
-        path: "{{ dingo_cache_base_dir }}/.restart-required"
-      register: _cache_restart_pending
+    # Legacy binary-only entry point; normal updates can use cache_05_deploy.
+    - import_tasks: ../roles/dingo_cache/tasks/inspect_runtime.yml
 
-    - name: Compare the running cache executable with the installed binary
-      shell: |
-        pid=$(systemctl show -p MainPID --value {{ dingo_cache_service_name | quote }}) || exit 1
-        case "$pid" in ''|*[!0-9]*) exit 1;; esac
-        if [ "$pid" -eq 0 ]; then echo stopped
-        elif cmp -s "/proc/$pid/exe" {{ (dingo_cache_base_dir ~ '/' ~ dingo_cache_bin_name) | quote }}; then echo current
-        else
-          rc=$?
-          if [ "$rc" -eq 1 ]; then echo stale; else exit "$rc"; fi
-        fi
-      register: _cache_running_image
-      changed_when: false
-      check_mode: false
     - name: Restart dingo-cache service
       systemd:
         name: "{{ dingo_cache_service_name }}"

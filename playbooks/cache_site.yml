@@ -22,8 +22,9 @@
 #                 shift either.
 #   3 tune      : idempotent (nothing written when the sysctl values already match)
 #   4 jemalloc  : skipped when already installed (libjemalloc.so.2 present)
-#   5 deploy    : writes conf / unit / start script. NOTHING CHANGES => NO
-#                 RESTART (the handlers only fire when a template changes).
+#   5 deploy    : updates binary / conf / unit / start script. An unchanged,
+#                 current service has no restart. An interrupted update keeps
+#                 a restart obligation, which a rerun completes before readiness.
 #                 Restarting only on change is deliberate: a cache restart
 #                 briefly disconnects clients, but without it the new config
 #                 would never take effect.

@@ -1,6 +1,7 @@
 ---
 # Playbook: Deploy dingo-cache service on cache nodes
-# Configures and starts the dingo-cache systemd service
+# Idempotent initial deployment and updates of binaries/config/service files.
+# Unchanged current services are not restarted; interrupted restarts are retried.
 - name: Deploy dingo-cache service
   hosts: cache_servers
   remote_user: root

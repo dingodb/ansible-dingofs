@@ -1,0 +1,122 @@
+---
+# Persist obligations before replacing any restart-sensitive file. A failed run
+# cannot lose its handler notification when a later copy reports unchanged.
+- name: Preview the replacement cache binary
+  copy:
+    src: "{{ dingo_cache_bin_local_src }}"
+    dest: "{{ dingo_cache_base_dir }}/{{ dingo_cache_bin_name }}"
+    mode: "0755"
+  check_mode: true
+  register: _cache_binary_preview
+
+- name: Preview cache configuration and service files
+  template:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - src: dingo-cache.conf.j2
+      dest: "{{ dingo_cache_base_dir }}/dingo-cache.conf"
+      mode: "0644"
+    - src: dingo-cache-start.sh.j2
+      dest: "{{ dingo_cache_base_dir }}/dingo-cache-start.sh"
+      mode: "0755"
+    - src: dingo-cache.service.j2
+      dest: "/etc/systemd/system/{{ dingo_cache_service_name }}.service"
+      mode: "0644"
+  check_mode: true
+  register: _cache_templates_preview
+
+- name: Preserve a restart obligation before changing cache service files
+  copy:
+    content: "restart required\n"
+    dest: "{{ dingo_cache_base_dir }}/.restart-required"
+    mode: "0600"
+  when: _cache_binary_preview.changed or _cache_templates_preview.changed
+
+# --- Copy binary from control node ---
+# notify, like the conf/unit/start-script tasks below: without it a rebuilt
+# binary landed on disk and the service kept running the old one until the
+# next unrelated restart. dingo_client got exactly this fix earlier
+# ("restart idle mounts only, and notice binary changes"); the cache side was
+# missed.
+#
+# A cache restart briefly disconnects clients; the preserved ID keeps the
+# existing on-disk cache directory. The role already accepts that for any config change
+# (see the header of cache_site.yml) -- a stale binary is not different.
+- name: Copy dingo-cache binary to remote host
+  copy:
+    src: "{{ dingo_cache_bin_local_src }}"
+    dest: "{{ dingo_cache_base_dir }}/{{ dingo_cache_bin_name }}"
+    mode: "0755"
+  notify: restart dingo-cache
+
+# --- Deploy config and scripts ---
+- name: Deploy dingo-cache config file
+  template:
+    src: dingo-cache.conf.j2
+    dest: "{{ dingo_cache_base_dir }}/dingo-cache.conf"
+    mode: "0644"
+  notify: restart dingo-cache
+
+- name: Deploy dingo-cache startup script
+  template:
+    src: dingo-cache-start.sh.j2
+    dest: "{{ dingo_cache_base_dir }}/dingo-cache-start.sh"
+    mode: "0755"
+  notify: restart dingo-cache
+
+# --- Deploy systemd service ---
+- name: Deploy dingo-cache systemd service
+  template:
+    src: dingo-cache.service.j2
+    dest: "/etc/systemd/system/{{ dingo_cache_service_name }}.service"
+    mode: "0644"
+  notify: restart dingo-cache
+
+- name: Reload systemd daemon
+  systemd:
+    daemon_reload: true
+
+- name: Enable and start dingo-cache service
+  systemd:
+    name: "{{ dingo_cache_service_name }}"
+    enabled: true
+    state: started
+
+- import_tasks: inspect_runtime.yml
+
+- name: Queue an outstanding cache restart
+  set_fact:
+    _cache_runtime_restart_required: "{{ _cache_restart_pending.stat.exists or _cache_running_image.stdout != 'current' }}"
+  changed_when: _cache_runtime_restart_required | bool
+  notify: restart dingo-cache
+
+- name: Apply pending cache restart before checking readiness
+  meta: flush_handlers
+
+- name: Wait for dingo-cache to be ready
+  wait_for:
+    port: "{{ dingo_cache_listen_port }}"
+    host: "{{ dingo_cache_listen_ip }}"
+    delay: 3
+    timeout: 60
+
+- name: Display dingo-cache service status
+  shell: systemctl is-active {{ dingo_cache_service_name }}
+  register: service_status
+  changed_when: false
+
+- name: Clear the cache restart obligation after readiness is verified
+  file:
+    path: "{{ dingo_cache_base_dir }}/.restart-required"
+    state: absent
+
+- name: Show deployment summary
+  debug:
+    msg:
+      - "Service: {{ dingo_cache_service_name }}"
+      - "Status: {{ service_status.stdout }}"
+      - "Listen: {{ dingo_cache_listen_ip }}:{{ dingo_cache_listen_port }}"
+      - "Config ID: {{ dingo_cache_config_id }}"
+      - "Config: {{ dingo_cache_base_dir }}/dingo-cache.conf"

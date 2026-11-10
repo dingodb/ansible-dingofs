@@ -57,7 +57,7 @@ ansible-dingofs/
 │   ├── cache_03_tune.yml        # Cache: performance tuning
 │   ├── cache_04_jemalloc.yml    # Cache: compile & install jemalloc
 │   ├── cache_05_deploy.yml      # Cache: dingo-cache service
-│   ├── cache_06_upgrade.yml     # Cache: upgrade binaries
+│   ├── cache_06_upgrade.yml     # Cache: optional legacy binary-only update
 │   ├── cache_99_status.yml      # Cache: health check
 │   │                            # --- client ---
 │   ├── client_site.yml          # Full client deployment (client_01 -> 06)
@@ -693,7 +693,12 @@ For an existing Cache deployment, apply configuration with
 `cache_05_deploy.yml --limit <canary-host>` during the chosen rollout window;
 changes notify a service restart. Verify the updated service and its membership
 in the intended MDS cache group after the run, then continue in small batches.
-`cache_06_upgrade.yml` only updates the binary and does not apply new settings.
+The same `cache_05_deploy.yml` entry point also updates the binary when its
+content changes; an unchanged, current service is not restarted. Interrupted
+binary/configuration updates retain a restart marker and converge on a rerun.
+`cache_06_upgrade.yml` is an optional legacy binary-only entry point, not a
+required upgrade phase. It additionally keeps a .bak and defaults to serial: 1,
+but does not apply new settings.
 When replacing a local template hotfix with this version, preserve any other
 local changes and carry the intended values into site variables.
 
@@ -775,10 +780,10 @@ Not referenced by any `*_site.yml`; they only run when invoked explicitly.
 | `config_podman_rootless.yml` | `client_servers` | Standalone entry point for the `podman_rootless` role: enables systemd linger for the service user, writes `storage.conf`, sets `XDG_RUNTIME_DIR`. The meta path does not need it -- `04_dingo_cli.yml` runs the same role for `meta_servers`. |
 | `config_cron_cleanup.yml` | `all` | Deploys `cleanup_and_compression.sh` plus a daily cron job. Defaults to cleaning `dingo_cache_log_dir`; override `cron_cleanup_directories` for other layouts. The script requires at least one directory argument, so an empty list will not work. |
 | `cache_02b_remap.yml` | `cache_servers` | Renumbers cache mounts by disk size (smallest -> `/mnt/disk1`). Check-only unless `-e remap_apply=true`. |
-| `cache_06_upgrade.yml` | `cache_servers` | Replaces cache binaries and restarts the service. |
+| `cache_06_upgrade.yml` | `cache_servers` | Optional legacy binary-only update with .bak and serial: 1. Normal updates use cache_05_deploy.yml. |
 | `client_05_label.yml` | `client_servers` | Applies node labels. |
 | `client_06_dingocli.yml` | `client_servers:cache_servers:!meta_servers:!admin` | Distributes the staged worker CLI, updates `~/.dingo/bin/dingo` by SHA1 comparison, and writes `~/.dingo/dingo.yaml`. Download is opt-in. Explicit admin targets use the manual server CLI in a cluster-specific binary directory. |
-| `client_07_upgrade.yml` | `client_servers` | Replaces client binaries and restarts mounts. Does not create missing mounts -- that is `client_04_deploy.yml`. |
+| `client_07_upgrade.yml` | `client_servers` | Optional binary-only update of existing mounts. Normal binary/config updates and new mounts use client_04_deploy.yml. |
 
 Override the target with `-e target_hosts=<group>`.
 
@@ -955,11 +960,13 @@ run in batches of 20% of the selected hosts (`serial: "20%"`);
 entry point. Cache deployment remains suitable for selecting hosts with `--limit`;
 its upgrade playbook also keeps `serial: 1`.
 
-Cache upgrades and client deployments persist `.restart-required` before changing
-service files. An interrupted or busy restart retains this marker for the next
+Cache deployment, optional binary-only updates and client deployment persist
+`.restart-required` before changing service files. An interrupted or busy restart retains this marker for the next
 run, including when all files already match. Busy client instances are deferred
-individually so other instances can proceed. The `.bak` upgrade backup retains
-the oldest saved binary; it is not necessarily the immediately preceding build.
+individually so other instances can proceed. For Cache, the live-process check
+follows the service main PID to its cache child process, so a Bash startup wrapper is not mistaken for an outdated cache
+binary. Optional upgrade entry points retain the oldest `.bak`; normal deploy
+does not add binary backups.
 
 `lvm_data_repair: true` activates and remounts an existing formatted data LV and
 repairs a missing fstab entry. It never formats a managed LV. Missing LVs,

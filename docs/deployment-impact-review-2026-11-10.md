@@ -55,9 +55,8 @@ linger 幂等、cron 五字段展示、性能报告真正输出纯文本、CI �
 
 | 用途 | 使用入口 | 会不会建盘/格式化 |
 | --- | --- | --- |
-| 已有机器加挂载、部署客户端 | client_04_deploy.yml，按需加 --limit | 不执行 LVM 建盘；按选定主机的 20% 分批处理客户端。 |
-| 已有机器升级客户端二进制 | client_07_upgrade.yml，按需加 --limit | 不执行 LVM 建盘；按选定主机的 20% 分批升级，忙实例延后。 |
-| 已有机器部署/升级 Cache | cache_05_deploy.yml / cache_06_upgrade.yml | 这两个入口不执行 LVM 建盘；前者可并发，后者逐台。 |
+| 已有机器加挂载、更新客户端二进制或配置 | client_04_deploy.yml，按需加 --limit；client_07_upgrade.yml 只是可选的仅二进制入口 | 不执行 LVM 建盘；按选定主机的 20% 分批处理客户端。 |
+| 已有机器部署/更新 Cache 二进制或配置 | cache_05_deploy.yml，按需加 --limit；cache_06_upgrade.yml 只是可选的旧版仅二进制入口 | 不执行 LVM 建盘；deploy 可并发，仅二进制旧入口仍逐台。 |
 | 新机器从头部署或专门准备数据盘 | client_site.yml、cache_site.yml、cache_02_lvm.yml、01b_lvm_data.yml | 含建盘步骤，可能格式化检测到的可用设备。client_site 本来就包含 cache_02_lvm，不能把整套 site 当作仅更新客户端的入口。 |
 
 正常情况下不设置 lvm_data_repair 和 remap_apply。已有数据卷还在但挂载丢失时才
@@ -67,3 +66,9 @@ linger 幂等、cron 五字段展示、性能报告真正输出纯文本、CI �
 Cache ID 也参与本地目录：DingoFS CacheNode 把 --id 赋给 cache_dir_uuid，
 RealCacheDir 再拼接为 <cache_dir>/<ID>。因此改变 ID 会使用另一个本地子目录。
 本 PR 只在 ID 缺失/为空时生成，保留已有非空 ID，不移动或删除旧目录。
+
+日常统一使用幂等 deploy：Cache 用 cache_05_deploy，Client 用 client_04_deploy。
+upgrade 不是必需步骤，仅保留作为兼容的“只更新二进制”入口。Cache deploy 现在也
+在修改二进制/配置/启动脚本/单元之前保存重启标记，验证就绪后再清除；正常无变化
+不重启，中断后重跑可以补做重启。运行进程识别包含 Bash 主进程下的实际 Cache
+子进程，避免因启动脚本包装而每次误判成旧二进制。

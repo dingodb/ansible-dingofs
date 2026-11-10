@@ -14,7 +14,7 @@ The working tree was clean and matched `origin/main` before this review.
 | #53 | Valid. Linger always changed and ignored errors. | Inspect persistent linger state and propagate enable failures. |
 | #54 | Valid. Schedule summary had six fields. | Print the same five configurable fields installed by the cron module. |
 | #55 | Valid. PAM limits do not configure service limits. | Add explicit core/process limits to cache/client units and root PAM entries. |
-| #56 | Valid, including the comment about client deployment retries. | Persist restart obligations before binary/template changes, clear after verification, and detect stale cache process executables. |
+| #56 | Valid, including the comment about client deployment retries. | Make normal Cache deploy and the optional binary-only entry point persist restart obligations before file changes, clear after verification, and inspect actual cache descendants of a service wrapper. |
 | #57 | Valid under limited plays. | Exchange keys among active meta hosts in the play; document how to establish full peer trust. |
 | #58 | Valid. Lookup errors were mislabeled as absent nodes. | Use ignore-not-found with name output; let API/auth/RBAC failures fail. |
 | #59 | Valid. Podman used yum unconditionally. | Use the portable package module and propagate socket failures. |
@@ -53,13 +53,19 @@ rqlite/Grafana credential and rqlite runtime behavior. See
 [the deployment impact review](deployment-impact-review-2026-11-10.md) for the
 remaining behavior changes and their triggers.
 
-Revised local validation: all 13 focused data-path/recovery/monitor tests passed,
-116 YAML files parsed and all 36 playbooks passed syntax checks. The rqlite unit,
-monitor configuration template and example inventory match the pre-PR baseline
-byte for byte. The revised suite contains 199 regression cases; see PR checks
-for the current Linux CI result.
+Current local validation: the four Cache lifecycle failure fixtures passed,
+118 YAML files parsed and all 36 playbooks passed syntax checks. The rqlite unit,
+monitor configuration template and example inventory still match the pre-PR
+baseline. The revised suite contains 202 regression cases; see PR checks for
+the current Linux CI result.
 
 The operator confirmed the retained service/core/THP/SSH/permission/checksum and
 empty-ID policies. Client deployment and upgrade use serial: "20%" as confirmed by the operator. Monitor image
 overrides are accepted without rejecting :latest. Disk repair/remap remain opt-in;
 the impact review explains which operational playbooks provision disks.
+
+Normal Cache updates use cache_05_deploy; cache_06_upgrade is optional and is not
+required for deployment convergence. The deployment and legacy binary-only path
+share runtime inspection, including a shell wrapper's cache child. Regression
+fixtures cover binary and configuration-only restart failures, unchanged retries,
+legacy drift without a marker, unrelated processes and check mode.
