@@ -147,20 +147,25 @@ def process_claims(args, online, minimum):
         try:
             raw = (process / 'cmdline').read_bytes()
             if not raw:
-                if process_state(process)[1] > 1:
-                    raise ValueError('cannot identify live worker threads for pid=' + process.name)
-                continue  # kernel threads and exited user processes
-            argv = [os.fsdecode(value) for value in raw.rstrip(b'\0').split(b'\0')]
-            if self_exe:
-                executable = re.sub(r' \(deleted\)$', '', os.readlink(process / 'exe'))
-                if os.path.realpath(executable) == self_exe:
-                    self_matches += 1
-                    continue
-            try:
-                explicit = declared_cpus(argv)
-            except ValueError as error:
-                raise ValueError('invalid cpuset reservation for pid=' + process.name) from error
-            affinities = thread_claims(process, online, minimum)
+                if process_state(process)[1] <= 1:
+                    continue  # kernel threads and fully exited user processes
+                # The thread-group leader exited and took its argv (and mm)
+                # with it, but surviving workers still report the CPUs they
+                # own. Claim those rather than failing the whole host.
+                explicit = set()
+                affinities = thread_claims(process, online, minimum)
+            else:
+                argv = [os.fsdecode(value) for value in raw.rstrip(b'\0').split(b'\0')]
+                if self_exe:
+                    executable = re.sub(r' \(deleted\)$', '', os.readlink(process / 'exe'))
+                    if os.path.realpath(executable) == self_exe:
+                        self_matches += 1
+                        continue
+                try:
+                    explicit = declared_cpus(argv)
+                except ValueError as error:
+                    raise ValueError('invalid cpuset reservation for pid=' + process.name) from error
+                affinities = thread_claims(process, online, minimum)
         except FileNotFoundError as error:
             if not process_alive(process):
                 continue

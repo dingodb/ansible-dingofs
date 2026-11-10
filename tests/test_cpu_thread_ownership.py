@@ -125,14 +125,23 @@ class ThreadOwnershipTests(unittest.TestCase):
         (process / 'status').write_text('State:\tZ\nCpus_allowed_list:\t0-7\n')
         self.assertEqual(self.collect()[3], {})
 
-    def test_exited_leader_with_remaining_workers_is_not_treated_as_free(self):
+    def test_exited_leader_with_remaining_workers_claims_surviving_thread_affinity(self):
         process = self.process()
         (process / 'cmdline').write_bytes(b'')
         (process / 'status').write_text('State:\tZ\nThreads:\t2\n')
-        with self.assertRaisesRegex(ValueError, 'live worker threads'):
-            self.collect()
+        claims = self.collect()[3]
+        self.assertEqual(set(claims), {0, 1})
+        self.assertTrue(all('900004' in reason for reason in claims[0]))
         (process / 'status').write_text('State:\tZ\nThreads:\t1\n')
         self.assertEqual(self.collect()[3], {})
+
+    def test_exited_leader_with_unreadable_workers_is_still_unknown(self):
+        process = self.process()
+        (process / 'cmdline').write_bytes(b'')
+        (process / 'status').write_text('State:\tZ\nThreads:\t2\n')
+        shutil.rmtree(process / 'task')
+        with self.assertRaisesRegex(ValueError, 'live pid'):
+            self.collect()
 
     def test_unreadable_or_malformed_live_thread_is_unknown(self):
         process = self.process()
