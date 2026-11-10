@@ -2,6 +2,8 @@
 from ansible.plugins.callback.default import CallbackModule as DefaultCallback
 
 
+# Keep result formatting options local: the result_format_callback fragment
+# does not exist before ansible-core 2.13, so inheriting it prevents startup.
 DOCUMENTATION = r'''
 name: dingofs
 type: stdout
@@ -12,7 +14,30 @@ description:
   - Verbosity greater than zero restores normal task output.
 extends_documentation_fragment:
   - default_callback
-  - result_format_callback
+options:
+  result_format:
+    description:
+      - Task result format used by the default callback on ansible-core 2.13 and later.
+      - Older versions retain their built-in JSON output.
+    type: str
+    default: json
+    choices: [json, yaml]
+    env:
+      - name: ANSIBLE_CALLBACK_RESULT_FORMAT
+    ini:
+      - section: defaults
+        key: callback_result_format
+  pretty_results:
+    description:
+      - Configure result readability on ansible-core 2.13 and later.
+      - An unset value follows the built-in default for the selected result format.
+    type: bool
+    default: null
+    env:
+      - name: ANSIBLE_CALLBACK_FORMAT_PRETTY
+    ini:
+      - section: defaults
+        key: callback_format_pretty
 '''
 
 
