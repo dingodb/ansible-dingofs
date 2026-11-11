@@ -1,0 +1,35 @@
+{
+  "baseline": "025357a",
+  "profile": "xn01/v5.2 public variables plus large tuning profile and synthetic runtime CPU/NUMA facts",
+  "scope": "local rendering, no production deployment",
+  "templates": [
+    {
+      "path": "roles/dingo_cache/templates/dingo-cache.conf.j2",
+      "byte_identical": true
+    },
+    {
+      "path": "roles/dingo_cache/templates/dingo-cache-start.sh.j2",
+      "byte_identical": true
+    },
+    {
+      "path": "roles/dingo_cache/templates/dingo-cache.service.j2",
+      "byte_identical": true
+    },
+    {
+      "path": "roles/dingo_client/templates/dingofs-mount.sh.j2",
+      "byte_identical": true
+    },
+    {
+      "path": "roles/dingo_client/templates/dingofs-mount.service.j2",
+      "byte_identical": true
+    },
+    {
+      "path": "roles/dingofs_cluster/templates/dingo-hosts.yaml.j2",
+      "byte_identical": true
+    },
+    {
+      "path": "roles/dingofs_cluster/templates/topology.yaml.j2",
+      "byte_identical": true
+    }
+  ]
+}

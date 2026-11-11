@@ -35,6 +35,18 @@ class MonitorTests(unittest.TestCase):
             with self.subTest(output=output), self.assertRaises(Exception):
                 module.monitor_count(output)
 
+        services = header + 'abcdef grafana node bbbbbb222222 Up 3 minutes\n'
+        progress = '…\n\x1b[1A\x1b[J…\n'
+        self.assertEqual(module.monitor_count(progress + services), 1)
+        self.assertEqual(module.monitor_services(progress + services),
+                         [{'role': 'grafana', 'host': 'node', 'container': 'bbbbbb222222'}])
+        self.assertEqual(module.monitor_services(services),
+                         [{'role': 'grafana', 'host': 'node', 'container': 'bbbbbb222222'}])
+        for changed in [services.replace('Up 3 minutes', 'Exited'),
+                        services.replace('bbbbbb222222', 'unknown')]:
+            with self.assertRaises(Exception):
+                module.monitor_services(changed)
+
 
 class ShellTests(unittest.TestCase):
     def test_mount_registry_matches_exact_host_and_path_fields(self):

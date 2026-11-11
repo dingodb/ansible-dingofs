@@ -8,4 +8,7 @@
   remote_user: root
   become: false
   roles:
-    - lvm_cache
+    - role: lvm_cache
+      when:
+        - not (dingofs_skip_disk_setup | default(false) | bool)
+        - dingo_cache_storage_mode | default('mounted') != 'directory'

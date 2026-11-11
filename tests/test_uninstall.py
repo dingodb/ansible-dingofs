@@ -1,5 +1,6 @@
 """Uninstall plans and real Ansible tasks operate only on temporary fixtures."""
 import importlib.util
+import errno
 import json
 import os
 from pathlib import Path
@@ -92,6 +93,34 @@ class UninstallTests(unittest.TestCase):
         self.assertEqual(value['remove_paths'], [str(self.base)])
         self.assertEqual(set(value['retained_paths']), {str(self.data), str(self.logs)})
         self.assertTrue(value['unregister'])
+
+    def test_disconnected_owned_fuse_mount_can_be_planned_without_stat(self):
+        target = '/mnt/old'
+        real_realpath, real_is_dir = os.path.realpath, Path.is_dir
+        def guarded_realpath(value, *args, **kwargs):
+            if str(value) == target:
+                raise OSError(errno.ENOTCONN, 'Transport endpoint is not connected', target)
+            return real_realpath(value, *args, **kwargs)
+        def guarded_is_dir(value):
+            if str(value) == target:
+                raise OSError(errno.ENOTCONN, 'Transport endpoint is not connected', target)
+            return real_is_dir(value)
+        params = dict(self.p, kind='client', service='dingofs-mount-old', base_dir=str(self.old_base),
+                      mount_point=target, fsname='same-name', mds_addrs='127.0.0.1:6900')
+        mounts = [dict(path=target, fstype='fuse.dingofs', source='DingoFS:same-name')]
+        with patch('os.path.realpath', side_effect=guarded_realpath), patch.object(Path, 'is_dir', guarded_is_dir):
+            result = plan.make_plan(params, self.units, self.state, mounts=mounts)
+            self.assertTrue(result['mounted'])
+            self.assertEqual(result['remove_paths'], [str(self.old_base)])
+            mounts[0]['source'] = 'DingoFS:another-filesystem'
+            with self.assertRaisesRegex(ValueError, 'Mount ownership'):
+                plan.make_plan(params, self.units, self.state, mounts=mounts)
+
+    def test_mount_root_exception_still_rejects_a_symlinked_parent(self):
+        parent = self.root / 'mount-parent'; parent.mkdir()
+        alias = self.root / 'mount-alias'; alias.symlink_to(parent)
+        with self.assertRaises(ValueError):
+            plan.safe_path(str(alias / 'mount'), mounted_root=True)
 
     def test_purge_flags_are_independent(self):
         self.assertEqual(set(self.build(remove_data=True)['remove_paths']), {str(self.base), str(self.data)})

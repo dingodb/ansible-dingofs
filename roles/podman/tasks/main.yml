@@ -3,23 +3,36 @@
 # Role: podman - Install Podman container engine
 # ============================================================
 
+- name: Configure an explicitly selected signed Podman APT source
+  include_tasks: apt_repository.yml
+  when: podman_apt_repository_url | length > 0
+
 - name: Check if podman is already installed
   command: podman --version
   register: podman_check
   changed_when: false
   failed_when: false
 
+- name: Install the explicitly selected Podman package versions
+  apt:
+    name: "{{ podman_apt_packages }}"
+    state: present
+    install_recommends: false
+    force_apt_get: true
+  when: podman_apt_packages | length > 0
+
 - name: Install podman
   package:
     name: podman
     state: present
-  when: podman_check.rc != 0
+  when: podman_check.rc != 0 and podman_apt_packages | length == 0
 
 - name: Enable and start podman socket (for API compatibility)
   systemd:
     name: podman.socket
     enabled: true
     state: started
+  when: podman_enable_socket | bool
 
 - name: Verify podman installation
   command: podman --version

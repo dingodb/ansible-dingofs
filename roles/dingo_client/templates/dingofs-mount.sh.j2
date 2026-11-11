@@ -83,6 +83,9 @@ LD_PRELOAD={{ dingo_client_ld_preload }} \
     --log_v={{ dingo_client_log_v }} \
     --cache_store={{ dingo_client_cache_store }} \
     --cache_group=${g_cache_group} \
+{% if dingo_client_vfs_bthread_worker_num | default('') | string | length > 0 %}
+    --vfs_bthread_worker_num={{ dingo_client_vfs_bthread_worker_num }} \
+{% endif %}
     --vfs_read_executor_thread={{ dingo_client_vfs_read_executor_thread }} \
     --vfs_read_buffer_total_mb={{ dingo_client_vfs_read_buffer_total_mb }} \
     --vfs_write_buffer_total_mb={{ dingo_client_vfs_write_buffer_total_mb }} \
@@ -97,6 +100,9 @@ LD_PRELOAD={{ dingo_client_ld_preload }} \
     --pin_cpu={{ 'true' if (dingo_client_pin_cpu | default(true) | bool and dingo_client_cpuset_effective | default('') | length > 0 and dingo_client_cpuset_effective != 'NONE') else 'false' }} \
 {% if dingo_client_pin_cpu | default(true) | bool and dingo_client_cpuset_effective | default('') | length > 0 and dingo_client_cpuset_effective != 'NONE' %}
     --cpuset={{ dingo_client_cpuset_effective }} \
+{% endif %}
+{% if dingo_client_poll_mode | default('') | string | length > 0 %}
+    --poll_mode={{ 'true' if dingo_client_poll_mode | bool else 'false' }} \
 {% endif %}
     --use_rdma={{ 'true' if dingo_client_use_rdma | default(true) | bool else 'false' }}{% if dingo_client_use_rdma | default(true) | bool %} \
     --cache_rdma_device={{ dingo_client_rdma_device_effective | default(dingo_client_rdma_device | default('ib6s200p0')) }} \

@@ -162,3 +162,11 @@ dingo_client_mount_check_script: /root/dingofs/script/check/dingofs_mount_usage_
 # Normal OOM eligibility avoids making a large FUSE process unkillable.
 # Sites may tune this explicitly; -1000 disables OOM killing entirely.
 dingo_client_oom_score_adjust: 0
+
+# Optional per-mount systemd ceilings; empty values leave systemd defaults.
+dingo_client_cpu_quota: ""
+dingo_client_memory_high: ""
+dingo_client_memory_max: ""
+# Emit these flags only when selected by a site, retaining other sites' flags.
+dingo_client_poll_mode: ""
+dingo_client_vfs_bthread_worker_num: ""

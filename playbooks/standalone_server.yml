@@ -1,0 +1,6 @@
+---
+# Complete standalone server installation: PD/TiKV/TiDB -> MDS -> monitor.
+# Reuse the existing workflows; filesystem creation is a separate operation.
+- import_playbook: standalone_tikv.yml
+- import_playbook: standalone_site.yml
+- import_playbook: 06_deploy_monitor.yml

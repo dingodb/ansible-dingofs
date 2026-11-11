@@ -1,0 +1,100 @@
+---
+- import_role:
+    name: dingofs_cluster
+    tasks_from: plan
+
+- name: Validate the lightweight single-MDS workflow
+  assert:
+    that:
+      - groups['meta_servers'] | length == 1
+      - groups['admin'] == groups['meta_servers']
+      - mds_replicas | int == 1
+      - dingofs_mds_storage_engine == 'tikv'
+      - dingofs_mds_storage_url is match('^list://[^ ]+:[0-9]+')
+      - container_engine == 'podman'
+      - dingofs_user == 'root'
+      - dingofs_home == '/root'
+      - dingo_cli_db_url == 'sqlite://' ~ dingofs_home ~ '/.dingo/data/dingocli.db'
+      - not (dingofs_meta_existing_hosts | bool)
+      - dingofs_standalone_mds_memory_mb | int >= 512
+      - dingofs_standalone_mds_cpus | float > 0
+      - (hostvars[inventory_hostname].dingofs_service_address | default(ansible_host)) in ansible_facts.all_ipv4_addresses
+      - dingofs_mds_extra_config is mapping
+      - "not (dingofs_mds_extra_config.keys() | list | intersect(['server.port', 'mds_storage_engine', 'storage_url']))"
+    fail_msg: >-
+      Use one meta/admin host, one TiKV-backed MDS, rootful Podman and local SQLite
+      for CLI registrations. Supply a reachable PD address and a local MDS service
+      address. TiKV placement is independent of the MDS inventory.
+
+- name: Require local cgroup v2 for the MDS resource limits
+  stat:
+    path: /sys/fs/cgroup/cgroup.controllers
+  register: _standalone_cgroup
+
+- name: Require adequate memory and cgroup support
+  assert:
+    that:
+      - _standalone_cgroup.stat.exists
+      - ansible_facts.memtotal_mb | int > dingofs_standalone_mds_memory_mb | int + 1024
+      - ansible_facts.memory_mb.nocache.free | int >= dingofs_standalone_min_available_mb | int
+
+- name: Inspect the existing CLI configuration before first-install roles
+  stat:
+    path: "{{ dingofs_home }}/.dingo/dingocli.cfg"
+  register: _standalone_cli_config
+
+- name: Read an existing CLI configuration
+  slurp:
+    src: "{{ dingofs_home }}/.dingo/dingocli.cfg"
+  register: _standalone_cli_config_content
+  no_log: true
+  when: _standalone_cli_config.stat.exists
+
+- name: Preserve incompatible existing CLI environments
+  assert:
+    that: >-
+      (_standalone_cli_config_content.content | b64decode
+       | dingo_cli_config(dingo_cli_db_url, 'podman')).valid
+    fail_msg: "The existing root CLI has different settings. Use the existing-host workflow instead of rewriting it."
+  when: _standalone_cli_config.stat.exists
+
+- name: Inspect the local log filesystem's free space
+  shell: |
+    probe={{ dingofs_log_dir.split('/${')[0] | quote }}
+    while [ ! -d "$probe" ]; do probe=$(dirname "$probe"); done
+    df -Pm "$probe" | awk 'NR==2 {print $4}'
+  register: _standalone_free_disk
+  changed_when: false
+  check_mode: false
+
+- name: Require space for the server image and logs
+  assert:
+    that: _standalone_free_disk.stdout | int >= dingofs_standalone_min_disk_mb | int
+
+- name: Verify PD is reachable from the MDS host
+  uri:
+    url: "http://{{ tikv_pd_addr }}/pd/api/v1/stores"
+    return_content: true
+    use_proxy: false
+    timeout: 10
+  register: _standalone_pd
+  when: not ansible_check_mode
+
+- name: Require at least one healthy store visible from MDS
+  assert:
+    that:
+      - _standalone_pd.json.stores | length >= tikv_min_stores | default(1) | int
+      - _standalone_pd.json.stores | map(attribute='store.state_name') | reject('eq', 'Up') | list | length == 0
+  when: not ansible_check_mode
+
+- name: Report the standalone plan
+  debug:
+    msg:
+      - "Existing dingofs_cluster workflow: {{ _dingo_add_plan.instances }}"
+      - "External TiKV: {{ dingofs_mds_storage_url }} (managed separately by TiUP)"
+      - "MDS budget: {{ dingofs_standalone_mds_memory_mb }} MiB, {{ dingofs_standalone_mds_cpus }} CPU"
+      - "Check mode prepares nothing and does not pull images or register services."
+
+- name: Prepare and deploy through the existing roles
+  include_tasks: deploy.yml
+  when: not ansible_check_mode

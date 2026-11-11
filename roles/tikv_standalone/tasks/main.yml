@@ -1,0 +1,114 @@
+---
+- name: Read the site-owned TiUP topology
+  set_fact:
+    _tikv_topology: "{{ lookup('file', tikv_topology_file) | from_yaml }}"
+
+- name: Require a single local TiUP backend, independently placed from MDS
+  assert:
+    that:
+      - groups['tikv_servers'] | length == 1
+      - tikv_cluster_name is match('^[A-Za-z0-9][A-Za-z0-9_-]+$')
+      - tikv_version is match('^v8[.]5[.][0-9]+$')
+      - _tikv_topology.global.user == 'root'
+      - _tikv_topology.pd_servers | length == 1
+      - _tikv_topology.tikv_servers | length == 1
+      - _tikv_topology.pd_servers[0].host in ansible_facts.all_ipv4_addresses
+      - _tikv_topology.tikv_servers[0].host == _tikv_topology.pd_servers[0].host
+      - _tikv_topology.pd_servers[0].ignore_exporter | bool
+      - _tikv_topology.tikv_servers[0].ignore_exporter | bool
+      - _tikv_topology.server_configs.pd['replication.max-replicas'] | int == 1
+      - not (_tikv_topology.server_configs.pd['replication.enable-placement-rules'] | bool)
+      - _tikv_topology.tidb_servers | default([]) | length == 1
+      - _tikv_topology.monitoring_servers | default([]) | length == 0
+      - _tikv_topology.grafana_servers | default([]) | length == 0
+      - _tikv_topology.alertmanager_servers | default([]) | length == 0
+      - _tikv_topology.keys() | select('match', '.*_servers$') | difference(['pd_servers', 'tikv_servers', 'tidb_servers']) | list | length == 0
+      - ansible_facts.architecture == 'x86_64'
+      - ansible_facts.service_mgr == 'systemd'
+    fail_msg: "Standalone requires one local PD, one TiKV and one TiDB; MDS may run on a different host."
+
+- name: Validate the required local TiDB instance
+  assert:
+    that:
+      - item.host == _tikv_topology.pd_servers[0].host
+      - item.listen_host == item.host
+      - item.ignore_exporter | bool
+      - item.resource_control.memory_limit | human_to_bytes >= 2147483648
+      - item.resource_control.cpu_quota | regex_replace('%$', '') | float > 0
+      - item.port | int != item.status_port | int
+  loop: "{{ _tikv_topology.tidb_servers | default([]) }}"
+
+- name: Record the expected backend component count
+  set_fact:
+    _tikv_component_count: "{{ 2 + (_tikv_topology.tidb_servers | default([]) | length) }}"
+
+- name: Inspect TiUP registration without changing it
+  stat:
+    path: "{{ tikv_tiup_home }}/storage/cluster/clusters/{{ tikv_cluster_name }}/meta.yaml"
+  register: _tikv_registered
+
+- name: Require backend memory headroom
+  vars:
+    _pd_bytes: "{{ _tikv_topology.pd_servers[0].resource_control.memory_limit | human_to_bytes }}"
+    _kv_bytes: "{{ _tikv_topology.tikv_servers[0].resource_control.memory_limit | human_to_bytes }}"
+    _tidb_bytes: "{{ (_tikv_topology.tidb_servers | default([]) | first).resource_control.memory_limit | human_to_bytes if (_tikv_topology.tidb_servers | default([]) | length) > 0 else 0 }}"
+  assert:
+    that:
+      - ansible_facts.memtotal_mb | int * 1048576 >= _pd_bytes | int + _kv_bytes | int + _tidb_bytes | int + 2147483648
+      - _tikv_registered.stat.exists or ansible_facts.memory_mb.nocache.free | int * 1048576 >= _pd_bytes | int + _kv_bytes | int + _tidb_bytes | int + 2147483648
+
+- name: Inspect local backend data disk headroom
+  shell: |
+    probe={{ _tikv_topology.tikv_servers[0].data_dir | quote }}
+    while [ ! -d "$probe" ]; do probe=$(dirname "$probe"); done
+    findmnt -n -o FSTYPE -T "$probe"
+    df -Pm "$probe" | awk 'NR==2 {print $4}'
+  register: _tikv_disk
+  changed_when: false
+  check_mode: false
+
+- name: Require a local data filesystem with free space
+  assert:
+    that:
+      - _tikv_disk.stdout_lines[0] in ['ext4', 'xfs']
+      - _tikv_disk.stdout_lines[1] | int >= 30720
+
+- name: Read the previous site topology for an existing managed backend
+  slurp:
+    src: "{{ tikv_config_dir }}/topology.yaml"
+  register: _tikv_saved_topology
+  when: _tikv_registered.stat.exists
+
+- name: Read the registered TiUP backend version
+  slurp:
+    src: "{{ tikv_tiup_home }}/storage/cluster/clusters/{{ tikv_cluster_name }}/meta.yaml"
+  register: _tikv_registered_meta
+  when: _tikv_registered.stat.exists
+
+- name: Preserve existing TiUP deployments on re-runs
+  vars:
+    _saved: "{{ _tikv_saved_topology.content | b64decode | from_yaml }}"
+    _registered: "{{ _tikv_registered_meta.content | b64decode | from_yaml }}"
+    _without_tidb: "{{ _tikv_topology | dict2items | rejectattr('key', 'eq', 'tidb_servers') | items2dict }}"
+  assert:
+    that:
+      - >-
+        _saved == _tikv_topology or
+        ((tikv_standalone_add_tidb | default(false) | bool) and
+         (_tikv_topology.tidb_servers | default([]) | length == 1) and
+         _saved == _without_tidb and
+         (_registered.topology.tidb_servers | default([]) | length == 0))
+      - (_tikv_registered_meta.content | b64decode | from_yaml).get('tidb_version', '') == tikv_version
+    fail_msg: >-
+      The backend exists with different inputs. To add only one TiDB to an
+      unchanged PD/TiKV, pass -e tikv_standalone_add_tidb=true. Other changes or
+      partially registered additions require explicit TiUP maintenance.
+  when: _tikv_registered.stat.exists
+
+- name: Report the backend plan
+  debug:
+    msg: "TiUP {{ tikv_cluster_name }} {{ tikv_version }}: one PD, one TiKV and {{ _tikv_topology.tidb_servers | default([]) | length }} TiDB on {{ inventory_hostname }}; check mode does not install or deploy."
+
+- name: Deploy through TiUP only outside check mode
+  include_tasks: deploy.yml
+  when: not ansible_check_mode

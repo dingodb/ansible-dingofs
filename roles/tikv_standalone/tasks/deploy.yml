@@ -1,0 +1,144 @@
+---
+- name: Locate the existing TiUP installation
+  stat:
+    path: "{{ tikv_tiup_home }}/bin/tiup"
+  register: _tikv_tiup
+
+- name: Install TiUP from its official archive when absent
+  when: not _tikv_tiup.stat.exists
+  block:
+    - name: Create TiUP bin directory
+      file:
+        path: "{{ tikv_tiup_home }}/bin"
+        state: directory
+        mode: '0755'
+    - name: Download the official TiUP bootstrap archive
+      get_url:
+        url: "{{ tikv_tiup_archive_url }}"
+        dest: "{{ tikv_tiup_home }}/tiup-bootstrap.tar.gz"
+        checksum: "{{ tikv_tiup_archive_checksum | default(omit, true) }}"
+        mode: '0600'
+    - name: Extract the TiUP binary
+      unarchive:
+        src: "{{ tikv_tiup_home }}/tiup-bootstrap.tar.gz"
+        dest: "{{ tikv_tiup_home }}/bin"
+        remote_src: true
+        creates: "{{ tikv_tiup_home }}/bin/tiup"
+
+# The bootstrap archive contains only the binary. As in the official installer,
+# initialize its trusted repository metadata before invoking a component.
+# Also repairs an interrupted installation where tiup exists but root.json does not.
+- name: Inspect TiUP repository initialization
+  stat:
+    path: "{{ tikv_tiup_home }}/bin/root.json"
+  register: _tikv_tiup_root
+
+- name: Initialize the TiUP repository when its root manifest is missing
+  command:
+    argv: ["{{ tikv_tiup_home }}/bin/tiup", mirror, set, "{{ tikv_tiup_mirror_url }}"]
+  environment:
+    TIUP_HOME: "{{ tikv_tiup_home }}"
+  when: not _tikv_tiup_root.stat.exists
+
+- name: First deployment of a previously absent TiUP backend
+  when: not _tikv_registered.stat.exists
+  environment:
+    TIUP_HOME: "{{ tikv_tiup_home }}"
+  block:
+    - name: Create the site topology directory
+      file:
+        path: "{{ tikv_config_dir }}"
+        state: directory
+        mode: '0750'
+    - name: Stage the site-owned TiUP topology
+      copy:
+        src: "{{ tikv_topology_file }}"
+        dest: "{{ tikv_config_dir }}/topology.yaml"
+        mode: '0640'
+    # Native local execution: TiUP needs no controller private key on the host.
+    # TiUP owns package installation, generated configs, units and cluster state.
+    - name: Deploy the single PD and TiKV with TiUP
+      command:
+        argv:
+          - "{{ tikv_tiup_home }}/bin/tiup"
+          - cluster
+          - deploy
+          - "{{ tikv_cluster_name }}"
+          - "{{ tikv_version }}"
+          - "{{ tikv_config_dir }}/topology.yaml"
+          - --user=root
+          - --ssh=none
+          - --yes
+    - name: Start the newly deployed backend
+      command:
+        argv: ["{{ tikv_tiup_home }}/bin/tiup", cluster, start, "{{ tikv_cluster_name }}", --ssh=none, --yes]
+
+- name: Add only the selected TiDB to an existing unchanged backend
+  when:
+    - _tikv_registered.stat.exists
+    - tikv_standalone_add_tidb | bool
+    - (_tikv_saved_topology.content | b64decode | from_yaml) != _tikv_topology
+  environment:
+    TIUP_HOME: "{{ tikv_tiup_home }}"
+  block:
+    - name: Require memory headroom for the added TiDB
+      assert:
+        that:
+          - ansible_facts.memory_mb.nocache.free | int * 1048576 >= (_tikv_topology.tidb_servers[0].resource_control.memory_limit | human_to_bytes) + 2147483648
+    - name: Require TiDB SQL and status ports to be unused
+      wait_for:
+        host: "{{ _tikv_topology.tidb_servers[0].host }}"
+        port: "{{ item }}"
+        state: stopped
+        timeout: 1
+      loop:
+        - "{{ _tikv_topology.tidb_servers[0].port }}"
+        - "{{ _tikv_topology.tidb_servers[0].status_port }}"
+    - name: Stage a TiDB-only TiUP scale-out topology
+      copy:
+        content: "{{ {'tidb_servers': _tikv_topology.tidb_servers} | to_nice_yaml }}"
+        dest: "{{ tikv_config_dir }}/scale-out-tidb.yaml"
+        mode: '0640'
+    - name: Scale out the SQL service through TiUP
+      command:
+        argv: ["{{ tikv_tiup_home }}/bin/tiup", cluster, scale-out, "{{ tikv_cluster_name }}", "{{ tikv_config_dir }}/scale-out-tidb.yaml", --user=root, --ssh=none, --yes]
+    - name: Save the expanded site topology after successful TiUP scale-out
+      copy:
+        src: "{{ tikv_topology_file }}"
+        dest: "{{ tikv_config_dir }}/topology.yaml"
+        mode: '0640'
+
+- name: Read the TiUP backend status
+  command:
+    argv: ["{{ tikv_tiup_home }}/bin/tiup", cluster, display, "{{ tikv_cluster_name }}", --ssh=none]
+  environment:
+    TIUP_HOME: "{{ tikv_tiup_home }}"
+  register: _tikv_display
+  changed_when: false
+  until:
+    - _tikv_display.rc == 0
+    - (_tikv_display.stdout | tiup_cluster_health).healthy
+    - (_tikv_display.stdout | tiup_cluster_health).components == _tikv_component_count | default(2) | int
+  retries: 30
+  delay: 2
+
+- name: Require all selected backend components to be healthy
+  assert:
+    that:
+      - (_tikv_display.stdout | tiup_cluster_health).healthy
+      - (_tikv_display.stdout | tiup_cluster_health).components == _tikv_component_count | default(2) | int
+    fail_msg: "Keep the existing registration and diagnose with TiUP; deployment/start was not retried for an existing backend."
+
+- name: Verify the required TiDB SQL listener
+  wait_for:
+    host: "{{ item.host }}"
+    port: "{{ item.port }}"
+    timeout: 60
+  loop: "{{ _tikv_topology.tidb_servers | default([]) }}"
+
+- name: Verify the required TiDB status API
+  uri:
+    url: "http://{{ item.host }}:{{ item.status_port }}/status"
+    use_proxy: false
+    timeout: 10
+  loop: "{{ _tikv_topology.tidb_servers | default([]) }}"

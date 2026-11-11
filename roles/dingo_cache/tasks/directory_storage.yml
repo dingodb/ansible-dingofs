@@ -1,0 +1,49 @@
+---
+# Explicit opt-in: this never acts as a fallback for missing mounted disks.
+- name: Require an explicit single directory, capacity and log path
+  assert:
+    that:
+      - "'dingo_cache_cache_dirs' in hostvars[inventory_hostname]"
+      - "'dingo_cache_cache_size_mb' in hostvars[inventory_hostname]"
+      - "'dingo_cache_log_dir' in hostvars[inventory_hostname]"
+      - dingo_cache_cache_dirs is match('^(/[A-Za-z0-9_.-]+)+$')
+      - "'..' not in dingo_cache_cache_dirs.split('/')"
+      - dingo_cache_cache_dirs not in ['/root', '/home', '/tmp', '/var', '/var/lib', '/var/cache', '/var/log']
+      - dingo_cache_log_dir is match('^(/[A-Za-z0-9_.-]+)+$')
+      - "'..' not in dingo_cache_log_dir.split('/')"
+      - dingo_cache_cache_size_mb | int > 0
+      - dingo_cache_cache_size_mb | string is match('^[0-9]+$')
+      - dingo_cache_cache_size_mb | int <= 4294967295
+      - dingo_cache_free_space_ratio | float(none) is not none
+      - dingo_cache_free_space_ratio | float >= 0
+      - dingo_cache_free_space_ratio | float < 1
+    fail_msg: >-
+      Directory mode requires one explicit absolute dingo_cache_cache_dirs path,
+      dingo_cache_cache_size_mb (MiB), and dingo_cache_log_dir. It never selects
+      disks or derives capacity from the whole system filesystem.
+
+- name: Check capacity and free-space floor on the directory filesystem
+  shell: |
+    python3 - {{ dingo_cache_cache_dirs | quote }} {{ dingo_cache_cache_size_mb | int }} {{ dingo_cache_free_space_ratio | float }} <<'PYDIR'
+    import os, pathlib, sys
+    path = pathlib.Path(sys.argv[1])
+    while not path.exists():
+        path = path.parent
+    if not path.is_dir():
+        raise SystemExit("Cache path's existing parent is not a directory: %s" % path)
+    stats = os.statvfs(path)
+    total = stats.f_blocks * stats.f_frsize
+    available = stats.f_bavail * stats.f_frsize
+    capacity = int(sys.argv[2]) * 1024 * 1024
+    floor = int(total * float(sys.argv[3]))
+    if capacity > total - floor or available < floor:
+        raise SystemExit("Insufficient directory filesystem headroom: capacity=%s available=%s free_floor=%s bytes" % (capacity, available, floor))
+    print("Directory cache: path=%s capacity=%s bytes available=%s bytes free_floor=%s bytes" % (sys.argv[1], capacity, available, floor))
+    PYDIR
+  register: _cache_directory_capacity
+  changed_when: false
+  check_mode: false
+
+- name: Report explicit directory cache configuration
+  debug:
+    msg: "{{ _cache_directory_capacity.stdout }}; logs={{ dingo_cache_log_dir }}; automatic disk selection is disabled"

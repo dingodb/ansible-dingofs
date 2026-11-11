@@ -2,6 +2,8 @@
 import importlib.util
 import json
 import os
+import subprocess
+import sys
 from pathlib import Path
 import tempfile
 import unittest
@@ -49,6 +51,36 @@ class RuntimeFallbackTests(unittest.TestCase):
         self.code = fixtures.embedded('roles/common/files/dingofs_mount_usage_check.sh', 'PY')
         self.code['mounted_device'] = lambda target: None
         self.code['log'] = lambda message: None
+
+    def test_disconnected_fuse_identity_comes_from_the_kernel_mount_table(self):
+        code = fixtures.embedded('roles/common/files/dingofs_mount_usage_check.sh', 'PY')
+        with patch.dict(code, mountinfo=lambda path: [dict(path='/mnt/dead', device='0:42')]), \
+                patch('os.stat', side_effect=OSError(107, 'Transport endpoint is not connected')):
+            self.assertEqual(code['mounted_device']('/mnt/dead'), '0:42')
+            self.assertIsNone(code['mounted_device']('/mnt/unmounted'))
+        with patch.dict(code, mountinfo=lambda path: [dict(path='/mnt/dead', device='0:42'),
+                                                    dict(path='/mnt/dead', device='0:43')]):
+            self.assertEqual(code['mounted_device']('/mnt/dead'), '0:43')
+
+    def test_kernel_mount_probe_distinguishes_absence_from_read_or_parse_failure(self):
+        script = (Path(__file__).resolve().parents[1] / 'roles/common/files/dingofs_mount_usage_check.sh').read_text()
+        code = script.split("<<'PYDEV'\n", 1)[1].split('\nPYDEV', 1)[0]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            table = root / 'mountinfo'
+            actual = root / 'actual'; actual.mkdir()
+            alias = root / 'alias'; alias.symlink_to(actual)
+            probe = code.replace("open('/proc/self/mountinfo')", 'open(' + repr(str(table)) + ')')
+            def run(path):
+                return subprocess.run([sys.executable, '-c', probe, str(path), '--mount-only'], capture_output=True, text=True)
+            table.write_text('42 31 0:42 / ' + str(actual) + ' rw - fuse.dingofs DingoFS:fixture rw\n')
+            self.assertEqual(run(actual).stdout.strip(), '0:42')
+            self.assertEqual(run(alias).stdout.strip(), '0:42')
+            self.assertEqual(run(root / 'absent').returncode, 1)
+            table.write_text('malformed\n')
+            self.assertEqual(run(actual).returncode, 2)
+            table.unlink()
+            self.assertEqual(run(actual).returncode, 2)
 
     def backend(self, runtime_namespace='k8s.io', namespace='cci-job', source='/mnt/public-fs/data', destination='/data'):
         def ctr(*args):

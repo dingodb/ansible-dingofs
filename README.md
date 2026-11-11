@@ -2,6 +2,12 @@
 
 Ansible playbooks and roles for deploying and managing DingoFS meta server clusters, DingoFS Cache nodes, and DingoFS Client (FUSE mount) nodes on CentOS/RHEL/Rocky and Ubuntu/Debian Linux.
 
+For a small single-node DingoFS 5.2 demo, use
+[`standalone_site.yml`](playbooks/standalone_site.yml): one MDS through the existing
+Podman/CLI/cluster roles. Its TiUP-managed TiKV backend can run on another host;
+[`standalone_tikv.yml`](playbooks/standalone_tikv.yml) can provision a new backend.
+See [the standalone guide](docs/standalone-tikv.md) for configuration and usage.
+
 ## Versioned branches
 
 A branch deploys exactly one DingoFS version. `main` tracks the current one and
@@ -391,6 +397,42 @@ ansible-playbook playbooks/cache_99_status.yml
 ```
 
 All cache playbooks connect with `remote_user: root`.
+
+### Use a directory on the system filesystem
+
+The deployment-only entries `cache_05_deploy.yml` and `client_04_deploy.yml` do
+not provision disks. For the full `cache_site.yml` / `client_site.yml` flows,
+`-e dingofs_skip_disk_setup=true` skips their shared LVM phase. Other preparation,
+tuning and jemalloc phases still run normally.
+
+Cache mount discovery remains the default. To deliberately use one existing
+filesystem, configure directory mode and explicit paths/capacity:
+
+```yaml
+dingofs_skip_disk_setup: true
+dingo_cache_storage_mode: directory
+dingo_cache_cache_dirs: /var/lib/dingofs/dingo-cache
+dingo_cache_log_dir: /var/log/dingofs/dingo-cache
+dingo_cache_cache_size_mb: 47683  # MiB, rounded down to remain within 50 GB decimal
+dingo_cache_free_space_ratio: '0.10'
+```
+
+Directory mode also suppresses the shared LVM phase, skips disk discovery, and
+preserves these configured values. It does not use the root filesystem's total
+capacity to enlarge the cache. The capacity parameter bounds cached block data;
+metadata/logs are additional, and this does not create a filesystem hard quota.
+Use a static cache inventory for a single cache worker and the existing
+`hosts-inspect.py` dynamic inventory independently for clients.
+
+For shared hosts, both roles accept optional systemd budgets:
+`dingo_cache_cpu_quota` / `dingo_client_cpu_quota` (for example `200%` / `100%`),
+`dingo_cache_memory_high` / `dingo_client_memory_high`, and
+`dingo_cache_memory_max` / `dingo_client_memory_max`. These default to empty;
+set them in site variables alongside smaller shards and client VFS buffers.
+MemoryHigh triggers reclaim; MemoryMax is a hard service-cgroup ceiling and
+includes charged file cache. Client sites can also explicitly set
+`dingo_client_poll_mode: false` and `dingo_client_vfs_bthread_worker_num: 4`;
+both flags are omitted unless configured.
 
 ## DingoFS Client Deployment
 

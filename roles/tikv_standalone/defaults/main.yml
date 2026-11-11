@@ -1,0 +1,13 @@
+---
+# One PD + one TiKV + one TiDB, local execution by TiUP on the selected backend host.
+tikv_cluster_name: dingofs-demo-tikv
+tikv_version: v8.5.8
+tikv_tiup_home: /root/.tiup
+tikv_tiup_archive_url: https://tiup-mirrors.pingcap.com/tiup-linux-amd64.tar.gz
+tikv_tiup_archive_checksum: ""
+tikv_tiup_mirror_url: https://tiup-mirrors.pingcap.com
+tikv_topology_file: ""  # Controller-side site configuration; required.
+tikv_config_dir: "/root/tikv/{{ tikv_cluster_name }}"
+# Explicitly permit adding only the site's single TiDB to an existing PD/TiKV.
+# Other topology changes still require normal TiUP maintenance.
+tikv_standalone_add_tidb: false

@@ -20,6 +20,15 @@ TimeoutStartSec={{ (IB_WAIT_TIMEOUT | default(60) | int) + 60 }}
 ExecStart={{ dingo_cache_base_dir }}/dingo-cache-start.sh
 Restart=always
 RestartSec=30
+{% if dingo_cache_cpu_quota | default('') | string | length > 0 %}
+CPUQuota={{ dingo_cache_cpu_quota }}
+{% endif %}
+{% if dingo_cache_memory_high | default('') | string | length > 0 %}
+MemoryHigh={{ dingo_cache_memory_high }}
+{% endif %}
+{% if dingo_cache_memory_max | default('') | string | length > 0 %}
+MemoryMax={{ dingo_cache_memory_max }}
+{% endif %}
 LimitNOFILE=1000000
 LimitCORE=infinity
 LimitNPROC=4194304

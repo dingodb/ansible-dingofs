@@ -58,6 +58,10 @@ store_mount_volumes: "/nas/dingofs/{{ dingofs_cluster_name }}"
 mds_base_port: 690
 mds_replicas: 3
 mds_compact_chunk_enable: true
+# Additional MDS gflags, rendered only when explicitly supplied by the site.
+dingofs_mds_extra_config: {}
+# CLI SSH can use an internal service address instead of the controller's NAT IP.
+dingo_cli_ssh_private_key_file: "{{ dingofs_home }}/.ssh/id_{{ dingofs_ssh_key_type }}"
 
 executor_port: 18765
 executor_mysql_port: 13307

@@ -4,11 +4,17 @@ dingo_cache_base_dir: "/root/dingofs/dingo-cache/{{ dingo_cache_version }}"
 dingo_cache_bin_name: dingo-cache
 dingo_cache_bin_local_src: "/root/dingofs/pkg/dingo-cache"
 
+# mounted (default): retain automatic mount discovery and disk-size selection.
+# directory: use one explicitly configured directory/size/log_dir, including
+# a directory on the system filesystem; never discover or provision disks.
+dingo_cache_storage_mode: mounted
+
 dingo_cache_listen_port: 11000
 dingo_cache_group_name: openclaw-group
 # group_weight is AUTO-COMPUTED at deploy time as:
 #   dingo_cache_group_weight = weight_per_disk × number of selected cache disks
-# (see tasks/main.yml). Weight is relative among nodes of the same cache group, so
+# (mounted mode, see tasks/main.yml). Directory mode uses the configured weight.
+# Weight is relative among nodes of the same cache group, so
 # a node with more disks carries proportionally more requests. Static value below is
 # a FALLBACK only.
 dingo_cache_weight_per_disk: 20
@@ -49,7 +55,7 @@ dingo_cache_log_prefix: ""
 # back to this single prefix (original behaviour). Prefer setting
 # dingo_cache_data_prefix / dingo_cache_log_prefix directly.
 dingo_cache_mount_prefix: ""
-dingo_cache_cache_size_mb: 3145728   # FALLBACK only — overridden by auto-selection when LVM mounts exist
+dingo_cache_cache_size_mb: 3145728   # MiB; mounted mode overrides this, directory mode requires an explicit value
 dingo_cache_free_space_ratio: "0.01"
 dingo_cache_iodepth: 1024
 dingo_cache_log_level: INFO
@@ -139,6 +145,11 @@ dingo_cache_log_dir: "/mnt/disk1/dingofs/logs/dingo-cache"
 dingo_cache_mds_addrs: ""
 
 dingo_cache_service_name: dingo-cache
+
+# Optional per-service systemd ceilings. Empty values preserve existing sites.
+dingo_cache_cpu_quota: ""
+dingo_cache_memory_high: ""
+dingo_cache_memory_max: ""
 
 # --- InfiniBand network readiness (systemd ExecStartPre) ---
 # Configure these globally in inventory/group_vars/all.yml; these values are

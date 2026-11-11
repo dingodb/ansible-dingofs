@@ -1,0 +1,8 @@
+---
+# This role only prepares the existing Podman/CLI/cluster roles for one MDS.
+# The TiKV backend is configured independently in the site's TiUP topology.
+dingofs_standalone_mds_memory_mb: 1024
+dingofs_standalone_mds_cpus: 1
+dingofs_standalone_min_available_mb: 2048
+dingofs_standalone_min_disk_mb: 15360
+dingo_cli_ssh_private_key_file: "{{ dingofs_home }}/.ssh/id_ed25519_dingofs_standalone"

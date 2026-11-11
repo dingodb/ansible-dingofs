@@ -126,15 +126,20 @@
   args:
     executable: /bin/bash
   register: monitor_deploy
+  failed_when: >-
+    monitor_deploy.rc != 0 and not
+    ((dingo_monitor_initialize_grafana | bool) and
+     monitor_deploy.stdout | trim == 'Error: failed to fetch prometheus info')
   when: _monitor_existing_count | int == 0
 
 - name: Report monitor deployment
   debug:
     msg: >-
-      {{ 'monitor stack deployed'
+      {{ 'check mode: monitor deployment and resource updates were not executed'
+         if ansible_check_mode else ('monitor stack deployed'
          if monitor_deploy.changed | default(false)
          else 'monitor stack already present (' ~ (_monitor_existing_count | string)
-              ~ ' services) - left alone; run `dingo monitor deploy` by hand if you changed the config' }}
+              ~ ' services) - left alone; run `dingo monitor deploy` by hand if you changed the config') }}
 
 # status is read-only and works on every run, unlike deploy, so it is the
 # better thing to report.
@@ -153,3 +158,15 @@
 - name: Display monitor status
   debug:
     var: monitor_status.stdout_lines
+
+- name: Finish and verify monitor initialization after CLI startup
+  include_tasks: initialize.yml
+  when:
+    - not ansible_check_mode
+    - dingo_monitor_initialize_grafana | bool
+
+- name: Apply the selected monitor container budgets
+  include_tasks: resources.yml
+  when:
+    - not ansible_check_mode
+    - dingo_monitor_resource_limits | length > 0

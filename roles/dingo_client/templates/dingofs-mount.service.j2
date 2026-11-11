@@ -20,6 +20,15 @@ TimeoutStartSec={{ (IB_WAIT_TIMEOUT | default(60) | int) + 60 }}
 ExecStart={{ dingo_client_base_dir }}/dingofs-mount.sh
 Restart=always
 RestartSec=30
+{% if dingo_client_cpu_quota | default('') | string | length > 0 %}
+CPUQuota={{ dingo_client_cpu_quota }}
+{% endif %}
+{% if dingo_client_memory_high | default('') | string | length > 0 %}
+MemoryHigh={{ dingo_client_memory_high }}
+{% endif %}
+{% if dingo_client_memory_max | default('') | string | length > 0 %}
+MemoryMax={{ dingo_client_memory_max }}
+{% endif %}
 LimitNOFILE=1000000
 OOMScoreAdjust={{ dingo_client_oom_score_adjust | default(0) }}
 LimitCORE=infinity

@@ -1,0 +1,46 @@
+---
+- name: Validate the explicitly selected APT source
+  assert:
+    that:
+      - ansible_facts.os_family == 'Debian'
+      - podman_apt_repository_url is match('^https://')
+      - podman_apt_repository_key_url is match('^https://')
+      - podman_apt_repository_key_checksum is match('^sha256:[a-f0-9]{64}$')
+
+- name: Create the APT signing key directory
+  file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: '0755'
+
+- name: Install the checksum-verified repository signing key
+  get_url:
+    url: "{{ podman_apt_repository_key_url }}"
+    checksum: "{{ podman_apt_repository_key_checksum }}"
+    dest: /etc/apt/keyrings/dingofs-podman.asc
+    mode: '0644'
+  register: _podman_apt_key
+
+- name: Register the signed Podman repository
+  copy:
+    content: "deb [signed-by=/etc/apt/keyrings/dingofs-podman.asc] {{ podman_apt_repository_url }} /\n"
+    dest: /etc/apt/sources.list.d/dingofs-podman.list
+    mode: '0644'
+  register: _podman_apt_source
+
+# Keep unrelated OS packages on their normal repositories. Explicit versions
+# and dependency constraints select the required container packages from here.
+- name: Limit the extra repository's package priority
+  copy:
+    content: |
+      Package: *
+      Pin: origin "{{ podman_apt_repository_url | urlsplit('hostname') }}"
+      Pin-Priority: 100
+    dest: /etc/apt/preferences.d/dingofs-podman
+    mode: '0644'
+  register: _podman_apt_priority
+
+- name: Refresh metadata for the selected Podman source
+  apt:
+    update_cache: true
+    cache_valid_time: "{{ 0 if (_podman_apt_key.changed or _podman_apt_source.changed or _podman_apt_priority.changed) else 3600 }}"

@@ -1,0 +1,61 @@
+---
+- name: Require Podman for optional persistent monitor budgets
+  assert:
+    that:
+      - container_engine == 'podman'
+      - dingo_monitor_resource_limits is mapping
+      - dingo_monitor_resource_limits.keys() | difference(['node_exporter', 'prometheus', 'grafana', 'monitor_sync']) | length == 0
+
+- name: Validate the requested monitor CPU and memory ceilings
+  assert:
+    that:
+      - item.value.cpus | float > 0
+      - item.value.memory_mb | int >= 64
+  loop: "{{ dingo_monitor_resource_limits | dict2items }}"
+
+- name: Select the registered monitor containers
+  set_fact:
+    _monitor_services: "{{ monitor_status.stdout | dingo_monitor_services }}"
+
+- name: Require every budgeted role to have a registered service on a selected host
+  assert:
+    that:
+      - dingo_monitor_resource_limits.keys() | difference(_monitor_services | map(attribute='role') | list) | length == 0
+      - _monitor_services | map(attribute='host') | difference(dingo_monitor_hosts) | length == 0
+
+- name: Read the exact monitor containers' current limits
+  command:
+    argv: [podman, inspect, --format, "{{ '{{json .HostConfig}}' }}", "{{ item.container }}"]
+  delegate_to: "{{ item.host }}"
+  become_user: "{{ dingofs_user }}"
+  register: _monitor_inspections
+  changed_when: false
+  loop: "{{ _monitor_services }}"
+  loop_control:
+    label: "{{ item.role }}@{{ item.host }} {{ item.container }}"
+  when: item.role in dingo_monitor_resource_limits
+
+- name: Persist CPU and memory ceilings on registered monitor containers
+  vars:
+    _budget: "{{ dingo_monitor_resource_limits[item.item.role] }}"
+    _current: "{{ item.stdout | from_json }}"
+  command:
+    argv:
+      - podman
+      - update
+      - "--memory={{ _budget.memory_mb }}m"
+      - "--memory-swap={{ _budget.memory_mb }}m"
+      - "--cpus={{ _budget.cpus }}"
+      - "{{ item.item.container }}"
+  delegate_to: "{{ item.item.host }}"
+  become_user: "{{ dingofs_user }}"
+  loop: "{{ _monitor_inspections.results }}"
+  loop_control:
+    label: "{{ item.item.role }}@{{ item.item.host }} {{ item.item.container }}"
+  when:
+    - not (item.skipped | default(false))
+    - >-
+      _current.Memory | int != _budget.memory_mb | int * 1048576 or
+      _current.MemorySwap | int != _budget.memory_mb | int * 1048576 or
+      _current.CpuPeriod | int == 0 or
+      (_current.CpuQuota | float / _current.CpuPeriod | float) != _budget.cpus | float

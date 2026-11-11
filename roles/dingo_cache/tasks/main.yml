@@ -8,8 +8,16 @@
 - import_role:
     name: version_guard
 
+- name: Validate cache storage mode
+  assert:
+    that: dingo_cache_storage_mode in ['mounted', 'directory']
+
 # Validate before probing the host or changing any files/services.
 - import_tasks: validate_rdma.yml
+
+- name: Validate the explicitly configured cache directory
+  import_tasks: directory_storage.yml
+  when: dingo_cache_storage_mode == 'directory'
 
 - import_tasks: preflight_binary.yml
 
@@ -569,10 +577,10 @@
     _dingo_cache_log_prefix: "{{ dingo_cache_log_prefix | default('') if (dingo_cache_log_prefix | default('')) | length > 0 else (dingo_cache_mount_prefix | default('')) }}"
 
 # --- Detect actual cache mount points (dynamic, per-host) ---
-# Always run: the uniform-spec selection below (measure mounts → exclude disks smaller
+# In mounted mode, the uniform-spec selection below (measure mounts → exclude disks smaller
 # than dingo_cache_min_disk_gb → keep only the largest same-size group) takes
-# precedence over statically configured values. If no mounts found (lvm_cache not yet
-# run), fall back to group_vars / role defaults.
+# precedence over statically configured values. Directory mode skips discovery
+# and preserves the explicitly supplied paths and capacity.
 - name: Discover mounted cache volumes
   shell: |
     {
@@ -588,6 +596,7 @@
   register: discovered_mounts
   changed_when: false
   failed_when: false
+  when: dingo_cache_storage_mode == 'mounted'
 
 - name: Validate at least one mount point is available
   assert:
@@ -601,6 +610,9 @@
       mount points that should hold cache data / logs (for hosts where dingo-cache shares
       disks with another role).
       Failing fast here prevents dingo-cache from silently falling back to writing on the system disk.
+      To deliberately use a directory on the system filesystem, select
+      dingo_cache_storage_mode=directory and configure its directory and capacity.
+  when: dingo_cache_storage_mode == 'mounted'
 
 # --- Select uniform-spec cache disks (dynamic, per-host) ---
 # Policy: (1) exclude disks smaller than dingo_cache_min_disk_gb (default 1000 GB) from caching,
@@ -710,12 +722,12 @@
     PYEOF
   register: disk_selection
   changed_when: false
-  when: discovered_mounts.stdout_lines | length > 0
+  when: dingo_cache_storage_mode == 'mounted' and discovered_mounts.stdout_lines | length > 0
 
 - name: Apply disk selection facts
   set_fact:
     _cache_sel: "{{ disk_selection.stdout_lines | last | regex_replace('^JSON=', '') | from_json }}"
-  when: disk_selection is succeeded
+  when: dingo_cache_storage_mode == 'mounted' and disk_selection is succeeded
 
 - name: Assert at least one qualifying uniform disk was found
   assert:
@@ -726,7 +738,7 @@
       dingo_cache_min_disk_gb ({{ dingo_cache_min_disk_gb }} GB) or no
       same-spec group exists. Lower the threshold in inventory/group_vars/all.yml,
       or only run cache_02_lvm.yml on hosts with uniform NVMe disks >= 1 TB.
-  when: disk_selection is succeeded
+  when: dingo_cache_storage_mode == 'mounted' and disk_selection is succeeded
 
 - name: Use selected uniform cache dirs (single cache_size_mb applies to all)
   set_fact:
@@ -734,12 +746,13 @@
     dingo_cache_cache_size_mb: "{{ _cache_sel.size_mb }}"
     dingo_cache_group_weight: "{{ (_cache_sel.count | int) * (dingo_cache_weight_per_disk | int) }}"
     dingo_cache_log_dir: "{{ _cache_sel.log_dir }}"
-  when: disk_selection is succeeded and _cache_sel.dirs | length > 0
+  when: dingo_cache_storage_mode == 'mounted' and disk_selection is succeeded and _cache_sel.dirs | length > 0
 
 - name: Warn when configured log prefix is not mounted on this host
   debug:
     msg: "WARNING on {{ inventory_hostname }}: {{ _cache_sel.log_warn }}"
   when:
+    - dingo_cache_storage_mode == 'mounted'
     - disk_selection is succeeded
     - (_cache_sel.log_warn | default('')) | length > 0
 
@@ -755,7 +768,7 @@
       iodepth={{ dingo_cache_iodepth }} per disk
       excluded from cache: {{ _cache_sel.skipped | join('; ') if _cache_sel.skipped | length > 0 else 'none' }}
       log_dir={{ dingo_cache_log_dir }}
-  when: disk_selection is succeeded
+  when: dingo_cache_storage_mode == 'mounted' and disk_selection is succeeded
 
 # --- Create directories ---
 - name: Create dingo-cache base directory

@@ -96,6 +96,13 @@
           {{ _tiup_display.stdout }}
       run_once: true
 
+    - name: Require the site's TiDB SQL service before MDS deployment
+      assert:
+        that:
+          - (_tiup_display.stdout | tiup_cluster_health).roles.get('tidb', 0) >= tikv_min_tidb | default(0) | int
+        fail_msg: "This site requires a healthy TiDB service. Deploy it through TiUP before continuing with MDS."
+      run_once: true
+
     # --- PD says every store is Up ------------------------------------------
     # PD runs on every meta node in the reference layout, so the play's own
     # host answers on 2379; override tikv_pd_addr for other layouts.

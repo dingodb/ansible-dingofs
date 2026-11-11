@@ -19,12 +19,16 @@ def below(path, parent):
     return path == parent or path.startswith(parent.rstrip('/') + '/')
 
 
-def safe_path(value):
+def safe_path(value, mounted_root=False):
     if not isinstance(value, str) or not value.startswith('/') or os.path.normpath(value) != value:
         raise ValueError('Expected a normalized absolute path: ' + str(value))
     if value in PROTECTED or re.fullmatch(r'/mnt/(disk[0-9]+|aux)', value) or len(Path(value).parts) < 3:
         raise ValueError('Refusing broad/system directory: ' + value)
-    if os.path.realpath(value) != value:
+    # A verified kernel mount root can be a disconnected FUSE filesystem.
+    # Resolve only its parent; traversing/stat-ing the mount itself raises
+    # ENOTCONN. All deletion paths still use the full symlink check.
+    probe = os.path.dirname(value) if mounted_root else value
+    if os.path.realpath(probe) != probe:
         raise ValueError('Refusing a path containing a symlink: ' + value)
     return value
 
@@ -73,6 +77,7 @@ def mount_rows(path):
 
 
 def make_plan(p, unit_dir=UNIT_DIR, state_dir=STATE_DIR, mounts=None):
+    mounts = mount_rows(MOUNTINFO) if mounts is None else mounts
     service = p['service'][:-8] if p['service'].endswith('.service') else p['service']
     if not re.fullmatch(r'(dingo-cache(?:-[A-Za-z0-9_.@-]+)?|dingofs-mount-[A-Za-z0-9_.@-]+)', service):
         raise ValueError('Expected an explicitly named DingoFS instance service')
@@ -124,7 +129,11 @@ def make_plan(p, unit_dir=UNIT_DIR, state_dir=STATE_DIR, mounts=None):
     if p['kind'] == 'client':
         if not p['fsname']:
             raise ValueError('An explicit client filesystem name is required')
-        wanted = safe_path(p['mount_point'])
+        attached = [row for row in mounts if row['path'] == p['mount_point']]
+        if attached and any(not known or row['fstype'] not in ('fuse', 'fuse.dingofs')
+                            or row['source'] != 'DingoFS:' + p['fsname'] for row in attached):
+            raise ValueError('Mount ownership is unknown or belongs to another filesystem')
+        wanted = safe_path(p['mount_point'], mounted_root=bool(attached))
         if known and (metadata.get('mount_point') != wanted or metadata.get('fsname') != p['fsname']):
             raise ValueError('Deployed filesystem/mount point differs from the selected instance')
         metadata.update(mount_point=wanted, fsname=p['fsname'])
@@ -144,7 +153,6 @@ def make_plan(p, unit_dir=UNIT_DIR, state_dir=STATE_DIR, mounts=None):
             raise ValueError('Deletion overlaps uninstall ownership records: ' + path)
         if any(below(keep, path) or below(path, keep) for keep in retained):
             raise ValueError('Deletion overlaps retained data/logs; set remove_installation=false: ' + path)
-    mounts = mount_rows(MOUNTINFO) if mounts is None else mounts
     for path in delete:
         if any(below(row['path'], path) for row in mounts):
             raise ValueError('Refusing to recursively delete a mounted tree: ' + path)
@@ -181,7 +189,7 @@ def make_plan(p, unit_dir=UNIT_DIR, state_dir=STATE_DIR, mounts=None):
     remove_paths = [v for v in delete if Path(v).exists()]
     unregister = bool(p['kind'] == 'cache' and known and p['unregister'] and not metadata.get('unregistered', False))
     remove_mount_dir = bool(p['kind'] == 'client' and known and p.get('remove_mountpoint', True)
-                            and Path(metadata['mount_point']).is_dir())
+                            and (mounted or Path(metadata['mount_point']).is_dir()))
     return dict(changed=False, service=service, unit_path=str(unit), unit_exists=unit.exists(),
                 base_dir=base, mount_point=metadata.get('mount_point', ''), mounted=mounted,
                 metadata=metadata, state_file=str(state_file), remove_paths=remove_paths,

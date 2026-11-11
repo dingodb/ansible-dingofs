@@ -54,3 +54,16 @@ dingo_monitor_grafana_port: 3000
 
 # monitor_sync ships inside the dingofs server image.
 dingo_monitor_sync_image: "{{ dingofs_container_image }}"
+
+# Optional Podman ceilings by role, e.g. prometheus: {cpus: 1, memory_mb: 1024}.
+# The existing CLI creates the containers; limits apply after initial startup.
+dingo_monitor_resource_limits: {}
+
+# Opt in when this role owns Grafana's initialization. Existing sites can keep
+# their own API credentials/provisioning without changing behavior.
+dingo_monitor_initialize_grafana: false
+dingo_monitor_grafana_api_user: admin
+dingo_monitor_grafana_api_password: admin
+dingo_monitor_ready_retries: 90
+dingo_monitor_ready_delay: 2
+dingo_monitor_service_address: "{{ hostvars[dingo_monitor_central_host].dingofs_service_address | default(hostvars[dingo_monitor_central_host].ansible_host) }}"

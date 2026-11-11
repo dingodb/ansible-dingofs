@@ -184,11 +184,12 @@ def tiup_health(text):
     for line in clean(text).splitlines():
         fields = line.split()
         if len(fields) >= 6 and ":" in fields[0] and "/" in fields[4]:
-            rows.append((fields[0], fields[5]))
-    unhealthy = [identity + ": " + status for identity, status in rows
+            rows.append((fields[0], fields[1], fields[5]))
+    unhealthy = [identity + ": " + status for identity, _, status in rows
                  if status.split("|")[0] != "Up"]
     return {"healthy": bool(rows) and not unhealthy,
-            "components": len(rows), "unhealthy": unhealthy}
+            "components": len(rows), "unhealthy": unhealthy,
+            "roles": dict(Counter(role for _, role, _ in rows))}
 
 
 class FilterModule:

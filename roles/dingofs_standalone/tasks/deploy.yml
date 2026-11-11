@@ -1,0 +1,193 @@
+---
+# Keep the normal server CLI source contract: a compatible Linux binary must be
+# supplied on the controller. Fail before making remote changes if it is absent.
+- import_role:
+    name: dingo_cli
+    tasks_from: validate_source
+
+- name: Inspect a previously installed server CLI
+  stat:
+    path: "{{ dingo_cli_bin_dir }}/dingo"
+  register: _standalone_old_cli
+
+- name: Read existing registrations before changing the CLI environment
+  command:
+    argv: ["{{ dingo_cli_bin_dir }}/dingo", cluster, list]
+  register: _standalone_registrations
+  changed_when: false
+  when: _standalone_old_cli.stat.exists and _standalone_cli_config.stat.exists
+
+- name: Keep the standalone first-install workflow separate from shared clusters
+  vars:
+    _names: "{{ (_standalone_registrations.stdout | dingo_cluster_list).names if not (_standalone_registrations.skipped | default(false)) else [] }}"
+  assert:
+    that: _names | difference([dingofs_cluster_name]) | length == 0
+    fail_msg: "Other clusters already use this CLI environment. Use meta_add_cluster.yml."
+
+- name: Read listeners before the first MDS deployment
+  command: ss -H -lnt
+  register: _standalone_listeners
+  changed_when: false
+  when: >-
+    (_standalone_registrations.skipped | default(false)) or
+    dingofs_cluster_name not in (_standalone_registrations.stdout | dingo_cluster_list).names
+
+- name: Require the standalone MDS port to be unused
+  assert:
+    that: _standalone_listeners.stdout is not search(':' ~ (item | string) ~ '\s')
+    fail_msg: "MDS port {{ item }} is already occupied; no existing process was stopped."
+  loop: "{{ _dingo_add_plan.ports[inventory_hostname] }}"
+  when: not (_standalone_listeners.skipped | default(false))
+
+- import_role:
+    name: podman
+
+- name: Enable Podman restart policies after a reboot
+  systemd:
+    name: podman-restart.service
+    enabled: true
+
+- name: Create root's SSH directory for the CLI's local connection
+  file:
+    path: "{{ dingofs_home }}/.ssh"
+    state: directory
+    mode: '0700'
+
+- name: Generate a dedicated CLI key on the MDS host
+  community.crypto.openssh_keypair:
+    path: "{{ dingo_cli_ssh_private_key_file }}"
+    type: ed25519
+    regenerate: never
+  register: _standalone_key
+
+- name: Authorize the CLI's own key for local deployment
+  ansible.posix.authorized_key:
+    user: root
+    key: "{{ _standalone_key.public_key }}"
+    state: present
+
+- import_role:
+    name: dingo_cli
+
+- import_role:
+    name: dingofs_cluster
+
+# The existing CLI has no container memory/CPU fields. Limit only the validated,
+# registered single MDS after deployment; support the distribution's Podman too.
+- name: Read the exact target's status
+  command:
+    argv: ["{{ dingo_cli_bin_dir }}/dingo", cluster, status, -s, -v]
+  environment:
+    DINGO_CLUSTER: "{{ dingofs_cluster_name }}"
+    dingo_cluster: "{{ dingofs_cluster_name }}"
+  register: _standalone_status
+  changed_when: false
+
+- name: Require one healthy MDS before selecting its container
+  assert:
+    that:
+      - (_standalone_status.stdout | dingo_cluster_status(_dingo_add_plan, dingofs_cluster_name)).healthy
+      - _dingo_add_plan.instances == {'mds':{inventory_hostname:1}}
+
+- name: Select the registered MDS container
+  set_fact:
+    _standalone_container: "{{ (_standalone_status.stdout_lines | select('search', '\\smds\\s') | first).split()[4] }}"
+
+- name: Require an actual Podman container ID
+  assert:
+    that: _standalone_container is match('^[a-f0-9]{12,64}$')
+
+- name: Inspect current MDS resource limits
+  command:
+    argv: [podman, inspect, "{{ _standalone_container }}"]
+  register: _standalone_inspect
+  changed_when: false
+
+- name: Detect Podman support for updating container resources
+  command:
+    argv: [podman, update, --help]
+  register: _standalone_update_help
+  changed_when: false
+  failed_when: false
+
+- name: Apply persistent MDS memory and CPU limits
+  vars:
+    _limits: "{{ (_standalone_inspect.stdout | from_json)[0].HostConfig }}"
+  command:
+    argv:
+      - podman
+      - update
+      - "--memory={{ dingofs_standalone_mds_memory_mb }}m"
+      - "--memory-swap={{ dingofs_standalone_mds_memory_mb }}m"
+      - "--cpus={{ dingofs_standalone_mds_cpus }}"
+      - "{{ _standalone_container }}"
+  when: >-
+    '--memory' in _standalone_update_help.stdout and
+    (_limits.Memory | int != dingofs_standalone_mds_memory_mb | int * 1048576 or
+     _limits.MemorySwap | int != dingofs_standalone_mds_memory_mb | int * 1048576 or
+     _limits.CpuPeriod | int == 0 or
+     (_limits.CpuQuota | float / (_limits.CpuPeriod | float)) != dingofs_standalone_mds_cpus | float)
+
+# Podman 3.4 has no `update` command. Its systemd scope keeps the container ID
+# across restarts, so a normal persistent scope drop-in applies at every start.
+# `set-property` alone is insufficient: transient scope properties disappear
+# when the container stops, even without --runtime.
+- name: Configure persistent per-container limits for older Podman
+  when: "'--memory' not in _standalone_update_help.stdout"
+  block:
+    - name: Identify the exact container scope
+      set_fact:
+        _standalone_scope: "libpod-{{ (_standalone_inspect.stdout | from_json)[0].Id }}.scope"
+
+    - name: Require the container's systemd scope to exist
+      command:
+        argv: [systemctl, is-active, "{{ _standalone_scope }}"]
+      changed_when: false
+
+    - name: Create only this MDS container's scope override directory
+      file:
+        path: "/etc/systemd/system/{{ _standalone_scope }}.d"
+        state: directory
+        mode: '0755'
+
+    - name: Persist resource limits for this container's future starts
+      copy:
+        content: |
+          [Scope]
+          MemoryMax={{ dingofs_standalone_mds_memory_mb }}M
+          MemorySwapMax=0
+          CPUQuota={{ dingofs_standalone_mds_cpus | float * 100 }}%
+        dest: "/etc/systemd/system/{{ _standalone_scope }}.d/50-dingofs-resources.conf"
+        mode: '0644'
+      register: _standalone_scope_limits
+
+    - name: Reload the persistent scope resource settings
+      systemd:
+        daemon_reload: true
+      when: _standalone_scope_limits.changed
+
+    - name: Apply the same limits to the currently running MDS
+      command:
+        argv:
+          - systemctl
+          - set-property
+          - "{{ _standalone_scope }}"
+          - "MemoryMax={{ dingofs_standalone_mds_memory_mb }}M"
+          - MemorySwapMax=0
+          - "CPUQuota={{ dingofs_standalone_mds_cpus | float * 100 }}%"
+      changed_when: _standalone_scope_limits.changed
+
+- name: Verify the MDS is reachable through its advertised service address
+  command:
+    argv:
+      - "{{ dingo_cli_bin_dir }}/dingo"
+      - mds
+      - status
+      - "--mdsaddr={{ hostvars[inventory_hostname].dingofs_service_address | default(ansible_host) }}:{{ mds_base_port }}0"
+  register: _standalone_mds_rpc
+  changed_when: false
+  until: >-
+    _standalone_mds_rpc.rc == 0 and
+    (_standalone_mds_rpc.stdout | regex_search('(?i)[|][ ]*online[ ]*[|]')) is not none
+  retries: 20
+  delay: 3

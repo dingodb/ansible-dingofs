@@ -1,2 +1,8 @@
 ---
 container_engine: podman
+podman_enable_socket: true
+# Optional signed APT source and exact package set. Empty keeps the OS defaults.
+podman_apt_repository_url: ""
+podman_apt_repository_key_url: ""
+podman_apt_repository_key_checksum: ""
+podman_apt_packages: []

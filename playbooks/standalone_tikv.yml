@@ -1,0 +1,8 @@
+---
+# Optional backend provisioning. The MDS is deployed independently by standalone_site.yml.
+- name: Deploy the small backend with TiUP on the selected TiKV host
+  hosts: tikv_servers
+  become: true
+  any_errors_fatal: true
+  roles:
+    - tikv_standalone

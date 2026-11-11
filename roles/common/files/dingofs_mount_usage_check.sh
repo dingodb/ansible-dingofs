@@ -140,10 +140,35 @@ host_processes_busy() {
 # comparing major:minor catches paths that differ from the host mountpoint.
 stat_dev() {
     local mp=$1 raw major minor
-    python3 - "$mp" <<'PYDEV'
-import os, sys
-value = os.stat(sys.argv[1]).st_dev
-print("%s:%s" % (os.major(value), os.minor(value)))
+    python3 - "$mp" "${2:-}" <<'PYDEV'
+import os, re, sys
+# Kernel mount information remains readable when a FUSE daemon is gone.
+try:
+    with open('/proc/self/mountinfo') as stream:
+        rows = stream.read().splitlines()
+    if not rows:
+        raise ValueError('empty kernel mount table')
+    devices = {}
+    for line in rows:
+        fields = line.split()
+        separator = fields.index('-')
+        if separator < 6 or len(fields) < separator + 4:
+            raise ValueError('invalid kernel mount table')
+        path = re.sub(r'\\([0-7]{3})', lambda m: chr(int(m[1], 8)), fields[4])
+        devices[path] = fields[2]
+    target = sys.argv[1]
+    if target not in devices:
+        target = os.path.realpath(target)
+    if target in devices:
+        print(devices[target])
+        sys.exit(0)
+    if sys.argv[2] == '--mount-only':
+        sys.exit(1)
+    value = os.stat(target).st_dev
+    print("%s:%s" % (os.major(value), os.minor(value)))
+except (OSError, ValueError, IndexError) as error:
+    print('Cannot determine mount device: ' + str(error), file=sys.stderr)
+    sys.exit(2)
 PYDEV
 }
 
@@ -242,10 +267,8 @@ def mountinfo(path):
 def mounted_device(target):
     # An unmounted directory shares the root filesystem with unrelated paths.
     # Only use filesystem identity if this exact target is a real mountpoint.
-    if any(row["path"] == target for row in mountinfo("/proc/self/mountinfo")):
-        device = os.stat(target).st_dev
-        return "%s:%s" % (os.major(device), os.minor(device))
-    return None
+    matches = [row["device"] for row in mountinfo("/proc/self/mountinfo") if row["path"] == target]
+    return matches[-1] if matches else None
 
 
 def container_references(detail, target, target_device):
@@ -499,7 +522,13 @@ else
     log "Container scope: Kubernetes cci* namespaces and standalone containerd tasks."
 fi
 
-if [ ! -e "$MOUNTPOINT" ] || ! mountpoint -q "$MOUNTPOINT" 2>/dev/null; then
+mount_state_rc=0
+stat_dev "$MOUNTPOINT" --mount-only >/dev/null || mount_state_rc=$?
+if [ "$mount_state_rc" -gt 1 ]; then
+    log "UNKNOWN: cannot read the kernel mount state for $MOUNTPOINT."
+    exit 2
+fi
+if [ "$mount_state_rc" -eq 1 ]; then
     # Containers may retain a bind mount after the host path was detached.
     if container_users_busy "$MOUNTPOINT"; then
         log "BUSY: a container still references $MOUNTPOINT."

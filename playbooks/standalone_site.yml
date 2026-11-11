@@ -1,0 +1,16 @@
+---
+# TiKV is independently deployed/managed by TiUP, possibly on another host.
+# Use standalone_tikv.yml first for a new backend, or point at an existing one.
+- name: Verify the TiUP-managed TiKV dependency
+  import_playbook: tikv_verify.yml
+  vars:
+    tikv_verify_hosts: "{{ dingofs_tikv_control_hosts | default('tikv_servers') }}"
+    tikv_min_tidb: 1
+  tags: [tikv]
+
+- name: Deploy only a single TiKV-backed MDS using the existing cluster roles
+  hosts: meta_servers
+  become: true
+  any_errors_fatal: true
+  roles:
+    - dingofs_standalone

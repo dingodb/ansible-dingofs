@@ -1,0 +1,98 @@
+---
+# The CLI waits only ~30s for Grafana. A cold Grafana database migration can
+# exceed this; complete the same datasource-UID substitution after API readiness.
+- name: Require every monitor role to have a running registered container
+  vars:
+    _services: "{{ monitor_status.stdout | dingo_monitor_services }}"
+  assert:
+    that:
+      - _services | length == (dingo_monitor_hosts | length) + 3
+      - "['grafana', 'prometheus', 'monitor_sync', 'node_exporter'] | difference(_services | map(attribute='role') | list) | length == 0"
+    fail_msg: "Monitor startup is incomplete. Inspect its registered containers before initializing Grafana."
+
+- name: Wait for Prometheus to be ready
+  uri:
+    url: "http://{{ dingo_monitor_service_address }}:{{ dingo_monitor_prometheus_port }}/-/ready"
+    use_proxy: false
+    timeout: 5
+  delegate_to: "{{ dingo_monitor_central_host }}"
+  register: _monitor_prometheus_ready
+  until: _monitor_prometheus_ready.status | default(0) == 200
+  retries: "{{ dingo_monitor_ready_retries }}"
+  delay: "{{ dingo_monitor_ready_delay }}"
+
+- name: Wait for Grafana database migrations and HTTP readiness
+  uri:
+    url: "http://{{ dingo_monitor_service_address }}:{{ dingo_monitor_grafana_port }}/api/health"
+    use_proxy: false
+    timeout: 5
+  delegate_to: "{{ dingo_monitor_central_host }}"
+  register: _monitor_grafana_ready
+  until: _monitor_grafana_ready.status | default(0) == 200 and _monitor_grafana_ready.json.database | default('') == 'ok'
+  retries: "{{ dingo_monitor_ready_retries }}"
+  delay: "{{ dingo_monitor_ready_delay }}"
+
+- name: Wait for Grafana's provisioned Prometheus datasource
+  uri:
+    url: "http://{{ dingo_monitor_service_address }}:{{ dingo_monitor_grafana_port }}/api/datasources"
+    url_username: "{{ dingo_monitor_grafana_api_user }}"
+    url_password: "{{ dingo_monitor_grafana_api_password }}"
+    force_basic_auth: true
+    use_proxy: false
+    timeout: 5
+  delegate_to: "{{ dingo_monitor_central_host }}"
+  register: _monitor_datasources
+  until: >-
+    _monitor_datasources.status | default(0) == 200 and
+    (_monitor_datasources.json | selectattr('type', 'eq', 'prometheus') | selectattr('isDefault', 'eq', true) | list | length) == 1
+  retries: "{{ dingo_monitor_ready_retries }}"
+  delay: "{{ dingo_monitor_ready_delay }}"
+  no_log: true
+
+- name: Select the default Prometheus datasource UID
+  set_fact:
+    _monitor_prometheus_uid: "{{ (_monitor_datasources.json | selectattr('type', 'eq', 'prometheus') | selectattr('isDefault', 'eq', true) | first).uid }}"
+
+- name: Validate the datasource UID before updating dashboard JSON
+  assert:
+    that: _monitor_prometheus_uid is match('^[A-Za-z0-9_-]+$')
+
+- name: Complete the CLI's server dashboard datasource substitution
+  replace:
+    path: "{{ dingo_monitor_data_dir }}/grafana/provisioning/dashboards/server_metric_zh.json"
+    regexp: '\$\{PROMETHEUS_UID\}'
+    replace: "{{ _monitor_prometheus_uid }}"
+    validate: /usr/bin/python3 -m json.tool %s
+  delegate_to: "{{ dingo_monitor_central_host }}"
+
+- name: Verify Grafana can query Prometheus
+  uri:
+    url: "http://{{ dingo_monitor_service_address }}:{{ dingo_monitor_grafana_port }}/api/datasources/uid/{{ _monitor_prometheus_uid }}/health"
+    url_username: "{{ dingo_monitor_grafana_api_user }}"
+    url_password: "{{ dingo_monitor_grafana_api_password }}"
+    force_basic_auth: true
+    use_proxy: false
+    timeout: 5
+  delegate_to: "{{ dingo_monitor_central_host }}"
+  register: _monitor_datasource_health
+  until: _monitor_datasource_health.status | default(0) == 200 and _monitor_datasource_health.json.status | default('') == 'OK'
+  retries: "{{ dingo_monitor_ready_retries }}"
+  delay: "{{ dingo_monitor_ready_delay }}"
+  no_log: true
+
+- name: Wait for the repaired server dashboard to be loaded
+  uri:
+    url: "http://{{ dingo_monitor_service_address }}:{{ dingo_monitor_grafana_port }}/api/dashboards/uid/server-metric"
+    url_username: "{{ dingo_monitor_grafana_api_user }}"
+    url_password: "{{ dingo_monitor_grafana_api_password }}"
+    force_basic_auth: true
+    use_proxy: false
+    timeout: 5
+  delegate_to: "{{ dingo_monitor_central_host }}"
+  register: _monitor_server_dashboard
+  until: >-
+    _monitor_server_dashboard.status | default(0) == 200 and
+    '${PROMETHEUS_UID}' not in (_monitor_server_dashboard.json | to_json)
+  retries: "{{ dingo_monitor_ready_retries }}"
+  delay: "{{ dingo_monitor_ready_delay }}"
+  no_log: true
