@@ -7,12 +7,10 @@ Wants=network-online.target
 Type=simple
 {% if IB_CHECK_ENABLED | default(true) | bool and dingo_cache_use_rdma | default(true) | bool %}
 # Wait for the RDMA fabric (ACTIVE port + cluster IPv4) before starting.
-# Device names are auto-detected by the script; only the IP prefix and the
-# timeout are configurable (inventory/group_vars/all.yml).
+# The script checks health from the IP prefix alone; device names are
+# detected per host and are not passed to it.
 Environment="IB_IP_PREFIX={{ IB_IP_PREFIX | default('192.168.') }}"
 Environment="IB_WAIT_TIMEOUT={{ IB_WAIT_TIMEOUT | default(60) }}"
-Environment="RDMA_DEVICE={{ dingo_cache_rdma_device_effective | default(dingo_cache_rdma_device) }}"
-Environment="RDMA_PORT_NUM={{ dingo_cache_rdma_port_num }}"
 ExecStartPre={{ IB_CHECK_SCRIPT | default('/root/dingofs/script/check/check-ib-ready.sh') }}
 # ExecStartPre waiting counts against TimeoutStartSec (default 90s).
 TimeoutStartSec={{ (IB_WAIT_TIMEOUT | default(60) | int) + 60 }}
