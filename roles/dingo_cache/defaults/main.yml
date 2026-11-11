@@ -108,7 +108,9 @@ dingo_cache_cpuset_include_siblings: false
 
 # --- RDMA (v5.2+) ---
 dingo_cache_use_rdma: true
-dingo_cache_rdma_device: ib6s200p0
+# Empty/auto = discover per host from IB_IP_PREFIX. Set a name only to
+# override discovery on a host whose interface-to-device mapping is unusual.
+dingo_cache_rdma_device: ""
 dingo_cache_rdma_port_num: 1
 dingo_cache_buffer_pool_mb: 1024
 # Connection limit is per shard, not per cache process. Increasing it also

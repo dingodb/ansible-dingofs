@@ -83,6 +83,74 @@ def ready(mapping, prefix, links=None):
                        for address in link.get('addr_info', [])) for link in links)
 
 
+def all_ports():
+    return sorted({int(p.name) for p in Path('/sys/class/infiniband').glob('*/ports/*')
+                   if p.name.isdigit()})
+
+
+def netdev_devices(netdev):
+    """RDMA devices exposed by a netdev under /sys/class/net/<netdev>.
+
+    RoCE netdevs link back to their PCI device here. IPoIB netdevs do not,
+    and are found by the reverse device-to-netdev mapping in resolve().
+    """
+    base = Path('/sys/class/net') / netdev / 'device/infiniband'
+    if not base.is_dir():
+        return []
+    return sorted(entry.name for entry in base.iterdir())
+
+
+def safe_resolve(name, port):
+    try:
+        return resolve(name, port)
+    except ValueError:
+        return None
+
+
+def device_for_prefix(prefix):
+    """Return the one RDMA device/port that carries IB_IP_PREFIX.
+
+    The interface address decides the fabric, matching the readiness check.
+    When the prefix covers more than one ready device the answer is ambiguous,
+    so this never guesses a device name.
+    """
+    prefix = prefix.strip()
+    if not prefix:
+        raise ValueError('IB_IP_PREFIX is empty; set the InfiniBand IPv4 prefix')
+    links = json.loads(subprocess.check_output(['ip', '-j', '-4', 'addr', 'show'], timeout=10))
+    ports = all_ports()
+    matches = {}
+    for link in links:
+        if not any(address.get('family') == 'inet' and address.get('local', '').startswith(prefix)
+                   for address in link.get('addr_info', [])):
+            continue
+        netdev = link['ifname'].split('@')[0]
+        names = netdev_devices(netdev)
+        if not names:
+            names = sorted({mapping['device'] for mapping in
+                            (safe_resolve(netdev, port) for port in ports) if mapping})
+        for name in names:
+            device_ports = [port for port in ports
+                            if (Path('/sys/class/infiniband') / name / 'ports' / str(port)).exists()]
+            ready_ports = [mapping for mapping in
+                           (safe_resolve(name, port) for port in device_ports)
+                           if mapping and netdev in mapping['netdevs']]
+            if not ready_ports and len(device_ports) == 1:
+                # A single-port HCA is unambiguous even without gid ndevs data.
+                fallback = safe_resolve(name, device_ports[0])
+                ready_ports = [fallback] if fallback else []
+            if len(ready_ports) != 1:
+                raise ValueError('cannot pick one port on RDMA device %s for %s '
+                                 '(IB_IP_PREFIX %s)' % (name, netdev, prefix))
+            matches[(name, ready_ports[0]['port'])] = ready_ports[0]
+    if not matches:
+        raise ValueError('no RDMA device carries an interface in IB_IP_PREFIX %s' % prefix)
+    if len(matches) != 1:
+        raise ValueError('IB_IP_PREFIX %s maps to %s RDMA device/port pairs; narrow the '
+                         'prefix or set the RDMA device explicitly' % (prefix, len(matches)))
+    return next(iter(matches.values()))
+
+
 def device_status(name):
     """Kernel sysfs decides existence; ibv_devices only confirms the verbs stack.
 
@@ -111,6 +179,9 @@ def device_status(name):
 
 
 def main():
+    if len(sys.argv) > 2 and sys.argv[1] == '--device-for-prefix':
+        print(json.dumps(device_for_prefix(sys.argv[2])))
+        return 0
     if len(sys.argv) > 2 and sys.argv[1] == '--device-status':
         print(device_status(sys.argv[2]))
         return 0
@@ -130,7 +201,7 @@ def main():
             # deliberately ignored: device naming differs per host and a stale
             # name must not decide whether the network works.
             links = json.loads(subprocess.check_output(['ip', '-j', '-4', 'addr', 'show'], timeout=10))
-            ports = {int(p.name) for p in Path('/sys/class/infiniband').glob('*/ports/*') if p.name.isdigit()}
+            ports = all_ports()
             candidates = {}
             for link in links:
                 if not any(a.get('local', '').startswith(prefix) for a in link.get('addr_info', [])):

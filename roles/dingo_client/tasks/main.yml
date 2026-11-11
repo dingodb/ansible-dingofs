@@ -243,18 +243,47 @@
     mode: "0755"
   when: dingo_client_use_rdma | default(true) | bool
 
-- name: Resolve configured RDMA device and NUMA topology
+# The device name is per-host (RoCE mlx5_N, IPoIB ibNsNpN, ...). Unless an
+# explicit name is set, follow IB_IP_PREFIX: the interface carrying the
+# business address leads to its RDMA device in sysfs.
+- name: Discover the RDMA device from the IB network prefix (client hosts)
+  command:
+    argv: [bash, "{{ IB_CHECK_SCRIPT }}", --device-for-prefix, "{{ IB_IP_PREFIX | default('192.168.') }}"]
+  register: _client_rdma_discovery
+  changed_when: false
+  when:
+    - dingo_client_use_rdma | default(true) | bool
+    - (dingo_client_rdma_device | default('', true) | string | trim | lower) in ['', 'auto']
+
+- name: Resolve configured RDMA device and NUMA topology (client hosts)
   command:
     argv: [bash, "{{ IB_CHECK_SCRIPT }}", --resolve, "{{ dingo_client_rdma_device }}", "{{ dingo_client_rdma_port_num }}"]
   register: _client_rdma_mapping
   changed_when: false
-  when: dingo_client_use_rdma | default(true) | bool
+  when:
+    - dingo_client_use_rdma | default(true) | bool
+    - (dingo_client_rdma_device | default('', true) | string | trim | lower) not in ['', 'auto']
 
-- name: Apply resolved RDMA topology
+- name: Load discovered RDMA topology (client hosts)
   set_fact:
-    dingo_client_rdma_device_effective: "{{ (_client_rdma_mapping.stdout | from_json).device }}"
+    _client_rdma_info: "{{ _client_rdma_discovery.stdout | from_json }}"
+  when:
+    - dingo_client_use_rdma | default(true) | bool
+    - (dingo_client_rdma_device | default('', true) | string | trim | lower) in ['', 'auto']
+
+- name: Load configured RDMA topology (client hosts)
+  set_fact:
+    _client_rdma_info: "{{ _client_rdma_mapping.stdout | from_json }}"
+  when:
+    - dingo_client_use_rdma | default(true) | bool
+    - (dingo_client_rdma_device | default('', true) | string | trim | lower) not in ['', 'auto']
+
+- name: Apply resolved RDMA topology (client hosts)
+  set_fact:
+    dingo_client_rdma_device_effective: "{{ _client_rdma_info.device }}"
+    dingo_client_rdma_port_num_effective: "{{ _client_rdma_info.port }}"
     _client_ib_numa_raw:
-      stdout: "{{ (_client_rdma_mapping.stdout | from_json).numa_node if (_client_rdma_mapping.stdout | from_json).numa_node is not none else 'unknown' }}"
+      stdout: "{{ _client_rdma_info.numa_node if _client_rdma_info.numa_node is not none else 'unknown' }}"
   when: dingo_client_use_rdma | default(true) | bool
 
 - name: Report missing RDMA NUMA information
@@ -262,7 +291,7 @@
     msg: "The selected RDMA device has no valid NUMA node. CPU/memory fallback policy will be used."
   when:
     - dingo_client_use_rdma | default(true) | bool
-    - (_client_rdma_mapping.stdout | from_json).numa_node is none
+    - _client_rdma_info.numa_node is none
 
 - name: Sample per-NUMA-node memory usage (client hosts)
   shell: |
@@ -320,7 +349,7 @@
 - name: Log preferred NUMA node decision (client hosts)
   debug:
     msg: >-
-      IB device {{ dingo_client_rdma_device | default('ib6s200p0') }} on NUMA node
+      IB device {{ dingo_client_rdma_device_effective | default('unknown') }} on NUMA node
       {{ _client_ib_node | default('unknown', true) | trim or 'unknown' }}
       (mem {{ (_client_node_mem | default({})).get(_client_ib_node | default(''), 'n/a') }}%),
       per-node mem {{ _client_node_mem | default({}) }}, threshold {{ _client_mem_thr }}% →
@@ -365,9 +394,9 @@
       is not usable on {{ inventory_hostname }} (status:
       {{ _client_rdma_dev_check.stdout | trim }}). missing-kernel means
       /sys/class/infiniband has no such device; missing-verbs means it exists
-      but ibv_devices cannot enumerate it. Set the right name per host via
-      dingo_client_rdma_device in host_vars, or dingo_client_use_rdma=false to
-      deploy without RDMA.
+      but ibv_devices cannot enumerate it. Auto-discovery follows IB_IP_PREFIX;
+      fix that mapping or set dingo_client_rdma_device in host_vars, or
+      dingo_client_use_rdma=false to deploy without RDMA.
   when:
     - dingo_client_use_rdma | default(true) | bool
     - _client_rdma_dev_check.stdout is defined

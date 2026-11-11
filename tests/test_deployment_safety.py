@@ -228,6 +228,79 @@ class RdmaTests(unittest.TestCase):
                 self.assertNotIn('RDMA_DEVICE', unit)
                 self.assertNotIn('RDMA_PORT_NUM', unit)
 
+    def discovery_fixture(self, devices, expose_netdev_link=True, with_gid=True):
+        """Build sysfs for (device, port, netdev) rows and return mapped Path."""
+        code = embedded('roles/common/files/check-ib-ready.sh', 'PYRDMA')
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        for name, port_num, netdev in devices:
+            port = root / ('sys/class/infiniband/%s/ports/%d' % (name, port_num))
+            (port / 'gid_attrs/ndevs').mkdir(parents=True)
+            if with_gid:
+                (port / 'gid_attrs/ndevs/0').write_text(netdev)
+            (port / 'state').write_text('4: ACTIVE')
+            parent = root / ('sys/devices/%s' % name)
+            parent.mkdir(parents=True)
+            (parent / 'numa_node').write_text('0')
+            (root / ('sys/class/infiniband/%s/device' % name)).symlink_to(parent)
+            if expose_netdev_link:
+                link = root / ('sys/class/net/%s/device/infiniband/%s' % (netdev, name))
+                link.mkdir(parents=True)
+
+        def mapped(value):
+            value = str(value)
+            return root / value.lstrip('/') if value.startswith('/sys/') else Path(value)
+
+        return code, mapped
+
+    @staticmethod
+    def link(name, address):
+        return {'ifname': name, 'flags': ['UP'],
+                'addr_info': [{'family': 'inet', 'local': address}]}
+
+    def test_device_for_prefix_follows_the_interface_to_its_rdma_device(self):
+        code, mapped = self.discovery_fixture([('mlx5_1', 1, 'roce2003')])
+        links = json.dumps([self.link('roce2003', '11.11.2.16')]).encode()
+        with patch.dict(code, Path=mapped), patch('subprocess.check_output', return_value=links):
+            mapping = code['device_for_prefix']('11.11')
+        self.assertEqual((mapping['device'], mapping['port']), ('mlx5_1', 1))
+        self.assertEqual(mapping['netdevs'], ['roce2003'])
+
+    def test_device_for_prefix_uses_the_netdev_sysfs_link_without_gid_data(self):
+        code, mapped = self.discovery_fixture([('mlx5_1', 1, 'roce2003')], with_gid=False)
+        links = json.dumps([self.link('roce2003', '11.11.2.16')]).encode()
+        with patch.dict(code, Path=mapped), patch('subprocess.check_output', return_value=links):
+            mapping = code['device_for_prefix']('11.11')
+        self.assertEqual((mapping['device'], mapping['port']), ('mlx5_1', 1))
+
+    def test_device_for_prefix_requires_one_interface_in_the_prefix(self):
+        code, mapped = self.discovery_fixture([('mlx5_1', 1, 'roce2003')])
+        links = json.dumps([self.link('roce2003', '10.0.0.5')]).encode()
+        with patch.dict(code, Path=mapped), patch('subprocess.check_output', return_value=links), \
+                self.assertRaisesRegex(ValueError, 'IB_IP_PREFIX 11.11'):
+            code['device_for_prefix']('11.11')
+
+    def test_device_for_prefix_rejects_two_rdma_devices(self):
+        code, mapped = self.discovery_fixture(
+            [('mlx5_1', 1, 'roce2003'), ('mlx5_2', 1, 'roce2004')])
+        links = json.dumps([self.link('roce2003', '11.11.2.16'),
+                            self.link('roce2004', '11.11.3.16')]).encode()
+        with patch.dict(code, Path=mapped), patch('subprocess.check_output', return_value=links), \
+                self.assertRaisesRegex(ValueError, '2 RDMA'):
+            code['device_for_prefix']('11.11')
+
+    def test_device_for_prefix_cli_prints_json(self):
+        code, mapped = self.discovery_fixture([('mlx5_1', 1, 'roce2003')])
+        links = json.dumps([self.link('roce2003', '11.11.2.16')]).encode()
+        output = io.StringIO()
+        with patch.object(sys, 'argv', ['check-ib-ready.sh', '--device-for-prefix', '11.11']), \
+                patch.dict(code, Path=mapped), \
+                contextlib.redirect_stdout(output), \
+                patch('subprocess.check_output', return_value=links):
+            self.assertEqual(code['main'](), 0)
+        self.assertEqual(json.loads(output.getvalue())['device'], 'mlx5_1')
+
     def device_status_fixture(self, status_calls):
         """Run device_status() against a sysfs fixture and patched ibv_devices."""
         code = embedded('roles/common/files/check-ib-ready.sh', 'PYRDMA')
@@ -341,6 +414,50 @@ class RdmaRoleContractTests(unittest.TestCase):
                 result = self.run_status(status)
                 self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertIn(status, result.stdout)
+
+
+@unittest.skipUnless(shutil.which('ansible-playbook'), 'requires Ansible')
+class RdmaAutoDiscoveryTests(unittest.TestCase):
+    def run_play(self, configured):
+        tasks = yaml.safe_load((REPO / 'roles/dingo_client/tasks/main.yml').read_text())
+        start = next(i for i, t in enumerate(tasks)
+                     if t.get('name') == 'Discover the RDMA device from the IB network prefix (client hosts)')
+        end = next(i for i, t in enumerate(tasks) if t.get('name') == 'Report missing RDMA NUMA information')
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            helper = root / 'check-ib-ready.sh'
+            helper.write_text(
+                '#!/bin/bash\n'
+                'if [ "$1" = "--device-for-prefix" ]; then\n'
+                '  printf \'%s\\n\' \'{"device":"mlx5_1","port":2,"netdevs":["roce2003"],"numa_node":0}\'\n'
+                'else\n'
+                '  printf \'%s\\n\' \'{"device":"mlx5_9","port":1,"netdevs":["eth9"],"numa_node":1}\'\n'
+                'fi\n')
+            helper.chmod(0o755)
+            selected = root / 'selected'
+            play = root / 'play.yml'
+            play.write_text(yaml.safe_dump([{'hosts': 'localhost', 'gather_facts': False,
+                'vars': {'ansible_connection': 'local', 'ansible_become': False,
+                         'ansible_python_interpreter': sys.executable,
+                         'IB_CHECK_SCRIPT': str(helper), 'IB_IP_PREFIX': '11.11',
+                         'dingo_client_use_rdma': True,
+                         'dingo_client_rdma_device': configured,
+                         'dingo_client_rdma_port_num': 1},
+                'tasks': tasks[start:end + 1] + [
+                    {'copy': {'content': '{{ dingo_client_rdma_device_effective }} '
+                                         '{{ dingo_client_rdma_port_num_effective }}',
+                              'dest': str(selected)}}]}]))
+            result = subprocess.run(['ansible-playbook', '-i', 'localhost,', str(play)], cwd=REPO,
+                env=dict(os.environ, ANSIBLE_CONFIG=str(REPO / 'ansible.cfg')),
+                capture_output=True, text=True, timeout=60)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            return selected.read_text().strip()
+
+    def test_auto_mode_selects_the_device_that_carries_the_prefix(self):
+        self.assertEqual(self.run_play(''), 'mlx5_1 2')
+
+    def test_explicit_device_still_overrides_discovery(self):
+        self.assertEqual(self.run_play('mlx5_9'), 'mlx5_9 1')
 
 
 class MountTests(unittest.TestCase):
