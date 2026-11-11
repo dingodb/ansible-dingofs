@@ -113,7 +113,9 @@ dingo_client_mem_profiles:
 
 # --- RDMA (v5.2+: --use_rdma/--cache_rdma_device/--cache_rdma_port_num/--buffer_pool_mb/--rdma_max_inflight_rpcs/--rdma_max_connections) ---
 dingo_client_use_rdma: true
-dingo_client_rdma_device: ib6s200p0
+# Empty/auto = discover per host from IB_IP_PREFIX. Set a name only to
+# override discovery on a host whose interface-to-device mapping is unusual.
+dingo_client_rdma_device: ""
 dingo_client_rdma_port_num: 1
 dingo_client_buffer_pool_mb: "{{ dingo_client_mem_profiles[dingo_client_tuning_profile_effective | default('small')].buffer_pool_mb }}"
 dingo_client_rdma_max_inflight_rpcs: "{{ dingo_client_mem_profiles[dingo_client_tuning_profile_effective | default('small')].rdma_max_inflight_rpcs }}"
