@@ -184,7 +184,7 @@ dingo_cache_log_subdir: "dingofs/logs/dingo-cache-v5.2"
 # Fraction of each disk's TOTAL capacity to use as cache (0.0 - 1.0).
 # Total cache_size_mb = sum of (each_disk_total_mb × ratio) across all discovered disks.
 # Example: 3 disks × 2TB total × 0.80 = ~4800000 MB
-dingo_cache_disk_usage_ratio: 0.80
+dingo_cache_disk_usage_ratio: 0.50
 dingo_cache_cache_size_mb: 3145728   # FALLBACK only; auto-computed per-disk total × ratio overrides when LVM mounts exist
 dingo_cache_free_space_ratio: "0.01"
 dingo_cache_iodepth: 1024
@@ -221,9 +221,10 @@ dingo_cache_cpuset_include_siblings: false
 dingo_cache_poll_mode: true
 
 # --- 09.5 RDMA ---
-# RDMA (v5.2; override dingo_cache_rdma_device per host in host_vars if HCA names differ)
+# Empty/auto = discover per host from IB_IP_PREFIX. Override per host in
+# host_vars only if its interface-to-device mapping is unusual.
 dingo_cache_use_rdma: true
-dingo_cache_rdma_device: ib6s200p0
+dingo_cache_rdma_device: ""
 dingo_cache_rdma_port_num: 1
 dingo_cache_buffer_pool_mb: 512
 dingo_cache_rdma_max_connections: 256
@@ -326,8 +327,10 @@ dingo_client_numactl_node: ""
 dingo_client_numactl_membind: false
 
 # --- 10.6 RDMA ---
+# Empty/auto = discover per host from IB_IP_PREFIX. Override per host in
+# host_vars only if its interface-to-device mapping is unusual.
 dingo_client_use_rdma: true
-dingo_client_rdma_device: ib6s200p0
+dingo_client_rdma_device: ""
 dingo_client_rdma_port_num: 1
 
 # --- 10.7 Mount safety and restart policy ---

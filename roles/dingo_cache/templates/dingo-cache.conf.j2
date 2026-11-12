@@ -18,8 +18,8 @@
 {% endif %}
 --use_rdma={{ 'true' if dingo_cache_use_rdma | default(true) | bool else 'false' }}
 {% if dingo_cache_use_rdma | default(true) | bool %}
---cache_rdma_device={{ dingo_cache_rdma_device_effective | default(dingo_cache_rdma_device | default('ib6s200p0')) }}
---cache_rdma_port_num={{ dingo_cache_rdma_port_num | default(1) }}
+--cache_rdma_device={{ dingo_cache_rdma_device_effective | default(dingo_cache_rdma_device) }}
+--cache_rdma_port_num={{ dingo_cache_rdma_port_num_effective | default(dingo_cache_rdma_port_num | default(1)) }}
 --buffer_pool_mb={{ dingo_cache_buffer_pool_mb | default(1024) }}
 --rdma_max_connections={{ dingo_cache_rdma_max_connections | default(256) }}
 --rdma_heartbeat_interval_s={{ dingo_cache_rdma_heartbeat_interval_s | default(2) }}

@@ -241,6 +241,14 @@ after the operation. A healthy, matching existing target is verified without
 reinitialization; configuration drift, partial deployment and query failures stop
 the run for inspection rather than triggering another initial deploy.
 
+Deploy monitoring separately with `playbooks/06_deploy_monitor.yml`. Its default
+images are `prom/prometheus:v3.13.5`, `prom/node-exporter:v1.12.1` and
+`grafana/grafana:12.2.0`. Regional env inventories prepend
+`{{ dingofs_registry }}/dingofs/` to those image names; `monitor_sync` uses the
+selected DingoFS server image. Choose monitoring ports that are free on the
+selected hosts, including when TiUP already runs Prometheus on port 9090.
+The CLI deploys the monitor assets packaged in the selected server image.
+
 Prepare the compatible **server** CLI manually on the Ansible controller at
 `dingo_cli_pkg_path` (default `/root/dingofs/pkg/dingo`) before deploying servers.
 Server workflows never download a CLI URL and fail if this file is missing.

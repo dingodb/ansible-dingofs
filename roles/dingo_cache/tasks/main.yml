@@ -125,18 +125,47 @@
     mode: "0755"
   when: dingo_cache_use_rdma | default(true) | bool
 
+# The device name is per-host (RoCE mlx5_N, IPoIB ibNsNpN, ...). Unless an
+# explicit name is set, follow IB_IP_PREFIX: the interface carrying the
+# business address leads to its RDMA device in sysfs.
+- name: Discover the RDMA device from the IB network prefix
+  command:
+    argv: [bash, "{{ IB_CHECK_SCRIPT }}", --device-for-prefix, "{{ IB_IP_PREFIX | default('192.168.') }}"]
+  register: _cache_rdma_discovery
+  changed_when: false
+  when:
+    - dingo_cache_use_rdma | default(true) | bool
+    - (dingo_cache_rdma_device | default('', true) | string | trim | lower) in ['', 'auto']
+
 - name: Resolve configured RDMA device and NUMA topology
   command:
     argv: [bash, "{{ IB_CHECK_SCRIPT }}", --resolve, "{{ dingo_cache_rdma_device }}", "{{ dingo_cache_rdma_port_num }}"]
   register: _cache_rdma_mapping
   changed_when: false
-  when: dingo_cache_use_rdma | default(true) | bool
+  when:
+    - dingo_cache_use_rdma | default(true) | bool
+    - (dingo_cache_rdma_device | default('', true) | string | trim | lower) not in ['', 'auto']
+
+- name: Load discovered RDMA topology
+  set_fact:
+    _cache_rdma_info: "{{ _cache_rdma_discovery.stdout | from_json }}"
+  when:
+    - dingo_cache_use_rdma | default(true) | bool
+    - (dingo_cache_rdma_device | default('', true) | string | trim | lower) in ['', 'auto']
+
+- name: Load configured RDMA topology
+  set_fact:
+    _cache_rdma_info: "{{ _cache_rdma_mapping.stdout | from_json }}"
+  when:
+    - dingo_cache_use_rdma | default(true) | bool
+    - (dingo_cache_rdma_device | default('', true) | string | trim | lower) not in ['', 'auto']
 
 - name: Apply resolved RDMA topology
   set_fact:
-    dingo_cache_rdma_device_effective: "{{ (_cache_rdma_mapping.stdout | from_json).device }}"
+    dingo_cache_rdma_device_effective: "{{ _cache_rdma_info.device }}"
+    dingo_cache_rdma_port_num_effective: "{{ _cache_rdma_info.port }}"
     _cache_ib_numa_raw:
-      stdout: "{{ (_cache_rdma_mapping.stdout | from_json).numa_node if (_cache_rdma_mapping.stdout | from_json).numa_node is not none else 'unknown' }}"
+      stdout: "{{ _cache_rdma_info.numa_node if _cache_rdma_info.numa_node is not none else 'unknown' }}"
   when: dingo_cache_use_rdma | default(true) | bool
 
 - name: Report missing RDMA NUMA information
@@ -144,7 +173,7 @@
     msg: "The selected RDMA device has no valid NUMA node. CPU/memory fallback policy will be used."
   when:
     - dingo_cache_use_rdma | default(true) | bool
-    - (_cache_rdma_mapping.stdout | from_json).numa_node is none
+    - _cache_rdma_info.numa_node is none
 
 - name: Sample per-NUMA-node memory usage
   shell: |
@@ -208,7 +237,7 @@
 - name: Log preferred NUMA node decision
   debug:
     msg: >-
-      IB device {{ dingo_cache_rdma_device | default('ib6s200p0') }} on NUMA node
+      IB device {{ dingo_cache_rdma_device_effective | default('unknown') }} on NUMA node
       {{ _cache_ib_node | default('unknown', true) | trim or 'unknown' }}
       (mem {{ (_cache_node_mem | default({})).get(_cache_ib_node | default(''), 'n/a') }}%),
       per-node mem {{ _cache_node_mem | default({}) }}, threshold {{ _cache_mem_thr }}% →
@@ -524,8 +553,8 @@
   import_tasks: numa_binding.yml
 
 # --- RDMA device validation (v5.2+, only when RDMA is on) ---
-# The IB device name (e.g. ib6s200p0) comes from the host's HCA layout — if it
-# differs per node, override dingo_cache_rdma_device per host in host_vars.
+# The effective device was discovered from IB_IP_PREFIX above (or set
+# explicitly per host in host_vars). Validate it before starting the service.
 - name: Check RDMA device exists
   command:
     argv: [bash, "{{ IB_CHECK_SCRIPT }}", --device-status, "{{ dingo_cache_rdma_device_effective | default(dingo_cache_rdma_device) }}"]
@@ -560,9 +589,9 @@
       is not usable on {{ inventory_hostname }} (status:
       {{ rdma_dev_check.stdout | trim }}). missing-kernel means
       /sys/class/infiniband has no such device; missing-verbs means it exists
-      but ibv_devices cannot enumerate it. Set the right name per host via
-      dingo_cache_rdma_device in host_vars, or dingo_cache_use_rdma=false to
-      deploy without RDMA.
+      but ibv_devices cannot enumerate it. Auto-discovery follows IB_IP_PREFIX;
+      fix that mapping or set dingo_cache_rdma_device in host_vars, or
+      dingo_cache_use_rdma=false to deploy without RDMA.
   when:
     - dingo_cache_use_rdma | default(true) | bool
     - rdma_dev_check.stdout is defined

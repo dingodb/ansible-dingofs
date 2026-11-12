@@ -47,6 +47,26 @@ class MonitorTests(unittest.TestCase):
             with self.assertRaises(Exception):
                 module.monitor_services(changed)
 
+    def test_monitor_config_and_cli_calls_are_cluster_scoped(self):
+        defaults = yaml.safe_load((REPO / 'roles/dingo_monitor/defaults/main.yml').read_text())
+        self.assertEqual(defaults['dingo_monitor_config_file'],
+                         '{{ dingo_monitor_config_dir }}/monitor-{{ dingofs_cluster_name }}.yaml')
+
+        tasks = yaml.safe_load((REPO / 'roles/dingo_monitor/tasks/main.yml').read_text())
+        cli_task_names = {
+            'Read the stored monitor configuration',
+            'Check whether the monitor stack is already deployed',
+            'Deploy the monitor stack',
+            'Check monitor status',
+        }
+        selected = [task for task in tasks if task.get('name') in cli_task_names]
+        self.assertEqual(len(selected), len(cli_task_names))
+        for task in selected:
+            with self.subTest(task=task['name']):
+                self.assertEqual(task['environment']['DINGO_CLUSTER'], '{{ dingofs_cluster_name }}')
+                self.assertEqual(task['environment']['dingo_cluster'], '{{ dingofs_cluster_name }}')
+        self.assertFalse(any('checkout' in yaml.safe_dump(task) for task in tasks))
+
 
 class ShellTests(unittest.TestCase):
     def test_mount_registry_matches_exact_host_and_path_fields(self):
@@ -247,7 +267,7 @@ class MonitorDeploymentTests(unittest.TestCase):
                 play=root / 'play.yml'
                 play.write_text(yaml.safe_dump([{'hosts':'localhost','gather_facts':False,
                     'vars':{'ansible_connection':'local','ansible_become':False,
-                            'ansible_python_interpreter':sys.executable,'dingo_cli_bin_dir':str(root),'dingofs_user':'root'},
+                            'ansible_python_interpreter':sys.executable,'dingo_cli_bin_dir':str(root),'dingofs_user':'root','dingofs_cluster_name':'fixture'},
                     'environment':{'SAVED_CONFIG':saved}, 'tasks':tasks[start:end]+[
                         {'copy':{'content':'deploy authorized','dest':str(witness)}, 'when':'_monitor_existing_count | int == 0'}]}]))
                 result=subprocess.run(['ansible-playbook','-i','localhost,',str(play)],cwd=REPO,

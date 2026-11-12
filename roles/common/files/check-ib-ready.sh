@@ -73,13 +73,82 @@ def resolve(name, port):
             'state_path': str(endpoint / 'state')}
 
 
-def ready(mapping, prefix):
+def ready(mapping, prefix, links=None):
     if Path(mapping['state_path']).read_text().strip().split(':')[0] != '4':
         return False
-    links = json.loads(subprocess.check_output(['ip', '-j', '-4', 'addr', 'show'], timeout=10))
+    if links is None:
+        links = json.loads(subprocess.check_output(['ip', '-j', '-4', 'addr', 'show'], timeout=10))
     return any(link['ifname'].split('@')[0] in mapping['netdevs'] and 'UP' in link.get('flags', [])
                and any(address.get('family') == 'inet' and address.get('local', '').startswith(prefix)
                        for address in link.get('addr_info', [])) for link in links)
+
+
+def all_ports():
+    return sorted({int(p.name) for p in Path('/sys/class/infiniband').glob('*/ports/*')
+                   if p.name.isdigit()})
+
+
+def netdev_devices(netdev):
+    """RDMA devices exposed by a netdev under /sys/class/net/<netdev>.
+
+    RoCE netdevs link back to their PCI device here. IPoIB netdevs do not,
+    and are found by the reverse device-to-netdev mapping in resolve().
+    """
+    base = Path('/sys/class/net') / netdev / 'device/infiniband'
+    if not base.is_dir():
+        return []
+    return sorted(entry.name for entry in base.iterdir())
+
+
+def safe_resolve(name, port):
+    try:
+        return resolve(name, port)
+    except ValueError:
+        return None
+
+
+def device_for_prefix(prefix):
+    """Return the one RDMA device/port that carries IB_IP_PREFIX.
+
+    The interface address decides the fabric, matching the readiness check.
+    When the prefix covers more than one ready device the answer is ambiguous,
+    so this never guesses a device name.
+    """
+    prefix = prefix.strip()
+    if not prefix:
+        raise ValueError('IB_IP_PREFIX is empty; set the InfiniBand IPv4 prefix')
+    links = json.loads(subprocess.check_output(['ip', '-j', '-4', 'addr', 'show'], timeout=10))
+    ports = all_ports()
+    matches = {}
+    for link in links:
+        if not any(address.get('family') == 'inet' and address.get('local', '').startswith(prefix)
+                   for address in link.get('addr_info', [])):
+            continue
+        netdev = link['ifname'].split('@')[0]
+        names = netdev_devices(netdev)
+        if not names:
+            names = sorted({mapping['device'] for mapping in
+                            (safe_resolve(netdev, port) for port in ports) if mapping})
+        for name in names:
+            device_ports = [port for port in ports
+                            if (Path('/sys/class/infiniband') / name / 'ports' / str(port)).exists()]
+            ready_ports = [mapping for mapping in
+                           (safe_resolve(name, port) for port in device_ports)
+                           if mapping and netdev in mapping['netdevs']]
+            if not ready_ports and len(device_ports) == 1:
+                # A single-port HCA is unambiguous even without gid ndevs data.
+                fallback = safe_resolve(name, device_ports[0])
+                ready_ports = [fallback] if fallback else []
+            if len(ready_ports) != 1:
+                raise ValueError('cannot pick one port on RDMA device %s for %s '
+                                 '(IB_IP_PREFIX %s)' % (name, netdev, prefix))
+            matches[(name, ready_ports[0]['port'])] = ready_ports[0]
+    if not matches:
+        raise ValueError('no RDMA device carries an interface in IB_IP_PREFIX %s' % prefix)
+    if len(matches) != 1:
+        raise ValueError('IB_IP_PREFIX %s maps to %s RDMA device/port pairs; narrow the '
+                         'prefix or set the RDMA device explicitly' % (prefix, len(matches)))
+    return next(iter(matches.values()))
 
 
 def device_status(name):
@@ -110,14 +179,15 @@ def device_status(name):
 
 
 def main():
+    if len(sys.argv) > 2 and sys.argv[1] == '--device-for-prefix':
+        print(json.dumps(device_for_prefix(sys.argv[2])))
+        return 0
     if len(sys.argv) > 2 and sys.argv[1] == '--device-status':
         print(device_status(sys.argv[2]))
         return 0
     if len(sys.argv) > 1 and sys.argv[1] == '--resolve':
         print(json.dumps(resolve(sys.argv[2], int(sys.argv[3]))))
         return 0
-    name = os.environ.get('RDMA_DEVICE', '')
-    port = int(os.environ.get('RDMA_PORT_NUM', '1'))
     timeout_value = os.environ.get('IB_WAIT_TIMEOUT', '60')
     timeout = int(timeout_value) if timeout_value.isdigit() else 60
     interval_value = os.environ.get('IB_POLL_INTERVAL', '2')
@@ -126,32 +196,29 @@ def main():
     prefix = os.environ.get('IB_IP_PREFIX', '192.168.')
     while True:
         try:
-            if name:
-                mapping = resolve(name, port)
-            else:
-                # Older units supplied only the business IP prefix.
-                links = json.loads(subprocess.check_output(['ip', '-j', '-4', 'addr', 'show'], timeout=10))
-                candidates = {}
-                for link in links:
-                    if not any(a.get('local', '').startswith(prefix) for a in link.get('addr_info', [])):
+            # The fabric is healthy when exactly one RDMA port backs an UP
+            # interface in IB_IP_PREFIX. The configured device name is
+            # deliberately ignored: device naming differs per host and a stale
+            # name must not decide whether the network works.
+            links = json.loads(subprocess.check_output(['ip', '-j', '-4', 'addr', 'show'], timeout=10))
+            ports = all_ports()
+            candidates = {}
+            for link in links:
+                if not any(a.get('local', '').startswith(prefix) for a in link.get('addr_info', [])):
+                    continue
+                for candidate_port in sorted(ports):
+                    try:
+                        candidate = resolve(link['ifname'].split('@')[0], candidate_port)
+                    except ValueError:
                         continue
-                    ports = {port}
-                    if 'RDMA_PORT_NUM' not in os.environ:
-                        ports = {int(p.name) for p in Path('/sys/class/infiniband').glob('*/ports/*') if p.name.isdigit()}
-                    for candidate_port in sorted(ports):
-                        try:
-                            candidate = resolve(link['ifname'].split('@')[0], candidate_port)
-                        except ValueError:
-                            continue
-                        if ready(candidate, prefix):
-                            candidates[(candidate['device'], candidate_port)] = candidate
-                if len(candidates) != 1:
-                    raise ValueError('business IP must map to exactly one RDMA device; configure RDMA_DEVICE')
-                mapping = next(iter(candidates.values()))
-            if ready(mapping, prefix):
-                print('RDMA ready ' + json.dumps(mapping))
-                return 0
-            reason = 'configured RDMA port or associated IP interface is not ready'
+                    if ready(candidate, prefix, links):
+                        candidates[(candidate['device'], candidate_port)] = candidate
+            if len(candidates) != 1:
+                raise ValueError('IB_IP_PREFIX %s must map to exactly one ready RDMA device; found %s'
+                                 % (prefix, len(candidates)))
+            mapping = next(iter(candidates.values()))
+            print('RDMA ready ' + json.dumps(mapping))
+            return 0
         except (OSError, ValueError, subprocess.SubprocessError) as error:
             reason = str(error)
         if time.monotonic() >= deadline:
