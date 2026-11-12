@@ -48,14 +48,6 @@
     - "{{ dingo_monitor_grafana_image }}"
     - "{{ dingo_monitor_sync_image }}"
 
-- name: Activate target DingoFS cluster before monitor operations
-  become: true
-  become_user: "{{ dingofs_user }}"
-  shell: "{{ dingo_cli_bin_dir }}/dingo cluster checkout {{ dingofs_cluster_name }}"
-  args:
-    executable: /bin/bash
-  changed_when: false
-
 - name: Generate monitor.yaml
   template:
     src: monitor.yaml.j2
@@ -85,6 +77,9 @@
 - name: Read the stored monitor configuration
   become: true
   become_user: "{{ dingofs_user }}"
+  environment:
+    DINGO_CLUSTER: "{{ dingofs_cluster_name }}"
+    dingo_cluster: "{{ dingofs_cluster_name }}"
   command:
     argv: ["{{ dingo_cli_bin_dir }}/dingo", monitor, config, show]
   register: _monitor_saved_config
@@ -104,6 +99,9 @@
 - name: Check whether the monitor stack is already deployed
   become: true
   become_user: "{{ dingofs_user }}"
+  environment:
+    DINGO_CLUSTER: "{{ dingofs_cluster_name }}"
+    dingo_cluster: "{{ dingofs_cluster_name }}"
   command:
     argv: ["{{ dingo_cli_bin_dir }}/dingo", monitor, status]
   register: monitor_existing
@@ -119,6 +117,9 @@
 - name: Deploy the monitor stack
   become: true
   become_user: "{{ dingofs_user }}"
+  environment:
+    DINGO_CLUSTER: "{{ dingofs_cluster_name }}"
+    dingo_cluster: "{{ dingofs_cluster_name }}"
   shell: |
     set -o pipefail
     {{ dingo_cli_bin_dir }}/dingo monitor deploy -c {{ dingo_monitor_config_file }} --local \
@@ -141,6 +142,9 @@
 - name: Check monitor status
   become: true
   become_user: "{{ dingofs_user }}"
+  environment:
+    DINGO_CLUSTER: "{{ dingofs_cluster_name }}"
+    dingo_cluster: "{{ dingofs_cluster_name }}"
   shell: |
     set -o pipefail
     {{ dingo_cli_bin_dir }}/dingo monitor status \

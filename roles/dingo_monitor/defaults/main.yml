@@ -24,7 +24,7 @@
 # ============================================================
 
 dingo_monitor_config_dir: "{{ dingofs_home }}/cluster-config"
-dingo_monitor_config_file: "{{ dingo_monitor_config_dir }}/monitor.yaml"
+dingo_monitor_config_file: "{{ dingo_monitor_config_dir }}/monitor-{{ dingofs_cluster_name }}.yaml"
 
 # Lives in the dingo_cli and dingofs_cluster role defaults; declared here too so
 # this role does not depend on group_vars happening to define it.
