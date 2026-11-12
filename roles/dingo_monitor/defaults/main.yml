@@ -38,18 +38,17 @@ dingo_monitor_central_host: "{{ dingo_monitor_hosts | first }}"
 # root for the prometheus/grafana config and data directories.
 dingo_monitor_data_dir: "/mnt/disk3/dingofs-monitor-{{ dingofs_cluster_name }}"
 
-# Fixed tags keep hosts on one release. Verify compatibility with the staged
-# server CLI before rollout. Inventory overrides may use any reference,
-# including :latest; the role does not reject floating tags.
-dingo_monitor_node_exporter_image: "prom/node-exporter:v1.9.1"
+# Fixed repository names and versions; each site's inventory adds its own
+# registry/project prefix. Prometheus 3.13 is the LTS supported through 2027-07-31.
+dingo_monitor_node_exporter_image: "prom/node-exporter:v1.12.1"
 dingo_monitor_node_exporter_port: 9100
 
-dingo_monitor_prometheus_image: "prom/prometheus:v2.53.5"
+dingo_monitor_prometheus_image: "prom/prometheus:v3.13.5"
 dingo_monitor_prometheus_port: 9090
 dingo_monitor_prometheus_retention_time: 7d
 dingo_monitor_prometheus_retention_size: 256GB
 
-dingo_monitor_grafana_image: "grafana/grafana:11.6.0"
+dingo_monitor_grafana_image: "grafana/grafana:12.2.0"
 dingo_monitor_grafana_port: 3000
 
 # monitor_sync ships inside the dingofs server image.
