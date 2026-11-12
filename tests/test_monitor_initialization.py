@@ -20,7 +20,8 @@ REPO = Path(__file__).resolve().parents[1]
 class MonitorInitializationTests(unittest.TestCase):
     def run_play(self, root, variables, tasks):
         variables.update({'ansible_connection': 'local', 'ansible_become': False,
-                          'ansible_python_interpreter': sys.executable, 'dingofs_user': 'root'})
+                          'ansible_python_interpreter': sys.executable, 'dingofs_user': 'root',
+                          'dingofs_cluster_name': 'fixture'})
         play = root / 'play.yml'
         play.write_text(yaml.safe_dump([{'hosts': 'localhost', 'gather_facts': False,
                                         'vars': variables, 'tasks': tasks}]))
