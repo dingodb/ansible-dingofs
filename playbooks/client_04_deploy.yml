@@ -4,7 +4,46 @@
   hosts: client_servers
   remote_user: root
   become: false
-  # Process client hosts in batches of 20% of the selected fleet.
-  serial: "20%"
+  # Process client hosts in batches. Ansible templates play keywords such as
+  # `serial` before inventory group_vars/host_vars are attached to a host, so
+  # the playbook reads the key from the inventory's group_vars/all.yml itself.
+  # Batch size precedence:
+  #   1. -e dingo_client_deploy_batch=<count|%>
+  #   2. DINGO_CLIENT_DEPLOY_SERIAL=<count|%>
+  #   3. dingo_client_deploy_batch in <inventory>/group_vars/all.yml
+  #   4. 20% (a six-host run at 20% is one host per batch)
+  # A value is a host count (2) or a percentage of the hosts selected by
+  # --limit ("50%"). The file entry must be a literal scalar; -e also accepts a
+  # progressive list ([1, "100%"]). Busy mountpoints are still deferred per
+  # instance at any batch size.
+  vars:
+    _client_batch_source: >-
+      {{ ansible_inventory_sources | default([], true) | first | default('', true) }}
+    # A file inventory (hosts.yml/hosts.py) keeps group_vars next to it; a
+    # directory inventory (-i site/) contains group_vars itself.
+    _client_batch_file: >-
+      {{ (lookup('file', _client_batch_source ~ '/group_vars/all.yml', errors='ignore')
+          | default('', true))
+         or (lookup('file', _client_batch_source | dirname ~ '/group_vars/all.yml', errors='ignore')
+             | default('', true)) }}
+    dingo_client_deploy_batch_effective: >-
+      {{ (dingo_client_deploy_batch | default('', true) | string | trim)
+         or (lookup('env', 'DINGO_CLIENT_DEPLOY_SERIAL') | default('', true) | string | trim)
+         or (_client_batch_file
+             | regex_findall('(?m)^dingo_client_deploy_batch\s*:[^0-9\n]*([0-9]+%?)')
+             | first | default('', true))
+         or '20%' }}
+  serial: "{{ dingo_client_deploy_batch_effective }}"
+  pre_tasks:
+    - name: Warn that an inventory batch setting cannot drive play-level serial
+      debug:
+        msg: >-
+          dingo_client_deploy_serial is defined ({{ dingo_client_deploy_serial }}),
+          but play-level `serial` is templated before inventory variables load,
+          so that value is ignored. Use dingo_client_deploy_batch in
+          group_vars/all.yml, or pass -e dingo_client_deploy_batch=<count|%> /
+          DINGO_CLIENT_DEPLOY_SERIAL=<count|%>.
+      when: dingo_client_deploy_serial is defined
+      run_once: true
   roles:
     - dingo_client

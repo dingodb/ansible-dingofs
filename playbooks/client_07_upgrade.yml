@@ -10,7 +10,49 @@
   remote_user: root
   become: false
   gather_facts: true
-  # Upgrade in batches of 20%; busy instances remain deferred.
-  serial: "20%"
+  # Upgrade in batches like the deploy playbook; busy instances remain deferred.
+  # Play keywords are templated before inventory variables load, so the batch
+  # size is read from the inventory's group_vars/all.yml directly.
+  # Precedence:
+  #   1. -e dingo_client_upgrade_batch, then -e dingo_client_deploy_batch
+  #   2. DINGO_CLIENT_UPGRADE_SERIAL, then DINGO_CLIENT_DEPLOY_SERIAL
+  #   3. dingo_client_upgrade_batch, then dingo_client_deploy_batch in
+  #      <inventory>/group_vars/all.yml
+  #   4. 20%
+  vars:
+    _client_batch_source: >-
+      {{ ansible_inventory_sources | default([], true) | first | default('', true) }}
+    _client_batch_file: >-
+      {{ (lookup('file', _client_batch_source ~ '/group_vars/all.yml', errors='ignore')
+          | default('', true))
+         or (lookup('file', _client_batch_source | dirname ~ '/group_vars/all.yml', errors='ignore')
+             | default('', true)) }}
+    dingo_client_upgrade_batch_effective: >-
+      {{ (dingo_client_upgrade_batch | default('', true) | string | trim)
+         or (dingo_client_deploy_batch | default('', true) | string | trim)
+         or (lookup('env', 'DINGO_CLIENT_UPGRADE_SERIAL') | default('', true) | string | trim)
+         or (lookup('env', 'DINGO_CLIENT_DEPLOY_SERIAL') | default('', true) | string | trim)
+         or (_client_batch_file
+             | regex_findall('(?m)^dingo_client_upgrade_batch\s*:[^0-9\n]*([0-9]+%?)')
+             | first | default('', true))
+         or (_client_batch_file
+             | regex_findall('(?m)^dingo_client_deploy_batch\s*:[^0-9\n]*([0-9]+%?)')
+             | first | default('', true))
+         or '20%' }}
+  serial: "{{ dingo_client_upgrade_batch_effective }}"
+  pre_tasks:
+    - name: Warn that an inventory batch setting cannot drive play-level serial
+      debug:
+        msg: >-
+          dingo_client_upgrade_serial or dingo_client_deploy_serial is defined,
+          but play-level `serial` is templated before inventory variables load,
+          so that value is ignored. Use dingo_client_upgrade_batch (or
+          dingo_client_deploy_batch) in group_vars/all.yml, or pass
+          -e dingo_client_upgrade_batch=<count|%> /
+          DINGO_CLIENT_UPGRADE_SERIAL=<count|%>.
+      when: >-
+        dingo_client_upgrade_serial is defined
+        or dingo_client_deploy_serial is defined
+      run_once: true
   roles:
     - dingo_client_upgrade
