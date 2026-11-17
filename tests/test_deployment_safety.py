@@ -6,6 +6,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -458,6 +459,138 @@ class RdmaAutoDiscoveryTests(unittest.TestCase):
 
     def test_explicit_device_still_overrides_discovery(self):
         self.assertEqual(self.run_play('mlx5_9'), 'mlx5_9 1')
+
+
+class DeployBatchTests(unittest.TestCase):
+    """Client rollout batching is configurable at run time, not hard-coded.
+
+    Play keywords are templated before group_vars are attached to hosts, so the
+    batch size comes from an extra var, the environment, or the inventory's
+    group_vars/all.yml file (which the playbook reads directly). These tests run
+    each playbook's own vars/serial block against six local hosts.
+    """
+
+    HOSTS = ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']
+
+    def play(self, name):
+        return yaml.safe_load((REPO / 'playbooks' / name).read_text())[0]
+
+    def run_play(self, name, env=None, extra=None, group_vars=None,
+                 inventory_directory=False):
+        play = self.play(name)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            inventory_root = root
+            if inventory_directory:
+                inventory_root = root / 'inventory'
+                inventory_root.mkdir()
+            inventory = inventory_root / 'hosts.ini'
+            inventory.write_text('[client_servers]\n' + ''.join(
+                '%s ansible_connection=local\n' % host for host in self.HOSTS))
+            if group_vars:
+                (inventory_root / 'group_vars').mkdir()
+                (inventory_root / 'group_vars' / 'all.yml').write_text(
+                    yaml.safe_dump(group_vars))
+            playbook = root / 'play.yml'
+            playbook.write_text(yaml.safe_dump([{
+                'hosts': 'client_servers',
+                'gather_facts': False,
+                'vars': play['vars'],
+                'serial': play['serial'],
+                'pre_tasks': play.get('pre_tasks', []),
+                'tasks': [{'debug': {'msg': 'batch={{ ansible_play_batch | join(",") }}'}}],
+            }]))
+            source = inventory_root if inventory_directory else inventory
+            command = ['ansible-playbook', '-i', str(source), str(playbook)]
+            if extra:
+                command += ['-e', extra]
+            result = subprocess.run(
+                command, cwd=REPO,
+                env=dict(os.environ, ANSIBLE_CONFIG=str(REPO / 'ansible.cfg'), **(env or {})),
+                capture_output=True, text=True, timeout=120)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            # The debug task prints once per host; collapse each batch's lines.
+            batches = dict.fromkeys(re.findall(r'batch=([\w,]+)', result.stdout))
+            return [len(batch.split(',')) for batch in batches], result.stdout
+
+    def test_deploy_default_is_a_conservative_twenty_percent(self):
+        self.assertEqual(self.run_play('client_04_deploy.yml')[0], [1] * 6)
+
+    def test_deploy_batch_is_configurable_with_a_percentage(self):
+        for env, extra in (({'DINGO_CLIENT_DEPLOY_SERIAL': '50%'}, None),
+                           (None, 'dingo_client_deploy_batch=50%')):
+            self.assertEqual(self.run_play('client_04_deploy.yml', env, extra)[0], [3, 3])
+
+    def test_deploy_batch_is_configurable_with_a_host_count(self):
+        self.assertEqual(self.run_play('client_04_deploy.yml', None,
+                                       'dingo_client_deploy_batch=2')[0], [2, 2, 2])
+
+    def test_upgrade_falls_back_to_the_deploy_batch_setting(self):
+        self.assertEqual(self.run_play('client_07_upgrade.yml',
+                                       {'DINGO_CLIENT_DEPLOY_SERIAL': '50%'})[0], [3, 3])
+
+    def test_upgrade_accepts_its_own_batch_setting(self):
+        self.assertEqual(self.run_play('client_07_upgrade.yml',
+                                       {'DINGO_CLIENT_UPGRADE_SERIAL': '3'})[0], [3, 3])
+
+    def test_deploy_batch_is_read_from_the_inventory_file(self):
+        # Requested behaviour: set the batch size in the inventory's
+        # group_vars/all.yml instead of passing -e or an env var on every run.
+        # Cover both a file inventory and a -i directory: group_vars sits next
+        # to the file in one case and inside the directory in the other.
+        for inventory_directory in (False, True):
+            with self.subTest(inventory_directory=inventory_directory):
+                batches, output = self.run_play(
+                    'client_04_deploy.yml',
+                    group_vars={'dingo_client_deploy_batch': '50%'},
+                    inventory_directory=inventory_directory)
+                self.assertEqual(batches, [3, 3])
+                self.assertNotIn('that value is ignored', output)
+
+    def test_upgrade_uses_its_own_file_key_then_the_deploy_key(self):
+        for key in ('dingo_client_upgrade_batch', 'dingo_client_deploy_batch'):
+            with self.subTest(key=key):
+                self.assertEqual(self.run_play(
+                    'client_07_upgrade.yml', group_vars={key: '3'})[0], [3, 3])
+
+    def test_extra_var_and_environment_override_the_inventory_file(self):
+        variables = {'dingo_client_deploy_batch': '20%'}
+        self.assertEqual(self.run_play(
+            'client_04_deploy.yml', None, 'dingo_client_deploy_batch=3',
+            group_vars=variables)[0], [3, 3])
+        self.assertEqual(self.run_play(
+            'client_04_deploy.yml', {'DINGO_CLIENT_DEPLOY_SERIAL': '2'},
+            group_vars=variables)[0], [2, 2, 2])
+
+    def test_an_inventory_value_is_ignored_and_explained(self):
+        # The reported failure: group_vars had 50% but play-level serial could
+        # not see it, so six hosts still ran one at a time -- silently.
+        batches, output = self.run_play(
+            'client_04_deploy.yml', group_vars={'dingo_client_deploy_serial': '50%'})
+        self.assertEqual(batches, [1] * 6)
+        self.assertIn('that value is ignored', output)
+
+    def test_no_warning_when_the_supported_setting_is_used(self):
+        batches, output = self.run_play('client_04_deploy.yml', None,
+                                        'dingo_client_deploy_batch=3')
+        self.assertEqual(batches, [3, 3])
+        self.assertNotIn('that value is ignored', output)
+
+    def test_shipped_inventory_uses_the_key_the_playbooks_read(self):
+        variables = yaml.safe_load((REPO / 'inventory/group_vars/all.yml').read_text())
+        self.assertEqual(variables['dingo_client_deploy_batch'], '20%')
+        for name in ('dingo_client_deploy_serial', 'dingo_client_upgrade_serial'):
+            self.assertNotIn(name, variables)
+
+    def test_playbooks_warn_when_inventory_sets_the_old_serial_name(self):
+        for name in ('client_04_deploy.yml', 'client_07_upgrade.yml'):
+            play = self.play(name)
+            self.assertTrue(any('inventory batch setting' in task.get('name', '')
+                                for task in play.get('pre_tasks', [])), name)
+
+    def test_forks_allows_a_batch_larger_than_the_ansible_default(self):
+        config = (REPO / 'ansible.cfg').read_text()
+        self.assertRegex(config, r'(?m)^forks\s*=\s*([6-9]|\d{2,})\s*$')
 
 
 class MountTests(unittest.TestCase):

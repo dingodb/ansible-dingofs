@@ -970,10 +970,42 @@ rotate passwords or migrate database data. Monitor image versions remain pinned
 by default. Inventory overrides, including `:latest`, are accepted.
 
 Client deployment (`client_04_deploy.yml`) and upgrade (`client_07_upgrade.yml`)
-run in batches of 20% of the selected hosts (`serial: "20%"`);
-`client_site.yml` imports that deployment
-entry point. Cache deployment remains suitable for selecting hosts with `--limit`;
-its upgrade playbook also keeps `serial: 1`.
+run in batches controlled by `dingo_client_deploy_batch` and
+`dingo_client_upgrade_batch` (default `"20%"` of the selected hosts);
+`client_site.yml` imports that deployment entry point. Percentages are computed
+per run, so `"20%"` on a six-host run is a batch of one.
+
+Because Ansible templates the play-level `serial` keyword before inventory
+variables are attached to a host, these values are read by the playbook directly
+from the inventory's `group_vars/all.yml` rather than through normal variable
+precedence. Configure the file:
+
+```yaml
+# <inventory>/group_vars/all.yml
+dingo_client_deploy_batch: "50%"    # clients per batch for deploy
+# dingo_client_upgrade_batch: "25%" # optional; falls back to the deploy value
+```
+
+Keep the value a literal scalar (a count or a percentage). The playbook locates
+`group_vars/all.yml` next to the inventory file, or inside the inventory
+directory when `-i` points at a directory. Any override still wins over the file:
+
+```bash
+# precedence: -e, then environment, then group_vars/all.yml, then 20%
+ansible-playbook playbooks/client_04_deploy.yml -e dingo_client_deploy_batch=4
+DINGO_CLIENT_DEPLOY_SERIAL=4 ansible-playbook playbooks/client_04_deploy.yml
+ansible-playbook playbooks/client_04_deploy.yml -e dingo_client_deploy_batch="100%"
+ansible-playbook playbooks/client_07_upgrade.yml -e dingo_client_upgrade_batch=2
+```
+
+`-e` also accepts a list of progressive batch sizes
+(`-e '{"dingo_client_deploy_batch": [1, "100%"]}'`). The old
+`dingo_client_deploy_serial` / `dingo_client_upgrade_serial` names are not read;
+the playbooks warn when they are defined. The batch size is capped by `forks` in
+`ansible.cfg` (set to 20 here; Ansible's default is 5). Busy client mountpoints
+are still deferred per instance at any batch size, so raising the batch does not
+restart a mount in use. Cache deployment remains fully parallel and is best
+scoped with `--limit`; its upgrade playbook also keeps `serial: 1`.
 
 Cache deployment, optional binary-only updates and client deployment persist
 `.restart-required` before changing service files. An interrupted or busy restart retains this marker for the next
