@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import sys
 import time
+import traceback
 
 
 def expand(value):
@@ -60,6 +61,10 @@ def process_state(process):
     """A zombie leader may still have workers after pthread_exit()."""
     try:
         status = (process / 'status').read_text()
+    except ProcessLookupError:
+        # procfs answers ESRCH (not ENOENT) for some files once the task is
+        # reaped. The task is gone, so it holds no CPUs: skip its claims.
+        return None, 0
     except FileNotFoundError:
         if process.exists():
             raise ValueError('process status unavailable for pid=' + process.name)
@@ -114,6 +119,8 @@ def thread_claims(process, online, minimum):
             continue
         try:
             status = (thread / 'status').read_text()
+        except ProcessLookupError:
+            continue  # this thread was reaped mid-scan; keep other threads' claims
         except FileNotFoundError:
             if not thread.exists():
                 continue  # this thread exited; keep other threads' claims
@@ -157,7 +164,12 @@ def process_claims(args, online, minimum):
             else:
                 argv = [os.fsdecode(value) for value in raw.rstrip(b'\0').split(b'\0')]
                 if self_exe:
-                    executable = re.sub(r' \(deleted\)$', '', os.readlink(process / 'exe'))
+                    try:
+                        executable = re.sub(r' \(deleted\)$', '', os.readlink(process / 'exe'))
+                    except ProcessLookupError:
+                        # /proc/<pid>/exe reports ESRCH (where sibling files report ENOENT)
+                        # when the task is reaped between enumeration and the link read.
+                        continue
                     if os.path.realpath(executable) == self_exe:
                         self_matches += 1
                         continue
@@ -166,7 +178,7 @@ def process_claims(args, online, minimum):
                 except ValueError as error:
                     raise ValueError('invalid cpuset reservation for pid=' + process.name) from error
                 affinities = thread_claims(process, online, minimum)
-        except FileNotFoundError as error:
+        except (FileNotFoundError, ProcessLookupError) as error:
             if not process_alive(process):
                 continue
             raise ValueError('CPU ownership incomplete for live pid=' + process.name) from error
@@ -316,6 +328,9 @@ if __name__ == '__main__':
     # collection/parsing failure must not be mistaken for a forceable conflict.
     except Exception as error:
         print('CPU detection failed: ' + str(error), file=sys.stderr)
+        # Keep the failing line: without it the role only reports the message
+        # and a transient /proc race cannot be told apart from a real bug.
+        traceback.print_exc(file=sys.stderr)
         sys.exit(3)
 
 PYCPU
