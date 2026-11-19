@@ -117,6 +117,41 @@ class ThreadOwnershipTests(unittest.TestCase):
         with patch.object(Path, 'read_text', racing_read):
             self.assertEqual(set(self.collect()[3]), {0})
 
+    def test_process_vanishing_between_cmdline_and_exe_read_is_skipped(self):
+        survivor = self.process(pid=900003, exe='/opt/other/dingo-cache')
+        victim = self.process(pid=900005, exe='/opt/other/dingo-cache')
+        original = os.readlink
+        def racing_readlink(path, *args, **kwargs):
+            if str(path) == str(victim / 'exe'):
+                raise ProcessLookupError(3, 'No such process')
+            return original(path, *args, **kwargs)
+        with patch.object(os, 'readlink', racing_readlink):
+            self.assertEqual(set(self.collect()[3]), {0, 1})
+        self.assertTrue(survivor.exists())
+
+    def test_thread_vanishing_during_status_read_is_skipped(self):
+        process = self.process(threads={900003: '0-7', 900004: '0', 900005: '2'})
+        vanished = process / 'task/900005/status'
+        original = Path.read_text
+        def racing_read(path, *args, **kwargs):
+            if path == vanished:
+                raise ProcessLookupError(3, 'No such process')
+            return original(path, *args, **kwargs)
+        with patch.object(Path, 'read_text', racing_read):
+            self.assertEqual(set(self.collect()[3]), {0})
+
+    def test_process_vanishing_during_leader_status_read_is_skipped(self):
+        process = self.process()
+        (process / 'cmdline').write_bytes(b'')
+        vanished = process / 'status'
+        original = Path.read_text
+        def racing_read(path, *args, **kwargs):
+            if path == vanished:
+                raise ProcessLookupError(3, 'No such process')
+            return original(path, *args, **kwargs)
+        with patch.object(Path, 'read_text', racing_read):
+            self.assertEqual(self.collect()[3], {})
+
     def test_process_exit_is_tolerated_but_missing_live_task_status_is_not(self):
         process = self.process()
         shutil.rmtree(process / 'task')
@@ -172,6 +207,7 @@ class ThreadOwnershipTests(unittest.TestCase):
             exec(compile(entry, 'cpuset-entry', 'exec'), self.code)
         self.assertEqual(result.exception.code, 3)
         self.assertIn('CPU detection failed', errors.getvalue())
+        self.assertIn('Traceback (most recent call last)', errors.getvalue())
         self.assertNotIn('SUGGEST=', output.getvalue())
         self.assertNotIn('FORCED=', output.getvalue())
 
