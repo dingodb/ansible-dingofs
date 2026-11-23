@@ -398,6 +398,14 @@ ansible-playbook playbooks/cache_05_deploy.yml
 ansible-playbook playbooks/cache_99_status.yml
 ```
 
+The cache status check requires an active service, an open port on its configured
+listen IP, and zero errors in that unit's journal over the last 72 hours, including
+earlier starts within the window. It counts journal priorities 0–3, glog `E`/`F`
+records, and messages starting with `Error:` or `Fatal:`. The report counts every
+occurrence and shows the latest sample for up to three distinct errors. A journal
+read failure fails the check.
+To check only the last hour, pass `-e dingo_cache_status_log_hours=1`.
+
 All cache playbooks connect with `remote_user: root`.
 
 ## DingoFS Client Deployment
