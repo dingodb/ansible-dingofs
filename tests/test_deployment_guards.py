@@ -56,15 +56,24 @@ class GuardTests(unittest.TestCase):
                     result = self.run_tasks(tasks, {'rqlite_node_dir': wanted, 'rqlite_download_checksum': 'sha256:' + 'a' * 64})
                     self.assertEqual(result.returncode == 0, success, result.stdout + result.stderr)
 
-    def test_cache_health_requires_service_port_and_address(self):
+    def test_cache_health_requires_service_port_address_and_clean_journal(self):
         task = yaml.safe_load((REPO / 'playbooks/cache_99_status.yml').read_text())[0]['tasks'][-1]
-        for active, failed, address, success in [('active', False, '127.0.0.1', True),
-                                                ('inactive', False, '127.0.0.1', False),
-                                                ('active', True, '127.0.0.1', False),
-                                                ('active', False, '', False)]:
-            result = self.run_tasks([task], {'service_info': {'status': {'ActiveState': active}},
-                                            'listen_ip_conf': {'stdout': address}, 'port_check': {'failed': failed}})
-            self.assertEqual(result.returncode == 0, success, result.stdout + result.stderr)
+        for active, failed, address, errors, success in [('active', False, '127.0.0.1', 0, True),
+                                                        ('inactive', False, '127.0.0.1', 0, False),
+                                                        ('active', True, '127.0.0.1', 0, False),
+                                                        ('active', False, '', 0, False),
+                                                        ('active', False, '127.0.0.1', 28, False)]:
+            with self.subTest(active=active, failed=failed, address=address, errors=errors):
+                result = self.run_tasks([task], {
+                    'dingo_cache_service_name': 'dingo-cache-v5.2', 'dingo_cache_listen_port': 11100,
+                    'service_info': {'status': {'ActiveState': active}}, 'listen_ip_conf': {'stdout': address},
+                    'port_check': {'failed': failed}, 'cache_journal': {
+                        'lookback_hours': 72, 'error_count': errors,
+                        'samples': ['queue pair to rtr', 'another error'] if errors else []}})
+                self.assertEqual(result.returncode == 0, success, result.stdout + result.stderr)
+                self.assertIn('{} journal error(s)'.format(errors), result.stdout)
+                if errors:
+                    self.assertRegex(result.stdout, r'queue pair to rtr\n\s*another error')
 
     def test_client_health_requires_the_intended_fuse_filesystem(self):
         task = yaml.safe_load((REPO / 'playbooks/client_99_status.yml').read_text())[0]['tasks'][-1]

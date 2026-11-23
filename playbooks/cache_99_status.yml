@@ -20,10 +20,11 @@
     # address the service actually bound to.
     - name: Read listen IP from dingo-cache conf
       shell: >-
-        grep '^--listen_ip=' {{ dingo_cache_base_dir }}/dingo-cache.conf 2>/dev/null
+        grep '^--listen_ip=' {{ (dingo_cache_base_dir ~ '/dingo-cache.conf') | quote }} 2>/dev/null
         | sed 's/^--listen_ip=//' || true
       register: listen_ip_conf
       changed_when: false
+      check_mode: false
 
     - name: Check dingo-cache listen port
       wait_for:
@@ -32,6 +33,7 @@
         timeout: 5
       register: port_check
       ignore_errors: true
+      check_mode: false
 
     - name: Display port status
       debug:
@@ -61,14 +63,32 @@
         {% endif %}
       register: cache_disks
       changed_when: false
+      check_mode: false
 
     - name: Display cache disks
       debug:
         msg: "{{ cache_disks.stdout_lines }}"
 
+    - name: Scan the dingo-cache service journal
+      dingofs_cache_journal:
+        unit: "{{ service_info.status.Id | default(dingo_cache_service_name) }}"
+        lookback_hours: "{{ dingo_cache_status_log_hours | default(omit) }}"
+      register: cache_journal
+
     - name: Require a healthy cache service
+      vars:
+        _cache_health_summary: |-
+          {{ dingo_cache_service_name }} is {{ service_info.status.ActiveState | default('unknown') }}.
+          Listen IP {{ listen_ip_conf.stdout | trim | default('(missing)', true) }}, port {{ dingo_cache_listen_port }} {{ 'open' if port_check is succeeded else 'closed' }}.
+          {{ cache_journal.error_count }} journal error(s) in the last {{ cache_journal.lookback_hours }}h.
+          {% for sample in cache_journal.samples %}
+          {{ sample }}
+          {% endfor %}
       assert:
         that:
           - service_info.status.ActiveState | default('unknown') == 'active'
           - listen_ip_conf.stdout | trim | length > 0
           - port_check is succeeded
+          - cache_journal.error_count == 0
+        fail_msg: "{{ _cache_health_summary | trim }}"
+        success_msg: "{{ _cache_health_summary | trim }}"
