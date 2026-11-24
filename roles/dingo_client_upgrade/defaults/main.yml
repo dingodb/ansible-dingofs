@@ -3,6 +3,10 @@
 # Role: dingo_client_upgrade - Upgrade dingo-client binaries
 # ============================================================
 
+# Optional runtime filter (comma-separated string or list of fsname, /mount_point,
+# or service_name) to upgrade a subset of enabled dingo_clients entries.
+dingo_client_only: ""
+
 # Binary source (from control node)
 dingo_client_upgrade_bin_src: "{{ dingo_client_bin_local_src }}"
 

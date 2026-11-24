@@ -12,6 +12,49 @@
     fail_msg: "Define dingo_clients; uninstall never invents a default filesystem."
   when: dingo_uninstall_kind == 'client'
 
+- name: Validate and select dingo-client instances for uninstall
+  vars:
+    _play_clients: "{{ dingo_clients if (dingo_clients is defined and 'dingo_clients' not in hostvars[inventory_hostname]) else none }}"
+  set_fact:
+    _dingo_clients_play_plan: >-
+      {{ ansible_play_hosts_all | dingo_client_validate_play(
+           hostvars,
+           only=dingo_client_only | default(''),
+           include_disabled=true,
+           play_clients=_play_clients,
+           default_client=none,
+           default_version_suffix=dingo_client_version_suffix | default('')) }}
+    _dingo_clients_selection: >-
+      {{ dingo_clients | dingo_client_select(
+           only=dingo_client_only | default(''),
+           version_suffix=dingo_client_version_suffix | default(''),
+           include_disabled=true) }}
+  when: dingo_uninstall_kind == 'client'
+
+- name: Fail if dingo_client_only matches no configured client in this uninstall play
+  assert:
+    that:
+      - _dingo_clients_play_plan.valid | bool
+    fail_msg: "{{ _dingo_clients_play_plan.error }}"
+  when: dingo_uninstall_kind == 'client'
+
+- name: Set effective client uninstall target list for this host
+  set_fact:
+    _dingo_clients_selected: "{{ _dingo_clients_selection.selected }}"
+    _dingo_clients_has_targets: "{{ (_dingo_clients_selection.selected | length) > 0 }}"
+  when: dingo_uninstall_kind == 'client'
+
+- name: Report host skipped with no selected dingo-client instances for uninstall
+  debug:
+    msg: >-
+      SKIP {{ inventory_hostname }}: no dingo-client instances selected for uninstall
+      {%- if _dingo_clients_selection.selectors | length > 0 %}
+       for dingo_client_only={{ _dingo_clients_selection.selectors | join(',') }}
+      {%- endif %}.
+  when:
+    - dingo_uninstall_kind == 'client'
+    - not (_dingo_clients_has_targets | bool)
+
 - name: Uninstall each explicitly configured client
   include_tasks: instance.yml
   vars:
@@ -21,7 +64,7 @@
     _u_fsname: "{{ item.fsname }}"
     _u_mds: "{{ item.mds_addrs | default(dingo_client_mds_addrs | default('')) }}"
     _u_group: ""
-  loop: "{{ dingo_clients | default([]) }}"
+  loop: "{{ _dingo_clients_selected | default([]) }}"
   loop_control:
     label: "{{ item.fsname }} -> {{ item.mount_point }}"
   when: dingo_uninstall_kind == 'client'

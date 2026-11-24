@@ -6,18 +6,64 @@
   become: false
   gather_facts: false
   tasks:
-    - name: Set default list of dingo clients if not provided
+    - name: Validate and select dingo-client instances for this play
+      vars:
+        _play_clients: "{{ dingo_clients if (dingo_clients is defined and 'dingo_clients' not in hostvars[inventory_hostname]) else none }}"
+        _default_client: >-
+          {{ {'fsname': dingo_client_fsname, 'mount_point': dingo_client_mount_point}
+             if (dingo_client_fsname is defined and dingo_client_mount_point is defined)
+             else none }}
+        _host_clients: "{{ dingo_clients if dingo_clients is defined else ([_default_client] if _default_client is not none else []) }}"
       set_fact:
-        dingo_clients:
-          - fsname: "{{ dingo_client_fsname }}"
-            mount_point: "{{ dingo_client_mount_point }}"
-      when: dingo_clients is not defined
+        _dingo_clients_play_plan: >-
+          {{ ansible_play_hosts_all | dingo_client_validate_play(
+               hostvars,
+               only=dingo_client_only | default(''),
+               include_disabled=false,
+               play_clients=_play_clients,
+               default_client=_default_client,
+               default_version_suffix=dingo_client_version_suffix | default('')) }}
+        _dingo_clients_selection: >-
+          {{ _host_clients | dingo_client_select(
+               only=dingo_client_only | default(''),
+               version_suffix=dingo_client_version_suffix | default(''),
+               include_disabled=false) }}
+
+    - name: Fail if dingo_client_only matches no enabled client in this play
+      assert:
+        that:
+          - _dingo_clients_play_plan.valid | bool
+        fail_msg: "{{ _dingo_clients_play_plan.error }}"
+
+    - name: Set effective client status target list for this host
+      set_fact:
+        _dingo_clients_selected: "{{ _dingo_clients_selection.selected }}"
+        _dingo_clients_has_targets: "{{ (_dingo_clients_selection.selected | length) > 0 }}"
+
+    - name: Report disabled client instances skipped by selection on this host
+      debug:
+        msg: >-
+          SKIP disabled dingo-client instance(s) on {{ inventory_hostname }} (enabled: false):
+          {{ _dingo_clients_selection.skipped_disabled | map(attribute='fsname') | list | join(', ') }}
+      when: _dingo_clients_selection.skipped_disabled | length > 0
+
+    - name: Report host skipped with no selected dingo-client instances
+      debug:
+        msg: >-
+          SKIP {{ inventory_hostname }}: no dingo-client instances selected
+          {%- if _dingo_clients_selection.selectors | length > 0 %}
+           for dingo_client_only={{ _dingo_clients_selection.selectors | join(',') }}
+          {%- endif %}
+          {%- if _dingo_clients_selection.disabled | length > 0 %}
+           (disabled: {{ _dingo_clients_selection.disabled | map(attribute='fsname') | list | join(', ') }})
+          {%- endif %}.
+      when: not (_dingo_clients_has_targets | bool)
 
     - name: Check dingo-client service status
       systemd:
         name: "{{ item.service_name | default('dingofs-mount-' ~ item.fsname ~ (dingo_client_version_suffix | default(''))) }}"
       register: service_info
-      loop: "{{ dingo_clients }}"
+      loop: "{{ _dingo_clients_selected }}"
       loop_control:
         label: "{{ item.fsname }}"
 
@@ -25,7 +71,7 @@
       fail:
         msg: "{{ inventory_hostname }}: {{ item.service_name | default('dingofs-mount-' ~ item.fsname ~ (dingo_client_version_suffix | default(''))) }} is {{ service_info.results[my_idx].status.ActiveState | default('unknown') }}"
       when: (service_info.results[my_idx].status.ActiveState | default('unknown')) != 'active'
-      loop: "{{ dingo_clients }}"
+      loop: "{{ _dingo_clients_selected }}"
       loop_control:
         label: "{{ item.fsname }}"
         index_var: my_idx
@@ -33,7 +79,7 @@
     - name: Display active service status
       debug:
         msg: "{{ inventory_hostname }}: {{ item.service_name | default('dingofs-mount-' ~ item.fsname ~ (dingo_client_version_suffix | default(''))) }} is active"
-      loop: "{{ dingo_clients }}"
+      loop: "{{ _dingo_clients_selected }}"
       loop_control:
         label: "{{ item.fsname }}"
 
@@ -42,7 +88,7 @@
       register: mount_check
       changed_when: false
       failed_when: false
-      loop: "{{ dingo_clients }}"
+      loop: "{{ _dingo_clients_selected }}"
       loop_control:
         label: "{{ item.mount_point }}"
 
@@ -57,7 +103,7 @@
       shell: df -h {{ item.mount_point }} 2>/dev/null || echo 'Not mounted'
       register: df_info
       changed_when: false
-      loop: "{{ dingo_clients }}"
+      loop: "{{ _dingo_clients_selected }}"
       loop_control:
         label: "{{ item.mount_point }}"
 
@@ -77,7 +123,7 @@
     - name: Read filesystem identity for each mount
       command:
         argv: [findmnt, -J, -o, 'FSTYPE,SOURCE', --mountpoint, "{{ item.mount_point }}"]
-      loop: "{{ dingo_clients }}"
+      loop: "{{ _dingo_clients_selected }}"
       register: _client_mount_types
       changed_when: false
       failed_when: false

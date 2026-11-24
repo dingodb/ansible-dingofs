@@ -8,34 +8,90 @@
 #   4. Execute script (restarts only idle mountpoints)
 # ============================================================
 
+- name: Validate and select dingo-client instances for this play
+  vars:
+    _play_clients: "{{ dingo_clients if (dingo_clients is defined and 'dingo_clients' not in hostvars[inventory_hostname]) else none }}"
+  set_fact:
+    _dingo_clients_play_plan: >-
+      {{ ansible_play_hosts_all | dingo_client_validate_play(
+           hostvars,
+           only=dingo_client_only | default(''),
+           include_disabled=false,
+           play_clients=_play_clients,
+           default_client=none,
+           default_version_suffix=dingo_client_version_suffix | default('')) }}
+    _dingo_clients_selection: >-
+      {{ dingo_clients | dingo_client_select(
+           only=dingo_client_only | default(''),
+           version_suffix=dingo_client_version_suffix | default(''),
+           include_disabled=false) }}
+
+- name: Fail if dingo_client_only matches no enabled client in this play
+  assert:
+    that:
+      - _dingo_clients_play_plan.valid | bool
+    fail_msg: "{{ _dingo_clients_play_plan.error }}"
+
+- name: Set effective client upgrade target list for this host
+  set_fact:
+    _dingo_clients_enabled: "{{ _dingo_clients_selection.enabled }}"
+    _dingo_clients_selected: "{{ _dingo_clients_selection.selected }}"
+    _dingo_clients_has_targets: "{{ (_dingo_clients_selection.selected | length) > 0 }}"
+
+- name: Report disabled client instances skipped by selection on this host
+  debug:
+    msg: >-
+      SKIP disabled dingo-client instance(s) on {{ inventory_hostname }} (enabled: false):
+      {{ _dingo_clients_selection.skipped_disabled | map(attribute='fsname') | list | join(', ') }}
+  when: _dingo_clients_selection.skipped_disabled | length > 0
+
+- name: Report host skipped with no selected dingo-client instances
+  debug:
+    msg: >-
+      SKIP {{ inventory_hostname }}: no dingo-client instances selected
+      {%- if _dingo_clients_selection.selectors | length > 0 %}
+       for dingo_client_only={{ _dingo_clients_selection.selectors | join(',') }}
+      {%- endif %}
+      {%- if _dingo_clients_selection.disabled | length > 0 %}
+       (disabled: {{ _dingo_clients_selection.disabled | map(attribute='fsname') | list | join(', ') }})
+      {%- endif %}.
+  when: not (_dingo_clients_has_targets | bool)
+
 # --- Ensure psmisc (fuser) is installed ---
 - name: Ensure psmisc is installed (provides fuser)
   package:
     name: psmisc
     state: present
-  when: ansible_os_family == "RedHat"
+  when:
+    - _dingo_clients_has_targets | default(true) | bool
+    - ansible_os_family == "RedHat"
 
 - name: Ensure psmisc is installed (provides fuser)
   apt:
     name: psmisc
     state: present
-  when: ansible_os_family == "Debian"
+  when:
+    - _dingo_clients_has_targets | default(true) | bool
+    - ansible_os_family == "Debian"
 
 - name: Install the shared mount usage checker
   copy:
     src: "{{ role_path }}/../common/files/dingofs_mount_usage_check.sh"
     dest: "{{ dingo_client_mount_check_script }}"
     mode: "0755"
+  when: _dingo_clients_has_targets | default(true) | bool
 
 - name: Update the standalone restart checker for manual use
   template:
     src: dingofs_restart_check.sh.j2
     dest: "{{ dingo_client_upgrade_script_path }}"
     mode: "0755"
+  when: _dingo_clients_has_targets | default(true) | bool
 
 # --- Upgrade each client instance ---
 - name: Upgrade each dingo-client instance
   include_tasks: upgrade_instance.yml
-  loop: "{{ dingo_clients }}"
+  loop: "{{ _dingo_clients_selected }}"
   loop_control:
     loop_var: client_instance
+  when: _dingo_clients_has_targets | default(true) | bool
