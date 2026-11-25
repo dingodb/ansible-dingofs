@@ -8,3 +8,7 @@ dingo_uninstall_remove_mountpoint: true
 dingo_uninstall_state_dir: /var/lib/dingofs-uninstall
 dingo_uninstall_cli: "{{ dingo_client_dingo_bin_local_src | default(dingo_cli_latest_pkg_path | default('/root/dingofs/pkg/dingo-latest')) }}"
 dingo_client_mount_check_strict: false
+# Optional runtime filter (comma-separated string or list of fsname, /mount_point,
+# or service_name) to uninstall a subset of configured dingo_clients entries
+# (including entries marked enabled: false).
+dingo_client_only: ""

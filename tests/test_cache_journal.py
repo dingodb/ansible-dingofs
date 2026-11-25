@@ -53,6 +53,56 @@ test "$*" = "--no-pager --output=json --all --unit dingo-cache-v5.2.service --si
             with self.assertRaisesRegex(ValueError, 'permission denied'):
                 read_journal(str(journalctl), 'dingo-cache-v5.2.service', 1)
 
+    def test_minutes_and_invocation_id_filters(self):
+        invocation = 'A1b2c3d4e5f60718293a4b5c6d7e8f90'
+        expected_id = invocation.lower()
+        with tempfile.TemporaryDirectory() as directory:
+            journalctl = Path(directory) / 'journalctl'
+            recorded = Path(directory) / 'args.txt'
+            journalctl.write_text('''#!/bin/sh
+if [ "$1" = --help ]; then echo --output-fields; exit 0; fi
+printf '%s\\n' "$@" > "{}"
+'''.format(recorded))
+            journalctl.chmod(0o755)
+
+            self.assertEqual(read_journal(str(journalctl), 'dingo-cache-v5.2.service', minutes=15), (0, []))
+            self.assertEqual(
+                recorded.read_text().splitlines(),
+                ['--no-pager', '--output=json', '--all', '--unit', 'dingo-cache-v5.2.service',
+                 '--since', '15 minutes ago', '--output-fields=MESSAGE,PRIORITY'],
+            )
+
+            self.assertEqual(
+                read_journal(str(journalctl), 'dingo-cache-v5.2.service', minutes=10,
+                             invocation_id='  {}  '.format(invocation)),
+                (0, []),
+            )
+            self.assertEqual(
+                recorded.read_text().splitlines(),
+                ['--no-pager', '--output=json', '--all', '--since', '10 minutes ago',
+                 '--output-fields=MESSAGE,PRIORITY',
+                 '_SYSTEMD_INVOCATION_ID={}'.format(expected_id), '+',
+                 'INVOCATION_ID={}'.format(expected_id)],
+            )
+
+            self.assertEqual(
+                read_journal(str(journalctl), 'dingo-cache-v5.2.service', hours=2,
+                             invocation_id='0' * 32),
+                (0, []),
+            )
+            self.assertEqual(
+                recorded.read_text().splitlines(),
+                ['--no-pager', '--output=json', '--all', '--unit', 'dingo-cache-v5.2.service',
+                 '--since', '2 hours ago', '--output-fields=MESSAGE,PRIORITY'],
+            )
+
+            with self.assertRaisesRegex(ValueError, 'mutually exclusive'):
+                read_journal(str(journalctl), 'dingo-cache-v5.2.service', hours=1, minutes=10)
+            with self.assertRaisesRegex(ValueError, 'positive integer'):
+                read_journal(str(journalctl), 'dingo-cache-v5.2.service', minutes=0)
+            with self.assertRaisesRegex(ValueError, '32-character hex'):
+                read_journal(str(journalctl), 'dingo-cache-v5.2.service', hours=1, invocation_id='bad-id')
+
 
 if __name__ == '__main__':
     unittest.main()

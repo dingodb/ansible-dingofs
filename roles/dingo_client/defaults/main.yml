@@ -1,4 +1,8 @@
 ---
+# Optional runtime filter (comma-separated string or list of fsname, /mount_point,
+# or service_name) to operate on a subset of enabled dingo_clients entries.
+dingo_client_only: ""
+
 dingo_client_fsname: alayanew
 dingo_client_base_dir: "/root/dingofs/dingo-client/{{ dingo_client_fsname }}"
 dingo_client_bin_local_src: /root/dingofs/pkg/dingo-client
@@ -160,6 +164,13 @@ dingo_client_mount_check_enabled: true
 # Opt in to all containers and other process mount namespaces with true.
 dingo_client_mount_check_strict: false
 dingo_client_mount_check_script: /root/dingofs/script/check/dingofs_mount_usage_check.sh
+
+# When a mountpoint is busy at precheck, stage updated binaries/config on disk
+# (atomic replacement + .bak + .restart-required) and defer ONLY the systemd
+# restart until the mountpoint is idle. Switching to a DIFFERENT systemd unit
+# name on a busy mountpoint is still skipped before touching disk.
+# Set to false to skip busy instances completely before touching disk.
+dingo_client_stage_when_busy: true
 
 # Normal OOM eligibility avoids making a large FUSE process unkillable.
 # Sites may tune this explicitly; -1000 disables OOM killing entirely.

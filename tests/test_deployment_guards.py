@@ -75,6 +75,76 @@ class GuardTests(unittest.TestCase):
                 if errors:
                     self.assertRegex(result.stdout, r'queue pair to rtr\n\s*another error')
 
+    def test_cache_journal_scan_scopes_to_current_start_and_supports_minutes(self):
+        tasks = yaml.safe_load((REPO / 'playbooks/cache_99_status.yml').read_text())[0]['tasks'][-2:]
+        invocation = '0123456789abcdef0123456789abcdef'
+        cases = [
+            (
+                'active_clean_default',
+                {'ActiveState': 'active', 'NRestarts': '0', 'InvocationID': invocation},
+                {},
+                ['--no-pager', '--output=json', '--all', '--since', '72 hours ago',
+                 '--output-fields=MESSAGE,PRIORITY',
+                 '_SYSTEMD_INVOCATION_ID=' + invocation, '+', 'INVOCATION_ID=' + invocation],
+                '0 journal error(s) (current start, last 72h).',
+            ),
+            (
+                'active_clean_minutes',
+                {'ActiveState': 'active', 'NRestarts': '0', 'InvocationID': invocation},
+                {'dingo_cache_status_log_minutes': '15'},
+                ['--no-pager', '--output=json', '--all', '--since', '15 minutes ago',
+                 '--output-fields=MESSAGE,PRIORITY',
+                 '_SYSTEMD_INVOCATION_ID=' + invocation, '+', 'INVOCATION_ID=' + invocation],
+                '0 journal error(s) (current start, last 15m).',
+            ),
+            (
+                'auto_restarted_falls_back_to_unit',
+                {'ActiveState': 'active', 'NRestarts': '1', 'InvocationID': invocation},
+                {'dingo_cache_status_log_minutes': '30'},
+                ['--no-pager', '--output=json', '--all', '--unit', 'dingo-cache-v5.2.service',
+                 '--since', '30 minutes ago', '--output-fields=MESSAGE,PRIORITY'],
+                '0 journal error(s) (last 30m).',
+            ),
+            (
+                'current_start_only_disabled',
+                {'ActiveState': 'active', 'NRestarts': '0', 'InvocationID': invocation},
+                {'dingo_cache_status_current_start_only': 'false', 'dingo_cache_status_log_hours': '2'},
+                ['--no-pager', '--output=json', '--all', '--unit', 'dingo-cache-v5.2.service',
+                 '--since', '2 hours ago', '--output-fields=MESSAGE,PRIORITY'],
+                '0 journal error(s) (last 2h).',
+            ),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            bin_dir = Path(directory) / 'bin'
+            bin_dir.mkdir()
+            recorded = Path(directory) / 'args.txt'
+            journalctl = bin_dir / 'journalctl'
+            journalctl.write_text('''#!/bin/sh
+if [ "$1" = --help ]; then echo --output-fields; exit 0; fi
+printf '%s\\n' "$@" > "{}"
+'''.format(recorded))
+            journalctl.chmod(0o755)
+            old_path = os.environ.get('PATH', '')
+            os.environ['PATH'] = '{}:{}'.format(bin_dir, old_path)
+            try:
+                for name, status, extra_vars, expected_args, expected_msg in cases:
+                    with self.subTest(case=name):
+                        recorded.unlink(missing_ok=True)
+                        variables = {
+                            'dingo_cache_service_name': 'dingo-cache-v5.2',
+                            'dingo_cache_listen_port': 11100,
+                            'service_info': {'status': dict(status, Id='dingo-cache-v5.2.service')},
+                            'listen_ip_conf': {'stdout': '127.0.0.1'},
+                            'port_check': {'failed': False},
+                        }
+                        variables.update(extra_vars)
+                        result = self.run_tasks(tasks, variables)
+                        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                        self.assertEqual(recorded.read_text().splitlines(), expected_args)
+                        self.assertIn(expected_msg, result.stdout)
+            finally:
+                os.environ['PATH'] = old_path
+
     def test_client_health_requires_the_intended_fuse_filesystem(self):
         task = yaml.safe_load((REPO / 'playbooks/client_99_status.yml').read_text())[0]['tasks'][-1]
         for kind, source, success in [('fuse.dingofs', 'DingoFS:work', True),

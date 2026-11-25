@@ -73,6 +73,18 @@
       dingofs_cache_journal:
         unit: "{{ service_info.status.Id | default(dingo_cache_service_name) }}"
         lookback_hours: "{{ dingo_cache_status_log_hours | default(omit) }}"
+        lookback_minutes: "{{ dingo_cache_status_log_minutes | default(omit) }}"
+        invocation_id: >-
+          {{
+            service_info.status.InvocationID | trim
+            if (
+              dingo_cache_status_current_start_only | default(true) | bool
+              and service_info.status.ActiveState | default('') == 'active'
+              and (service_info.status.NRestarts | default(0, true) | int) == 0
+              and (service_info.status.InvocationID | default('') | trim | length > 0)
+            )
+            else omit
+          }}
       register: cache_journal
 
     - name: Require a healthy cache service
@@ -80,7 +92,7 @@
         _cache_health_summary: |-
           {{ dingo_cache_service_name }} is {{ service_info.status.ActiveState | default('unknown') }}.
           Listen IP {{ listen_ip_conf.stdout | trim | default('(missing)', true) }}, port {{ dingo_cache_listen_port }} {{ 'open' if port_check is succeeded else 'closed' }}.
-          {{ cache_journal.error_count }} journal error(s) in the last {{ cache_journal.lookback_hours }}h.
+          {{ cache_journal.error_count }} journal error(s) ({{ cache_journal.window | default('last ' ~ (cache_journal.lookback_hours | default(72)) ~ 'h') }}).
           {% for sample in cache_journal.samples %}
           {{ sample }}
           {% endfor %}

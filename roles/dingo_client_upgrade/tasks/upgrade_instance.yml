@@ -31,10 +31,15 @@
   changed_when: false
   failed_when: _upgrade_usage.rc not in [0, 1]
 
-- name: Report a deferred client upgrade
+- name: Report a deferred client upgrade (precheck skip)
   debug:
-    msg: "{{ client_instance.fsname }} is busy; retry after its users have drained."
-  when: _upgrade_usage.rc == 1
+    msg: >-
+      {{ client_instance.fsname }} is busy; skipping without changing disk
+      (dingo_client_stage_when_busy=false). Retry after its users have drained.
+      {{ _upgrade_usage.stdout_lines | default([]) | select('search', 'IN USE|BUSY|pod=|pid=|container=|namespace=') | list | join(' | ') }}
+  when:
+    - _upgrade_usage.rc | default(-1) | int == 1
+    - not (dingo_client_stage_when_busy | default(true) | bool)
 
 - name: Record this busy upgrade as unchanged
   import_tasks: ../../common/tasks/client_report.yml
@@ -43,7 +48,9 @@
     client_report_status: skipped_busy_before_change
     client_report_reason: mount_in_use
     client_report_changed_on_disk: false
-  when: _upgrade_usage.rc | default(-1) | int == 1
+  when:
+    - _upgrade_usage.rc | default(-1) | int == 1
+    - not (dingo_client_stage_when_busy | default(true) | bool)
 
 - name: Record an upgrade dry run
   import_tasks: ../../common/tasks/client_report.yml
@@ -53,11 +60,29 @@
     client_report_reason: upgrade_dry_run
     client_report_changed_on_disk: false
   when:
-    - _upgrade_usage.rc | default(-1) | int == 0
     - dingo_client_upgrade_dry_run | bool
+    - >-
+      (_upgrade_usage.rc | default(-1) | int == 0)
+      or ((_upgrade_usage.rc | default(-1) | int == 1)
+          and (dingo_client_stage_when_busy | default(true) | bool))
 
-- name: Upgrade only this idle client instance
+- name: Note staged upgrade on busy mountpoint
+  debug:
+    msg: >-
+      STAGING {{ client_instance.fsname }} on {{ inventory_hostname }}:
+      {{ client_instance.mount_point }} is in use; updating binary on disk and
+      deferring restart of {{ _upgrade_unit }} until idle.
+      {{ _upgrade_usage.stdout_lines | default([]) | select('search', 'IN USE|BUSY|pod=|pid=|container=|namespace=') | list | join(' | ') }}
+  when:
+    - _upgrade_usage.rc | default(-1) | int == 1
+    - dingo_client_stage_when_busy | default(true) | bool
+    - not (dingo_client_upgrade_dry_run | bool)
+
+- name: Upgrade or stage this client instance
   include_tasks: upgrade_idle.yml
   when:
-    - _upgrade_usage.rc == 0
     - not (dingo_client_upgrade_dry_run | bool)
+    - >-
+      (_upgrade_usage.rc | default(-1) | int == 0)
+      or ((_upgrade_usage.rc | default(-1) | int == 1)
+          and (dingo_client_stage_when_busy | default(true) | bool))

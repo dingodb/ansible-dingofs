@@ -11,6 +11,8 @@ GLOG_ERROR = re.compile(
     r'^[EF](?:[0-9]{4}){1,2}\s+[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?\s+(?:[0-9]+\s+)?'
 )
 TEXT_ERROR = re.compile(r'^(?:error|fatal):', re.IGNORECASE)
+INVOCATION_ID = re.compile(r'^[0-9a-f]{32}$')
+NULL_INVOCATION_ID = '0' * 32
 
 
 def summarize(lines):
@@ -38,11 +40,46 @@ def summarize(lines):
     return count, list(samples.values())
 
 
-def read_journal(journalctl, unit, hours):
-    command = [journalctl, '--no-pager', '--output=json', '--all', '--unit', unit,
-               '--since', '{} hours ago'.format(hours)]
+def normalize_invocation_id(value):
+    if value is None:
+        return None
+    normalized = str(value).strip().lower()
+    if not normalized or normalized == NULL_INVOCATION_ID:
+        return None
+    if not INVOCATION_ID.match(normalized):
+        raise ValueError('invocation_id must be a 32-character hex string')
+    return normalized
+
+
+def resolve_lookback(hours=None, minutes=None):
+    if hours is not None and minutes is not None:
+        raise ValueError('lookback_hours and lookback_minutes are mutually exclusive')
+    if minutes is not None:
+        if minutes < 1:
+            raise ValueError('lookback_minutes must be a positive integer')
+        return '{} minutes ago'.format(minutes), '{}m'.format(minutes), None, minutes
+    if hours is None:
+        hours = 72
+    if hours < 1:
+        raise ValueError('lookback_hours must be a positive integer')
+    return '{} hours ago'.format(hours), '{}h'.format(hours), hours, None
+
+
+def read_journal(journalctl, unit, hours=None, minutes=None, invocation_id=None):
+    since, _, _, _ = resolve_lookback(hours=hours, minutes=minutes)
+    invocation = normalize_invocation_id(invocation_id)
+    command = [journalctl, '--no-pager', '--output=json', '--all']
+    if not invocation:
+        command.extend(['--unit', unit])
+    command.extend(['--since', since])
     if b'--output-fields' in subprocess.check_output([journalctl, '--help']):
         command.append('--output-fields=MESSAGE,PRIORITY')
+    if invocation:
+        command.extend([
+            '_SYSTEMD_INVOCATION_ID={}'.format(invocation),
+            '+',
+            'INVOCATION_ID={}'.format(invocation),
+        ])
     with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT) as journal:
         result = summarize(journal.stdout)
         if journal.wait() != 0:
@@ -52,19 +89,47 @@ def read_journal(journalctl, unit, hours):
 
 def main():
     from ansible.module_utils.basic import AnsibleModule
-    module = AnsibleModule(argument_spec=dict(unit=dict(type='str', required=True),
-                                              lookback_hours=dict(type='int', default=72)),
-                           supports_check_mode=True)
-    hours = module.params['lookback_hours']
-    if hours < 1:
-        module.fail_json(msg='lookback_hours must be a positive integer')
+    module = AnsibleModule(
+        argument_spec=dict(
+            unit=dict(type='str', required=True),
+            lookback_hours=dict(type='int'),
+            lookback_minutes=dict(type='int'),
+            invocation_id=dict(type='str'),
+        ),
+        mutually_exclusive=[('lookback_hours', 'lookback_minutes')],
+        supports_check_mode=True,
+    )
     unit = module.params['unit']
+    try:
+        _, lookback_label, hours, minutes = resolve_lookback(
+            hours=module.params['lookback_hours'],
+            minutes=module.params['lookback_minutes'],
+        )
+        invocation = normalize_invocation_id(module.params['invocation_id'])
+    except ValueError as exc:
+        module.fail_json(msg=str(exc))
     journalctl = module.get_bin_path('journalctl', required=True)
     try:
-        count, samples = read_journal(journalctl, unit, hours)
+        count, samples = read_journal(
+            journalctl, unit, hours=hours, minutes=minutes, invocation_id=invocation
+        )
     except (OSError, ValueError, TypeError, KeyError, subprocess.CalledProcessError) as exc:
         module.fail_json(msg='Cannot inspect the journal for {}: {}'.format(unit, exc))
-    module.exit_json(changed=False, lookback_hours=hours, error_count=count, samples=samples)
+    scope = 'current_invocation' if invocation else 'unit'
+    window = (
+        'current start, last {}'.format(lookback_label)
+        if invocation else 'last {}'.format(lookback_label)
+    )
+    module.exit_json(
+        changed=False,
+        lookback_hours=hours,
+        lookback_minutes=minutes,
+        invocation_id=invocation or '',
+        scope=scope,
+        window=window,
+        error_count=count,
+        samples=samples,
+    )
 
 
 if __name__ == '__main__':

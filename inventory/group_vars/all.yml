@@ -241,15 +241,20 @@ dingo_cache_log_v: 0
 
 
 # --- 10.1 Mount instances ---
-# Define multiple clients to deploy on the same host
+# Define multiple clients to deploy on the same host.
+# Optional per-entry `enabled: false` (default: true) keeps a mount definition
+# in place while skipping it during deploy/upgrade/status (uninstall can still
+# remove it). For a one-off run on specific mounts without editing this file,
+# pass `-e dingo_client_only=fs1,fs2` (matches fsname, /mount_point, or service_name).
 dingo_clients:
   - fsname: alayanew
     mount_point: /dingofs/alayanew
     port: 12000
+    # enabled: true
   - fsname: manila
     mount_point: /dingofs/manila
     port: 13000
-
+    # enabled: false
 # --- 10.2 Service, binaries and paths ---
 # Version suffix appended to every loop-built service unit, base dir and log
 # dir (e.g. "-v5.2" -> dingofs-mount-<fs>-v5.2, .../<fs>-v5.2). Empty = unversioned.

@@ -190,7 +190,7 @@ m.exit_json(changed=not m.check_mode)
                          dingo_uninstall_state_dir=str(self.state),dingo_uninstall_cli=str(cli))
         play.write_text(yaml.safe_dump([dict(hosts='all',gather_facts=False,become=False,vars=variables,
                           environment=dict(PATH=str(fakebin)+':'+os.environ['PATH'],UNINSTALL_EVENTS=str(events)),roles=['dingo_uninstall'])]))
-        env = dict(os.environ,ANSIBLE_ROLES_PATH=str(roles),ANSIBLE_LIBRARY=str(library),ANSIBLE_STDOUT_CALLBACK='default')
+        env = dict(os.environ,ANSIBLE_ROLES_PATH=str(roles),ANSIBLE_LIBRARY=str(library),ANSIBLE_FILTER_PLUGINS=str(REPO/'filter_plugins'),ANSIBLE_STDOUT_CALLBACK='default')
         def run(args):
             r=subprocess.run(['ansible-playbook','-i','fixture,',str(play),'--limit','fixture']+args,
                              cwd=self.root,env=env,text=True,capture_output=True,timeout=120)

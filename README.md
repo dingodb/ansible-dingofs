@@ -399,12 +399,17 @@ ansible-playbook playbooks/cache_99_status.yml
 ```
 
 The cache status check requires an active service, an open port on its configured
-listen IP, and zero errors in that unit's journal over the last 72 hours, including
-earlier starts within the window. It counts journal priorities 0–3, glog `E`/`F`
-records, and messages starting with `Error:` or `Fatal:`. The report counts every
-occurrence and shows the latest sample for up to three distinct errors. A journal
-read failure fails the check.
-To check only the last hour, pass `-e dingo_cache_status_log_hours=1`.
+listen IP, and zero errors in that unit's journal. When the service is active with
+`NRestarts=0` and has a systemd `InvocationID`, the scan is scoped to the current
+start (bounded by the last 72 hours) so pre-restart errors do not fail post-deploy
+checks; if the service is inactive or has auto-restarted (`NRestarts>0`), it scans
+the full unit within the lookback window. It counts journal priorities 0–3, glog
+`E`/`F` records, and messages starting with `Error:` or `Fatal:`. The report counts
+every occurrence and shows the latest sample for up to three distinct errors. A
+journal read failure fails the check.
+Override the lookback window with `-e dingo_cache_status_log_minutes=15` or
+`-e dingo_cache_status_log_hours=1` (mutually exclusive), or include earlier starts
+with `-e dingo_cache_status_current_start_only=false`.
 
 All cache playbooks connect with `remote_user: root`.
 
@@ -470,6 +475,47 @@ ansible-playbook playbooks/client_99_status.yml
 ```
 
 All client playbooks connect with `remote_user: root`.
+
+### Select specific client mounts (`enabled` + `dingo_client_only`)
+
+When a host configures multiple entries in `dingo_clients`, two independent
+controls avoid commenting out YAML blocks:
+
+- **Persistent per-entry switch (`enabled`)**: set `enabled: false` on a
+  `dingo_clients` entry (defaults to `true` when omitted) to keep its
+  configuration in `group_vars`/`host_vars` while skipping it during
+  `client_04_deploy.yml`, `client_07_upgrade.yml`, and `client_99_status.yml`.
+- **One-off runtime filter (`dingo_client_only`)**: pass a comma-separated
+  string (or YAML/JSON list) via `-e` to operate on selected mounts without
+  editing inventory files. Selectors match `fsname` by default, or
+  `/mount_point` / `service_name` when the same filesystem is mounted twice.
+
+```bash
+# Deploy, upgrade, or check only dingospeed-fs and dingospeed-public
+ansible-playbook -i "$SITE/hosts.yml" playbooks/client_07_upgrade.yml \
+  -e dingo_client_only=dingospeed-fs,dingospeed-public
+
+ansible-playbook -i "$SITE/hosts.yml" playbooks/client_99_status.yml \
+  -e dingo_client_only=dingospeed-public
+
+# Uninstall only one mount (also allowed when that entry has enabled: false)
+ansible-playbook -i "$SITE/hosts.yml" playbooks/client_08_uninstall.yml \
+  --limit GPU-HOST -e dingo_client_only=manila-v5.2 --check
+```
+
+Rules enforced before changing any host:
+
+- Deploy/upgrade/status filter within `enabled: true` entries; naming a
+  selector that matches only `enabled: false` entries fails the play.
+- Any selector in `dingo_client_only` that matches zero hosts across the whole
+  play (including across `serial` batches) fails the play to catch typos.
+- A single heterogeneous host matching zero entries is skipped without error
+  as long as every requested selector matches on at least one host in the play.
+- `client_07_upgrade.yml` still renders the manual helper script
+  `dingofs_restart_check.sh` from all `enabled: true` entries on the host so a
+  filtered upgrade never strips other active mounts from the helper.
+- `client_08_uninstall.yml` allows `dingo_client_only` to match `enabled: false`
+  entries so you can disable an entry in inventory first and then uninstall it.
 
 ### Discover mounts without knowing filesystem names
 
@@ -914,9 +960,10 @@ against another deployment concurrently claiming cores. See the Linux
 ### Uninstall selected client/cache instances
 
 Use the same site inventory that deployed the instances and an explicit
-`--limit`. Client selection comes from `dingo_clients`; cache selection uses
-`dingo_cache_service_name` and `dingo_cache_base_dir`. There is no inferred
-default client filesystem. Start with a read-only plan:
+`--limit`. Client selection comes from `dingo_clients` (optionally narrowed with
+`-e dingo_client_only=...`, which may also target `enabled: false` entries);
+cache selection uses `dingo_cache_service_name` and `dingo_cache_base_dir`.
+There is no inferred default client filesystem. Start with a read-only plan:
 
 ```bash
 SITE=/path/to/site

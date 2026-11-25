@@ -3,16 +3,20 @@
 # Role: dingo_client - Deploy dingo-client (FUSE mount) service
 # ============================================================
 #
-# Every per-instance change is gated on the mountpoint being IDLE. A busy
-# mountpoint (host process with open files, another mount namespace holding the
-# filesystem, or a container hostPath at/under it) is left COMPLETELY untouched:
-# no files, no unit and no stop/start. Other mounts on the same host continue.
+# Every per-instance restart is gated on the mountpoint being IDLE (host process
+# with open files, another mount namespace holding the filesystem, or a
+# container hostPath at/under it). With dingo_client_stage_when_busy=true
+# (default), an already-matching unit on a busy mountpoint stages updated
+# binaries/config on disk via atomic replacement, writes .restart-required, and
+# defers ONLY the systemd restart until idle. Switching to a different systemd
+# unit name on a busy mountpoint, or running with dingo_client_stage_when_busy=false,
+# leaves the instance completely untouched. Other mounts on the same host continue.
 #
 # The check is done by dingofs_mount_usage_check.sh (deployed once per host in
 # main.yml), which never changes anything itself; --dry-run is passed for
 # clarity. Its exit code is the contract:
-#   0 = IDLE    -> configure this instance
-#   1 = BUSY    -> skip this instance, leave the mountpoint alone
+#   0 = IDLE    -> configure and restart if needed
+#   1 = BUSY    -> stage on disk without restarting (or skip when disallowed/unit changed)
 #   2 = error   -> fail loudly instead of guessing
 - name: Set client report identity for this deployment instance
   set_fact:
@@ -76,34 +80,56 @@
       {{ (_mount_usage.stdout_lines | default([]))
          | select('search', 'Detected service:')
          | map('regex_replace', '^.*Detected service: *', '')
-         | map('regex_replace', '\\.service$', '')
+         | map('regex_replace', '[.]service$', '')
          | map('trim') | list | first | default('') }}
+
+- name: "Evaluate busy-mount staging eligibility for {{ dingo_client_fsname }}"
+  set_fact:
+    _mount_busy_precheck: >-
+      {{ (dingo_client_mount_check_enabled | default(true) | bool)
+         and ((_mount_usage.rc | default(-1) | int) == 1) }}
+    _mount_unit_changed: >-
+      {{ ((_mount_check_service | default('')) | length > 0)
+         and ((_mount_check_service | default('') | regex_replace('[.]service$', ''))
+              != (dingo_client_service_name | regex_replace('[.]service$', ''))) }}
+- name: "Decide whether {{ dingo_client_fsname }} must skip before changing disk"
+  set_fact:
+    _mount_skip_before_change: >-
+      {{ (_mount_busy_precheck | bool)
+         and (not (dingo_client_stage_when_busy | default(true) | bool)
+              or (_mount_unit_changed | bool)) }}
 
 - name: Record this busy instance as unchanged
   import_tasks: ../../common/tasks/client_report.yml
   vars:
     client_report_stage: precheck
     client_report_status: skipped_busy_before_change
-    client_report_reason: mount_in_use
+    client_report_reason: "{{ 'mount_in_use_unit_change' if (_mount_unit_changed | default(false) | bool) else 'mount_in_use' }}"
     client_report_changed_on_disk: false
-  when:
-    - dingo_client_mount_check_enabled | default(true) | bool
-    - (_mount_usage.rc | default(-1) | int) == 1
+  when: _mount_skip_before_change | bool
 
 - name: "Skip {{ dingo_client_fsname }} because {{ dingo_client_mount_point }} is in use"
   debug:
     msg: >-
       SKIPPING {{ dingo_client_fsname }} on {{ inventory_hostname }}:
-      {{ dingo_client_mount_point }} is in use, so nothing was changed for this
-      mountpoint. Drain/delete the users above and re-run. Other mountpoints on
+      {{ dingo_client_mount_point }} is in use{% if _mount_unit_changed | default(false) | bool %}
+      (owned by different unit {{ _mount_check_service }}, cannot migrate to {{ dingo_client_service_name }} while busy){% endif %},
+      so nothing was changed for this mountpoint. Drain/delete the users above and re-run. Other mountpoints on
       this host continue.
-      {{ _mount_usage.stdout_lines | default([]) | select('search', 'IN USE|BUSY') | list | join(' | ') }}
-  when:
-    - dingo_client_mount_check_enabled | default(true) | bool
-    - (_mount_usage.rc | default(1) | int) != 0
+      {{ _mount_usage.stdout_lines | default([]) | select('search', 'IN USE|BUSY|pod=|pid=|container=|namespace=') | list | join(' | ') }}
+  when: _mount_skip_before_change | bool
 
-- name: "Configure {{ dingo_client_fsname }} (mountpoint idle)"
+- name: "Note staged deployment on busy mountpoint {{ dingo_client_mount_point }} for {{ dingo_client_fsname }}"
+  debug:
+    msg: >-
+      STAGING {{ dingo_client_fsname }} on {{ inventory_hostname }}:
+      {{ dingo_client_mount_point }} is in use; updating binary/config on disk and
+      deferring restart of {{ dingo_client_service_name }} until idle.
+      {{ _mount_usage.stdout_lines | default([]) | select('search', 'IN USE|BUSY|pod=|pid=|container=|namespace=') | list | join(' | ') }}
+  when:
+    - _mount_busy_precheck | bool
+    - not (_mount_skip_before_change | bool)
+
+- name: "Configure {{ dingo_client_fsname }}"
   include_tasks: instance_configure.yml
-  when: >-
-    not (dingo_client_mount_check_enabled | default(true) | bool)
-    or (_mount_usage.rc | default(-1) | int) == 0
+  when: not (_mount_skip_before_change | bool)

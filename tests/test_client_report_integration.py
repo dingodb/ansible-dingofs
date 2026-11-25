@@ -38,7 +38,7 @@ class ClientReportIntegrationTests(unittest.TestCase):
 import json, os
 m = AnsibleModule(argument_spec=dict(name=dict(), state=dict(), enabled=dict(type='bool'),
                                     daemon_reload=dict(type='bool')), supports_check_mode=True)
-if m.params['state'] == 'restarted' and not m.check_mode:
+if m.params['state'] in ('restarted', 'stopped', 'started') and not m.check_mode:
     with open(os.environ['CLIENT_REPORT_SERVICE_EVENTS'], 'a') as stream:
         stream.write(json.dumps(m.params) + '\\n')
 m.exit_json(changed=m.params['state'] == 'restarted', status={'ActiveState': 'active'})
@@ -56,6 +56,9 @@ attempt = int(counter.read_text()) if counter.exists() else 0
 plan = json.loads((base / 'usage-plan.json').read_text())
 counter.write_text(str(attempt + 1))
 code = plan[min(attempt, len(plan) - 1)]
+detected = base / 'detected-service.txt'
+if detected.exists():
+    print('Detected service: ' + detected.read_text().strip())
 print({0: 'IDLE fixture', 1: 'BUSY fixture', 2: 'UNKNOWN fixture'}[code])
 sys.exit(code)
 ''')
@@ -80,11 +83,13 @@ sys.exit(code)
         self.hosts.setdefault(host, {"dingo_clients": []})["dingo_clients"].append(client)
         return client
 
-    def service_restarts(self):
+    def service_events(self):
         if not self.events.exists():
             return []
-        return [json.loads(line)["name"] for line in self.events.read_text().splitlines()]
+        return [json.loads(line) for line in self.events.read_text().splitlines()]
 
+    def service_restarts(self):
+        return [ev["name"] for ev in self.service_events() if ev.get("state") == "restarted"]
     def run_play(self, tasks, check=False, extra=None):
         variables = dict(ansible_connection="local", ansible_become=False,
                          ansible_python_interpreter=sys.executable,
@@ -151,15 +156,20 @@ sys.exit(code)
             host = Path(client["base_dir"]).parent.name
             row = records[(host, client["fsname"])]
             deferred = (host, client["fsname"]) in busy
-            self.assertEqual(row["status"], "skipped_busy_before_change" if deferred else "completed")
-            self.assertEqual(row["changed_on_disk"], not deferred)
+            self.assertEqual(row["status"], "restart_deferred_busy" if deferred else "completed")
+            self.assertIs(row["changed_on_disk"], True)
+            self.assertEqual(row["pending_restart"], deferred)
             self.assertEqual((Path(client["base_dir"]) / "bin/dingo-client").read_text(),
-                             "old client binary\n" if deferred else "new client binary\n")
+                             "new client binary\n")
+            self.assertEqual((Path(client["base_dir"]) / "bin/dingo-client.bak").read_text(),
+                             "old client binary\n")
+            self.assertEqual((Path(client["base_dir"]) / ".restart-required").exists(), deferred)
 
-    def test_serial_deployment_busy_prechecks_leave_every_instance_unchanged(self):
+    def test_serial_deployment_busy_prechecks_leave_every_instance_unchanged_when_staging_disabled(self):
         clients = [self.client(host, fsname) for host in ["node-a", "node-b"]
                    for fsname in ["alpha", "beta"]]
-        result, report = self.run_play(self.deployment_tasks())
+        result, report = self.run_play(self.deployment_tasks(),
+                                       extra={"dingo_client_stage_when_busy": False})
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(len(report["records"]), 4)
         self.assertEqual(len(report["skipped"]), 4)
@@ -173,6 +183,103 @@ sys.exit(code)
             self.assertEqual((Path(client["base_dir"]) / "bin/dingo-client").read_text(),
                              "old client binary\n")
 
+    def test_deployment_busy_same_unit_stages_and_restarts_when_idle_while_unit_change_skips(self):
+        # Build an isolated copy of the deploy role tasks with systemd unit writes redirected under self.root.
+        staged_role = self.root / "roles/dingo_client/tasks"
+        staged_role.mkdir(parents=True)
+        systemd_dir = self.root / "systemd"
+        systemd_dir.mkdir()
+        common_tasks = self.root / "roles/common/tasks"
+        common_tasks.mkdir(parents=True)
+        shutil.copy(REPO / "roles/common/tasks/client_report.yml", common_tasks / "client_report.yml")
+        templates_dir = self.root / "roles/dingo_client/templates"
+        templates_dir.mkdir(parents=True)
+        for tpl in ("dingofs-mount.sh.j2", "dingofs-mount.service.j2"):
+            shutil.copy(REPO / "roles/dingo_client/templates" / tpl, templates_dir / tpl)
+        shutil.copy(DEPLOY, staged_role / "instance.yml")
+        (staged_role / "instance_configure.yml").write_text(
+            CONFIGURE.read_text()
+            .replace("/etc/systemd/system/", str(systemd_dir) + "/")
+            .replace("src: dingofs-mount.sh.j2", "src: " + str(templates_dir / "dingofs-mount.sh.j2"))
+            .replace("src: dingofs-mount.service.j2", "src: " + str(templates_dir / "dingofs-mount.service.j2"))
+        )
+        cli_src = self.root / "dingo-cli"
+        cli_src.write_text("#!/bin/sh\nexit 0\n")
+        same_unit = self.client("node-a", "alpha", (1,))
+        (Path(same_unit["base_dir"]) / "detected-service.txt").write_text(same_unit["service_name"] + ".service\n")
+        diff_unit = self.client("node-a", "beta", (1,))
+        (Path(diff_unit["base_dir"]) / "detected-service.txt").write_text("dingofs-mount-beta-old.service\n")
+        defaults = yaml.safe_load((REPO / "roles/dingo_client/defaults/main.yml").read_text())
+        extra = dict(
+            defaults,
+            dingo_client_bin_local_src=str(self.candidate),
+            dingo_client_dingo_bin_local_src=str(cli_src),
+            dingo_client_mount_check_script=str(self.checker),
+            dingo_client_pin_cpu=False,
+            dingo_client_numactl_enabled=False,
+            dingo_client_use_rdma=False,
+            dingo_client_tuning_profile_effective="small",
+            dingo_client_mds_addrs="127.0.0.1:7000",
+            dingo_client_cache_group="fixture-group",
+            dingo_client_port=12000,
+            dingo_client_ld_preload="",
+            IB_CHECK_ENABLED=False,
+        )
+        tasks = [{
+            "include_tasks": str(staged_role / "instance.yml"),
+            "loop": "{{ dingo_clients }}",
+            "loop_control": {"loop_var": "client_instance"},
+            "vars": {
+                "dingo_client_fsname": "{{ client_instance.fsname }}",
+                "dingo_client_mount_point": "{{ client_instance.mount_point }}",
+                "dingo_client_service_name": "{{ client_instance.service_name }}",
+                "dingo_client_base_dir": "{{ client_instance.base_dir }}",
+                "dingo_client_log_dir": "{{ client_instance.base_dir }}/logs",
+            },
+        }]
+        # Run 1 (busy): fuser returns 1 (idle) while usage checker returns 1 (container busy).
+        # Same-unit alpha stages binary/config + .bak + .restart-required and MUST NOT restart or start.
+        # Different-unit beta skips completely without stopping old unit or writing disk.
+        result, report = self.run_play(tasks, extra=extra)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        records = {r["fsname"]: r for r in report["records"]}
+        self.assertEqual(records["alpha"]["status"], "restart_deferred_busy")
+        self.assertIs(records["alpha"]["changed_on_disk"], True)
+        self.assertIs(records["alpha"]["pending_restart"], True)
+        self.assertEqual((Path(same_unit["base_dir"]) / "bin/dingo-client").read_text(), "new client binary\n")
+        self.assertEqual((Path(same_unit["base_dir"]) / "bin/dingo-client.bak").read_text(), "old client binary\n")
+        self.assertTrue((Path(same_unit["base_dir"]) / ".restart-required").exists())
+        self.assertEqual(records["beta"]["status"], "skipped_busy_before_change")
+        self.assertEqual(records["beta"]["reason"], "mount_in_use_unit_change")
+        self.assertIs(records["beta"]["changed_on_disk"], False)
+        self.assertEqual((Path(diff_unit["base_dir"]) / "bin/dingo-client").read_text(), "old client binary\n")
+        self.assertEqual(self.service_events(), [])
+
+        # Run 2 (still busy): retry does not report disk change, preserves .bak and .restart-required, no restart.
+        shutil.rmtree(self.reports)
+        result, report = self.run_play(tasks, extra=extra)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        records = {r["fsname"]: r for r in report["records"]}
+        self.assertEqual(records["alpha"]["status"], "restart_deferred_busy")
+        self.assertIs(records["alpha"]["changed_on_disk"], False)
+        self.assertIs(records["alpha"]["pending_restart"], True)
+        self.assertEqual((Path(same_unit["base_dir"]) / "bin/dingo-client.bak").read_text(), "old client binary\n")
+        self.assertEqual(self.service_events(), [])
+
+        # Run 3 (alpha becomes idle): restarts alpha once, clears .restart-required, beta remains untouched.
+        shutil.rmtree(self.reports)
+        (Path(same_unit["base_dir"]) / "usage-plan.json").write_text(json.dumps([0]))
+        (Path(same_unit["base_dir"]) / "usage-count").unlink(missing_ok=True)
+        result, report = self.run_play(tasks, extra=extra)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        records = {r["fsname"]: r for r in report["records"]}
+        self.assertEqual(records["alpha"]["status"], "completed")
+        self.assertEqual(records["alpha"]["reason"], "restarted")
+        self.assertIs(records["alpha"]["changed_on_disk"], False)
+        self.assertIs(records["alpha"]["pending_restart"], False)
+        self.assertFalse((Path(same_unit["base_dir"]) / ".restart-required").exists())
+        self.assertEqual(self.service_restarts(), [same_unit["service_name"]])
+        self.assertEqual(records["beta"]["status"], "skipped_busy_before_change")
     def test_unknown_upgrade_usage_is_an_error_not_a_busy_skip(self):
         client = self.client("node-a", "alpha", (2,))
         result, report = self.run_play(self.upgrade_tasks())
@@ -242,9 +349,9 @@ sys.exit(code)
             _mount_sh={"changed": False}, _mount_service={"changed": False},
             _client_bin={"changed": True}, _dingo_bin={"changed": False})
 
-    def test_deployment_postcheck_busy_reports_updated_files_and_deferred_restart(self):
-        client = self.client("node-a", "alpha")
-        self.executable("fuser", "#!/bin/sh\nexit 0\n")
+    def test_deployment_postcheck_busy_catches_container_usage_even_when_fuser_is_idle(self):
+        client = self.client("node-a", "alpha", (1,))
+        self.executable("fuser", "#!/bin/sh\nexit 1\n")
         result, report = self.run_play(self.configure_tail(), extra=self.deployment_tail_variables(client))
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         row = report["records"][0]
@@ -256,7 +363,7 @@ sys.exit(code)
         self.assertEqual(self.service_restarts(), [])
 
     def test_deployment_retry_applies_a_persisted_restart_with_unchanged_files(self):
-        client = self.client("node-a", "alpha")
+        client = self.client("node-a", "alpha", (0,))
         marker = Path(client["base_dir"]) / ".restart-required"
         marker.write_text("restart required\n")
         variables = self.deployment_tail_variables(client)
@@ -269,7 +376,7 @@ sys.exit(code)
         self.assertIs(report["records"][0]["changed_on_disk"], False)
 
     def test_independent_cli_update_does_not_restart_the_fuse_client(self):
-        client = self.client("node-a", "alpha")
+        client = self.client("node-a", "alpha", (0,))
         variables = self.deployment_tail_variables(client)
         variables.update(_client_bin={"changed": False}, _dingo_bin={"changed": True})
         result, report = self.run_play(self.configure_tail(), extra=variables)
@@ -278,9 +385,8 @@ sys.exit(code)
         self.assertEqual(report["records"][0]["status"], "completed")
         self.assertIs(report["records"][0]["pending_restart"], False)
 
-    def test_deployment_missing_fuser_is_distinct_from_busy(self):
-        client = self.client("node-a", "alpha")
-        (self.fakebin / "fuser").unlink()
+    def test_deployment_unknown_usage_and_missing_fuser_fallback_are_distinct_from_busy(self):
+        client = self.client("node-a", "alpha", (2,))
         result, report = self.run_play(self.configure_tail(), extra=self.deployment_tail_variables(client))
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         row = report["records"][0]
@@ -290,7 +396,19 @@ sys.exit(code)
         self.assertEqual(len(report["skipped"]), 1)
         self.assertEqual(report["errors"], [])
         self.assertEqual(self.service_restarts(), [])
-
+        shutil.rmtree(self.reports)
+        (self.fakebin / "fuser").unlink()
+        variables = self.deployment_tail_variables(client)
+        variables["dingo_client_mount_check_enabled"] = False
+        result, report = self.run_play(self.configure_tail(), extra=variables)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        row = report["records"][0]
+        self.assertEqual(row["status"], "restart_deferred_unknown")
+        self.assertIs(row["changed_on_disk"], True)
+        self.assertIs(row["pending_restart"], True)
+        self.assertEqual(len(report["skipped"]), 1)
+        self.assertEqual(report["errors"], [])
+        self.assertEqual(self.service_restarts(), [])
 
 if __name__ == "__main__":
     unittest.main()

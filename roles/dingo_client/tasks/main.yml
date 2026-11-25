@@ -8,6 +8,70 @@
 - import_role:
     name: version_guard
 
+# --- Client selection: enabled toggle + runtime dingo_client_only filter ---
+- name: Validate and select dingo-client instances for this play
+  vars:
+    _play_clients: "{{ dingo_clients if (dingo_clients is defined and 'dingo_clients' not in hostvars[inventory_hostname]) else none }}"
+    _default_client:
+      fsname: "{{ dingo_client_fsname }}"
+      mount_point: "{{ dingo_client_mount_point }}"
+    _host_clients: >-
+      {{ dingo_clients if dingo_clients is defined else [{
+           'fsname': dingo_client_fsname,
+           'mount_point': dingo_client_mount_point,
+           'port': dingo_client_port,
+           'cache_group': dingo_client_cache_group,
+           'log_dir': dingo_client_log_dir,
+           'mds_addrs': dingo_client_mds_addrs,
+           'base_dir': dingo_client_base_dir,
+         }] }}
+  set_fact:
+    _dingo_clients_play_plan: >-
+      {{ ansible_play_hosts_all | dingo_client_validate_play(
+           hostvars,
+           only=dingo_client_only | default(''),
+           include_disabled=false,
+           play_clients=_play_clients,
+           default_client=_default_client,
+           default_version_suffix=dingo_client_version_suffix | default('')) }}
+    _dingo_clients_selection: >-
+      {{ _host_clients | dingo_client_select(
+           only=dingo_client_only | default(''),
+           version_suffix=dingo_client_version_suffix | default(''),
+           include_disabled=false) }}
+
+- name: Fail if dingo_client_only matches no enabled client in this play
+  assert:
+    that:
+      - _dingo_clients_play_plan.valid | bool
+    fail_msg: "{{ _dingo_clients_play_plan.error }}"
+
+- name: Set effective client target list for this host
+  set_fact:
+    _dingo_clients_enabled: "{{ _dingo_clients_selection.enabled }}"
+    _dingo_clients_selected: "{{ _dingo_clients_selection.selected }}"
+    _dingo_clients_has_targets: "{{ (_dingo_clients_selection.selected | length) > 0 }}"
+    _dingo_clients_play_has_targets: "{{ (_dingo_clients_play_plan.selected_count | int) > 0 }}"
+
+- name: Report disabled client instances skipped by selection on this host
+  debug:
+    msg: >-
+      SKIP disabled dingo-client instance(s) on {{ inventory_hostname }} (enabled: false):
+      {{ _dingo_clients_selection.skipped_disabled | map(attribute='fsname') | list | join(', ') }}
+  when: _dingo_clients_selection.skipped_disabled | length > 0
+
+- name: Report host skipped with no selected dingo-client instances
+  debug:
+    msg: >-
+      SKIP {{ inventory_hostname }}: no dingo-client instances selected
+      {%- if _dingo_clients_selection.selectors | length > 0 %}
+       for dingo_client_only={{ _dingo_clients_selection.selectors | join(',') }}
+      {%- endif %}
+      {%- if _dingo_clients_selection.disabled | length > 0 %}
+       (disabled: {{ _dingo_clients_selection.disabled | map(attribute='fsname') | list | join(', ') }})
+      {%- endif %}.
+  when: not (_dingo_clients_has_targets | bool)
+
 # --- Pre-flight: psmisc (provides fuser) ---
 #
 # instance.yml decides whether a restart is safe by running
@@ -17,13 +81,17 @@
   package:
     name: psmisc
     state: present
-  when: ansible_os_family == "RedHat"
+  when:
+    - _dingo_clients_has_targets | default(true) | bool
+    - ansible_os_family == "RedHat"
 
 - name: Ensure psmisc is installed (provides fuser)
   package:
     name: psmisc
     state: present
-  when: ansible_os_family == "Debian"
+  when:
+    - _dingo_clients_has_targets | default(true) | bool
+    - ansible_os_family == "Debian"
 
 # --- Pre-flight: numactl (mount script binds the client to the RDMA's NUMA node) ---
 #
@@ -35,6 +103,7 @@
     name: numactl
     state: present
   when:
+    - _dingo_clients_has_targets | default(true) | bool
     - dingo_client_numactl_enabled | default(true) | bool
     - ansible_os_family == "RedHat"
 
@@ -43,6 +112,7 @@
     name: numactl
     state: present
   when:
+    - _dingo_clients_has_targets | default(true) | bool
     - dingo_client_numactl_enabled | default(true) | bool
     - ansible_os_family == "Debian"
 
@@ -52,7 +122,9 @@
   changed_when: false
   failed_when: false
   check_mode: false
-  when: dingo_client_numactl_enabled | default(true) | bool
+  when:
+    - _dingo_clients_has_targets | default(true) | bool
+    - dingo_client_numactl_enabled | default(true) | bool
 
 - name: Fail when numactl is enabled but unavailable (client hosts)
   assert:
@@ -64,7 +136,9 @@
       }}{{ _client_numactl_bin.stderr | default('') | trim }}).
       Install the numactl package, or set dingo_client_numactl_enabled=false to
       deploy without NUMA binding.
-  when: dingo_client_numactl_enabled | default(true) | bool
+  when:
+    - _dingo_clients_has_targets | default(true) | bool
+    - dingo_client_numactl_enabled | default(true) | bool
 
 # --- Pre-flight: the binaries must exist on the control node ---
 #
@@ -82,7 +156,9 @@
     name: dingo_cli_download
   vars:
     dingo_cli_download_dest: "{{ dingo_client_dingo_bin_local_src }}"
-  when: inventory_hostname not in (groups.get('meta_servers', []) + groups.get('admin', []))
+  when:
+    - _dingo_clients_play_has_targets | default(true) | bool
+    - inventory_hostname not in (groups.get('meta_servers', []) + groups.get('admin', []))
 
 - name: Check the dingo-client binary exists on the control node
   delegate_to: localhost
@@ -92,6 +168,7 @@
   register: _client_bin_src
   run_once: true
   changed_when: false
+  when: _dingo_clients_play_has_targets | default(true) | bool
 
 - name: Check the dingo CLI binary exists on the control node
   delegate_to: localhost
@@ -101,6 +178,7 @@
   register: _dingo_bin_src
   run_once: true
   changed_when: false
+  when: _dingo_clients_play_has_targets | default(true) | bool
 
 - name: Fail early if a client binary is missing on the control node
   delegate_to: localhost
@@ -121,6 +199,7 @@
       elsewhere.
     success_msg: "client binaries present on the control node"
   run_once: true
+  when: _dingo_clients_play_has_targets | default(true) | bool
 
 # --- Tuning profile: size buffers to the host (once per host) ---
 # The mount script reserves VFS/RDMA buffers in the dingo-client process, so a
@@ -133,6 +212,7 @@
   register: _client_memtotal_mb
   changed_when: false
   failed_when: false
+  when: _dingo_clients_has_targets | default(true) | bool
 
 - name: Select the client tuning profile from host memory
   set_fact:
@@ -147,6 +227,7 @@
                if ((((_client_memtotal_mb.stdout | default('') | trim | int) / 1024)
                     | round(0, 'common') | int) >= (dingo_client_mem_threshold_gb | default(256) | int))
                else 'small') }}
+  when: _dingo_clients_has_targets | default(true) | bool
 
 - name: Log the client tuning profile
   debug:
@@ -160,6 +241,7 @@
       pool {{ dingo_client_mem_profiles[dingo_client_tuning_profile_effective].buffer_pool_mb }} MB,
       inflight {{ dingo_client_mem_profiles[dingo_client_tuning_profile_effective].rdma_max_inflight_rpcs }},
       connections {{ dingo_client_mem_profiles[dingo_client_tuning_profile_effective].rdma_max_connections }}.
+  when: _dingo_clients_has_targets | default(true) | bool
 
 # --- InfiniBand readiness check (used by systemd ExecStartPre) ---
 # Deployed once per host, not per mount: every instance on this host uses the
@@ -170,14 +252,18 @@
     path: "{{ IB_CHECK_SCRIPT | default('/root/dingofs/script/check/check-ib-ready.sh') | dirname }}"
     state: directory
     mode: "0755"
-  when: IB_CHECK_ENABLED | default(true) | bool
+  when:
+    - _dingo_clients_has_targets | default(true) | bool
+    - IB_CHECK_ENABLED | default(true) | bool
 
 - name: Deploy InfiniBand readiness check script (client hosts)
   copy:
     src: "{{ role_path }}/../common/files/check-ib-ready.sh"
     dest: "{{ IB_CHECK_SCRIPT | default('/root/dingofs/script/check/check-ib-ready.sh') }}"
     mode: "0755"
-  when: IB_CHECK_ENABLED | default(true) | bool
+  when:
+    - _dingo_clients_has_targets | default(true) | bool
+    - IB_CHECK_ENABLED | default(true) | bool
 
 # --- Mountpoint usage check (per instance, before any service change) ---
 # Mirrors a manual `bash dingofs_mount_usage_check.sh <mount> --dry-run`:
@@ -188,14 +274,18 @@
     path: "{{ dingo_client_mount_check_script | default('/root/dingofs/script/check/dingofs_mount_usage_check.sh') | dirname }}"
     state: directory
     mode: "0755"
-  when: dingo_client_mount_check_enabled | default(true) | bool
+  when:
+    - _dingo_clients_has_targets | default(true) | bool
+    - dingo_client_mount_check_enabled | default(true) | bool
 
 - name: Deploy mountpoint usage check script (client hosts)
   copy:
     src: "{{ role_path }}/../common/files/dingofs_mount_usage_check.sh"
     dest: "{{ dingo_client_mount_check_script | default('/root/dingofs/script/check/dingofs_mount_usage_check.sh') }}"
     mode: "0755"
-  when: dingo_client_mount_check_enabled | default(true) | bool
+  when:
+    - _dingo_clients_has_targets | default(true) | bool
+    - dingo_client_mount_check_enabled | default(true) | bool
 
 # --- CPU pinning host setup (v5.2+, once per host, before the instance loop) ---
 # The detect script and the claim seed are host-scoped: every mount on the host
@@ -207,13 +297,17 @@
     dest: /tmp/dingo-cpuset-detect.sh
     mode: "0755"
   changed_when: false
-  when: dingo_client_pin_cpu | default(true) | bool
+  when:
+    - _dingo_clients_has_targets | default(true) | bool
+    - dingo_client_pin_cpu | default(true) | bool
 
 - name: Init per-host cpuset claim tracking
   set_fact:
     dingo_client_cpusets_claimed: []
     dingo_client_scripts_processed: []
-  when: dingo_client_pin_cpu | default(true) | bool
+  when:
+    - _dingo_clients_has_targets | default(true) | bool
+    - dingo_client_pin_cpu | default(true) | bool
 
 - name: Validate cpuset insufficiency policy (client hosts)
   assert:
@@ -224,7 +318,9 @@
       '{{ dingo_client_cpuset_on_insufficient }}'. fail = stop the deploy;
       warn = deploy WITHOUT --cpuset (unpinned); force = pin onto occupied
       CPUs anyway so the mount still starts (overlap WILL contend).
-  when: dingo_client_pin_cpu | default(true) | bool
+  when:
+    - _dingo_clients_has_targets | default(true) | bool
+    - dingo_client_pin_cpu | default(true) | bool
 
 # Required IB locality keeps every mount's CPU selection on the device's node.
 # The 80% estimated memory-use threshold only alerts in this mode. Disabling
@@ -234,14 +330,18 @@
     path: "{{ IB_CHECK_SCRIPT | dirname }}"
     state: directory
     mode: "0755"
-  when: dingo_client_use_rdma | default(true) | bool
+  when:
+    - _dingo_clients_has_targets | default(true) | bool
+    - dingo_client_use_rdma | default(true) | bool
 
 - name: Install RDMA discovery and readiness helper
   copy:
     src: "{{ role_path }}/../common/files/check-ib-ready.sh"
     dest: "{{ IB_CHECK_SCRIPT }}"
     mode: "0755"
-  when: dingo_client_use_rdma | default(true) | bool
+  when:
+    - _dingo_clients_has_targets | default(true) | bool
+    - dingo_client_use_rdma | default(true) | bool
 
 # The device name is per-host (RoCE mlx5_N, IPoIB ibNsNpN, ...). Unless an
 # explicit name is set, follow IB_IP_PREFIX: the interface carrying the
@@ -252,6 +352,7 @@
   register: _client_rdma_discovery
   changed_when: false
   when:
+    - _dingo_clients_has_targets | default(true) | bool
     - dingo_client_use_rdma | default(true) | bool
     - (dingo_client_rdma_device | default('', true) | string | trim | lower) in ['', 'auto']
 
@@ -261,6 +362,7 @@
   register: _client_rdma_mapping
   changed_when: false
   when:
+    - _dingo_clients_has_targets | default(true) | bool
     - dingo_client_use_rdma | default(true) | bool
     - (dingo_client_rdma_device | default('', true) | string | trim | lower) not in ['', 'auto']
 
@@ -268,6 +370,7 @@
   set_fact:
     _client_rdma_info: "{{ _client_rdma_discovery.stdout | from_json }}"
   when:
+    - _dingo_clients_has_targets | default(true) | bool
     - dingo_client_use_rdma | default(true) | bool
     - (dingo_client_rdma_device | default('', true) | string | trim | lower) in ['', 'auto']
 
@@ -275,6 +378,7 @@
   set_fact:
     _client_rdma_info: "{{ _client_rdma_mapping.stdout | from_json }}"
   when:
+    - _dingo_clients_has_targets | default(true) | bool
     - dingo_client_use_rdma | default(true) | bool
     - (dingo_client_rdma_device | default('', true) | string | trim | lower) not in ['', 'auto']
 
@@ -284,12 +388,15 @@
     dingo_client_rdma_port_num_effective: "{{ _client_rdma_info.port }}"
     _client_ib_numa_raw:
       stdout: "{{ _client_rdma_info.numa_node if _client_rdma_info.numa_node is not none else 'unknown' }}"
-  when: dingo_client_use_rdma | default(true) | bool
+  when:
+    - _dingo_clients_has_targets | default(true) | bool
+    - dingo_client_use_rdma | default(true) | bool
 
 - name: Report missing RDMA NUMA information
   debug:
     msg: "The selected RDMA device has no valid NUMA node. CPU/memory fallback policy will be used."
   when:
+    - _dingo_clients_has_targets | default(true) | bool
     - dingo_client_use_rdma | default(true) | bool
     - _client_rdma_info.numa_node is none
 
@@ -311,11 +418,13 @@
   register: _client_numa_mem
   changed_when: false
   failed_when: false
+  when: _dingo_clients_has_targets | default(true) | bool
 
 - name: Build per-node memory map (client hosts)
   set_fact:
     _client_node_mem: "{{ (_client_node_mem | default({})) | combine({(item.split()[1]): (item.split()[2] | int)}) }}"
   loop: "{{ _client_numa_mem.stdout_lines | default([]) | select('match', '^MEM [0-9]+ [0-9]+$') | list }}"
+  when: _dingo_clients_has_targets | default(true) | bool
 
 - name: Decide preferred NUMA node from IB device and memory headroom (client hosts)
   set_fact:
@@ -327,6 +436,7 @@
     _client_mem_thr: "{{ dingo_client_ib_node_mem_max_pct | default(80) | int }}"
     _client_mem_lowest: "{{ (_client_node_mem | default({}) | dict2items | sort(attribute='value') | map(attribute='key') | list | first | default('')) | string }}"
     _client_mem_coolest: "{{ (_client_node_mem | default({}) | dict2items | selectattr('value', 'le', (dingo_client_ib_node_mem_max_pct | default(80) | int)) | sort(attribute='value') | map(attribute='key') | list | first | default('')) | string }}"
+  when: _dingo_clients_has_targets | default(true) | bool
 
 - name: Require a known IB NUMA node and consistent Client overrides
   assert:
@@ -339,12 +449,15 @@
       dingofs_numa_require_ib=true requires a known IB NUMA node, enabled
       numactl, and matching CPU/memory overrides. IB node={{ _client_ib_node | default('unknown', true) }}.
       Resolve the RDMA topology or disable dingofs_numa_require_ib explicitly.
-  when: _client_require_ib | bool
+  when:
+    - _dingo_clients_has_targets | default(true) | bool
+    - _client_require_ib | bool
 
 - name: Select preferred NUMA node (client hosts)
   set_fact:
     _client_ib_preferred_node: "{{ _client_ib_node if _client_require_ib | bool else (_client_ib_node if (_client_ib_node | length > 0 and ((_client_node_mem | default({})).get(_client_ib_node, 101) | int) <= (_client_mem_thr | int)) else (_client_mem_coolest if (_client_mem_coolest | length > 0) else (_client_mem_lowest if (_client_mem_lowest | length > 0) else ''))) }}"
     _client_mem_all_hot: "{{ (_client_node_mem | default({}) | length > 0) and (_client_mem_coolest | default('') | length == 0) }}"
+  when: _dingo_clients_has_targets | default(true) | bool
 
 - name: Log preferred NUMA node decision (client hosts)
   debug:
@@ -357,6 +470,7 @@
       {{ '(required IB locality; memory is alert-only)' if _client_require_ib | bool else ('(IB node, memory OK)' if (_client_ib_preferred_node == _client_ib_node and (_client_ib_node | length > 0))
          else ('(IB node hot — OOM risk avoided)' if not (_client_mem_all_hot | bool)
          else '(ALL NODES HOT — lowest-memory node picked)')) }}
+  when: _dingo_clients_has_targets | default(true) | bool
 
 # --- RDMA device validation (v5.2+, once per host, only when RDMA is on) ---
 # Same rule as dingo_cache: the IB device name comes from the host's HCA layout.
@@ -366,7 +480,9 @@
   register: _client_rdma_dev_check
   changed_when: false
   failed_when: false
-  when: dingo_client_use_rdma | default(true) | bool
+  when:
+    - _dingo_clients_has_targets | default(true) | bool
+    - dingo_client_use_rdma | default(true) | bool
 
 - name: Warn when the RDMA utilities are unavailable (client hosts)
   debug:
@@ -381,6 +497,7 @@
          if _client_rdma_dev_check.stdout | trim == 'present-no-ibv-devices'
          else 'Check the verbs stack (driver, permissions, timeouts)' }}.
   when:
+    - _dingo_clients_has_targets | default(true) | bool
     - dingo_client_use_rdma | default(true) | bool
     - _client_rdma_dev_check.stdout is defined
     - _client_rdma_dev_check.stdout | trim in ['present-no-ibv-devices', 'present-ibv-devices-error']
@@ -398,20 +515,9 @@
       fix that mapping or set dingo_client_rdma_device in host_vars, or
       dingo_client_use_rdma=false to deploy without RDMA.
   when:
+    - _dingo_clients_has_targets | default(true) | bool
     - dingo_client_use_rdma | default(true) | bool
     - _client_rdma_dev_check.stdout is defined
-
-- name: Set default list of dingo clients if not provided
-  set_fact:
-    dingo_clients:
-      - fsname: "{{ dingo_client_fsname }}"
-        mount_point: "{{ dingo_client_mount_point }}"
-        port: "{{ dingo_client_port }}"
-        cache_group: "{{ dingo_client_cache_group }}"
-        log_dir: "{{ dingo_client_log_dir }}"
-        mds_addrs: "{{ dingo_client_mds_addrs }}"
-        base_dir: "{{ dingo_client_base_dir }}"
-  when: dingo_clients is not defined
 
 - name: Deploy each dingo-client instance
   include_tasks: instance.yml
@@ -459,7 +565,8 @@
       {{ client_instance.base_dir | default(
            '/root/dingofs/dingo-client/' ~ client_instance.fsname
            ~ (dingo_client_version_suffix | default(''))) }}
-  loop: "{{ dingo_clients }}"
+  loop: "{{ _dingo_clients_selected }}"
   loop_control:
     loop_var: client_instance
+  when: _dingo_clients_has_targets | default(true) | bool
 

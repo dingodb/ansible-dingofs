@@ -60,16 +60,37 @@ m.exit_json(changed=True)
                                         cwd=REPO, env=env, capture_output=True, text=True, timeout=60)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertEqual(events.read_text().splitlines(), ['dingofs-mount-a', 'dingofs-mount-b'])
-            # A busy instance must retain its current binary.
+            # With dingo_client_stage_when_busy=false, a busy instance must retain its current binary.
             checker.write_text('#!/bin/sh\nexit 1\n')
             candidate.write_text('next')
+            result = subprocess.run(
+                ['ansible-playbook', '-i', 'localhost,', str(play_path), '-e', 'dingo_client_stage_when_busy=false'],
+                cwd=REPO, env=env, capture_output=True, text=True, timeout=60)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual((root / 'a/bin/dingo-client').read_text(), 'new')
+            self.assertFalse((root / 'a/.restart-required').exists())
+            self.assertEqual(events.read_text().splitlines(), ['dingofs-mount-a', 'dingofs-mount-b'])
+            # By default (dingo_client_stage_when_busy=true), a busy instance stages the new
+            # binary on disk, preserves the original .bak, marks .restart-required, and defers restart.
             result = subprocess.run(['ansible-playbook', '-i', 'localhost,', str(play_path)],
                                     cwd=REPO, env=env, capture_output=True, text=True, timeout=60)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertEqual((root / 'a/bin/dingo-client').read_text(), 'new')
+            self.assertEqual((root / 'a/bin/dingo-client').read_text(), 'next')
+            self.assertEqual((root / 'a/bin/dingo-client.bak').read_text(), 'old')
+            self.assertTrue((root / 'a/.restart-required').exists())
             self.assertEqual(events.read_text().splitlines(), ['dingofs-mount-a', 'dingofs-mount-b'])
+            # Once idle, a retry restarts the staged binary and clears .restart-required.
+            checker.write_text('#!/bin/sh\nexit 0\n')
+            result = subprocess.run(['ansible-playbook', '-i', 'localhost,', str(play_path)],
+                                    cwd=REPO, env=env, capture_output=True, text=True, timeout=60)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(events.read_text().splitlines(),
+                             ['dingofs-mount-a', 'dingofs-mount-b', 'dingofs-mount-a', 'dingofs-mount-b'])
+            self.assertFalse((root / 'a/.restart-required').exists())
+            self.assertFalse((root / 'b/.restart-required').exists())
             # If usage becomes busy after the copy, a retry must still restart
             # the already-copied binary even though copy will report unchanged.
+            candidate.write_text('final')
             counter = root / 'checks'
             checker.write_text('#!/bin/sh\nn=$(cat "' + str(counter) + '" 2>/dev/null || echo 0)\n'
                                + 'n=$((n+1)); echo "$n" > "' + str(counter) + '"\n'
@@ -78,16 +99,19 @@ m.exit_json(changed=True)
                                     cwd=REPO, env=env, capture_output=True, text=True, timeout=60)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             # The busy recheck defers a; b still upgrades in the same run.
-            self.assertEqual(events.read_text().splitlines(), ['dingofs-mount-a', 'dingofs-mount-b', 'dingofs-mount-b'])
-            self.assertEqual((root / 'a/bin/dingo-client').read_text(), 'next')
+            self.assertEqual(events.read_text().splitlines(),
+                             ['dingofs-mount-a', 'dingofs-mount-b', 'dingofs-mount-a', 'dingofs-mount-b', 'dingofs-mount-b'])
+            self.assertEqual((root / 'a/bin/dingo-client').read_text(), 'final')
+            self.assertEqual((root / 'a/bin/dingo-client.bak').read_text(), 'old')
             self.assertTrue((root / 'a/.restart-required').exists())
             checker.write_text('#!/bin/sh\nexit 0\n')
             result = subprocess.run(['ansible-playbook', '-i', 'localhost,', str(play_path)],
                                     cwd=REPO, env=env, capture_output=True, text=True, timeout=60)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertEqual(events.read_text().splitlines(), ['dingofs-mount-a', 'dingofs-mount-b', 'dingofs-mount-b', 'dingofs-mount-a'])
+            self.assertEqual(events.read_text().splitlines(),
+                             ['dingofs-mount-a', 'dingofs-mount-b', 'dingofs-mount-a', 'dingofs-mount-b',
+                              'dingofs-mount-b', 'dingofs-mount-a'])
             self.assertFalse((root / 'a/.restart-required').exists())
-
 @unittest.skipUnless(shutil.which('ansible-playbook'), 'requires Ansible')
 class StartupTests(unittest.TestCase):
     def test_busy_or_failed_unmount_prevents_replacement(self):
