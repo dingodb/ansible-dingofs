@@ -18,6 +18,12 @@ declare -A MOUNTS=(
 {% endfor %}
 )
 
+declare -A BASE_DIRS=(
+{% for client in (_dingo_clients_enabled | default((dingo_clients | dingo_client_select(version_suffix=dingo_client_version_suffix | default(''))).enabled)) %}
+  ["{{ client.mount_point }}"]="{{ client.base_dir | default('/root/dingofs/dingo-client/' ~ client.fsname ~ (dingo_client_version_suffix | default(''))) }}"
+{% endfor %}
+)
+
 DRY_RUN=false
 if [[ "${1:-}" == "--dry-run" ]]; then
   DRY_RUN=true
@@ -76,6 +82,7 @@ for mountpoint in "${!MOUNTS[@]}"; do
   else
     log "  Restarting $service ..."
     if systemctl restart "$service"; then
+      rm -f "${BASE_DIRS[$mountpoint]}/.restart-required"
       log "  OK: $service restarted successfully."
     else
       log "  ERROR: failed to restart $service."

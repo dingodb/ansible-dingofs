@@ -165,6 +165,13 @@ dingo_client_mount_check_enabled: true
 dingo_client_mount_check_strict: false
 dingo_client_mount_check_script: /root/dingofs/script/check/dingofs_mount_usage_check.sh
 
+# When a mountpoint is busy at precheck, stage updated binaries/config on disk
+# (atomic replacement + .bak + .restart-required) and defer ONLY the systemd
+# restart until the mountpoint is idle. Switching to a DIFFERENT systemd unit
+# name on a busy mountpoint is still skipped before touching disk.
+# Set to false to skip busy instances completely before touching disk.
+dingo_client_stage_when_busy: true
+
 # Normal OOM eligibility avoids making a large FUSE process unkillable.
 # Sites may tune this explicitly; -1000 disables OOM killing entirely.
 dingo_client_oom_score_adjust: 0

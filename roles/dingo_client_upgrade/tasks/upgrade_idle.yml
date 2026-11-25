@@ -41,11 +41,17 @@
 # over .bak -- the known-good rollback copy was silently replaced by the new
 # (possibly broken) one, exactly when you would want it back.
 - name: "Backup current binary for {{ client_instance.fsname }}"
-  command: "cp -p {{ _bin_path }} {{ _bak_path }}"
+  command:
+    argv:
+      - cp
+      - -p
+      - "{{ _bin_path }}"
+      - "{{ _bak_path }}"
   args:
     creates: "{{ _bak_path }}"
-  when: _bin_stat.stat.exists
-
+  when:
+    - _bin_stat.stat.exists
+    - _upgrade_candidate.stat.checksum != _bin_stat.stat.checksum
 # --- Step 2: Copy new binary ---
 - name: "Copy new dingo-client binary for {{ client_instance.fsname }}"
   copy:
@@ -86,6 +92,18 @@
         client_report_reason: mount_in_use
         client_report_changed_on_disk: "{{ _upgrade_copy.changed | bool and not ansible_check_mode }}"
         client_report_pending_restart: true
+      when: _upgrade_recheck.rc | default(-1) == 1
+
+    - name: Warn that the upgrade restart was deferred because the mountpoint is in use
+      debug:
+        msg: >-
+          Skipped the restart of {{ _upgrade_unit }}: {{ client_instance.mount_point }} is in use
+          {%- if (_upgrade_recheck.stdout_lines | default([])) | length > 0 %}
+          ({{ _upgrade_recheck.stdout_lines | select('search', 'IN USE|BUSY|pod=|pid=|container=|namespace=') | list | join(' | ') }})
+          {%- endif -%}.
+          The new binary IS already updated on disk (.restart-required preserved);
+          once idle, restart via `systemctl restart {{ _upgrade_unit }}`,
+          {{ dingo_client_upgrade_script_path | default('/tmp/dingofs_restart_check.sh') }}, or re-run playbooks/client_07_upgrade.yml.
       when: _upgrade_recheck.rc | default(-1) == 1
 
     - name: Restart and verify only a client that remains idle

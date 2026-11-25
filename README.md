@@ -399,12 +399,17 @@ ansible-playbook playbooks/cache_99_status.yml
 ```
 
 The cache status check requires an active service, an open port on its configured
-listen IP, and zero errors in that unit's journal over the last 72 hours, including
-earlier starts within the window. It counts journal priorities 0–3, glog `E`/`F`
-records, and messages starting with `Error:` or `Fatal:`. The report counts every
-occurrence and shows the latest sample for up to three distinct errors. A journal
-read failure fails the check.
-To check only the last hour, pass `-e dingo_cache_status_log_hours=1`.
+listen IP, and zero errors in that unit's journal. When the service is active with
+`NRestarts=0` and has a systemd `InvocationID`, the scan is scoped to the current
+start (bounded by the last 72 hours) so pre-restart errors do not fail post-deploy
+checks; if the service is inactive or has auto-restarted (`NRestarts>0`), it scans
+the full unit within the lookback window. It counts journal priorities 0–3, glog
+`E`/`F` records, and messages starting with `Error:` or `Fatal:`. The report counts
+every occurrence and shows the latest sample for up to three distinct errors. A
+journal read failure fails the check.
+Override the lookback window with `-e dingo_cache_status_log_minutes=15` or
+`-e dingo_cache_status_log_hours=1` (mutually exclusive), or include earlier starts
+with `-e dingo_cache_status_current_start_only=false`.
 
 All cache playbooks connect with `remote_user: root`.
 
