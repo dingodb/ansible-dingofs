@@ -427,6 +427,7 @@ print(json.dumps({'filesystems': [{'fstype': 'fuse.dingofs', 'source': 'DingoFS:
         self.assertEqual(self.service_restarts(), [])
         shutil.rmtree(self.reports)
         (self.fakebin / "fuser").unlink()
+        self.executable("mountpoint", "#!/bin/sh\nexit 0\n")
         variables = self.deployment_tail_variables(client)
         variables["dingo_client_mount_check_enabled"] = False
         result, report = self.run_play(self.configure_tail(), extra=variables)
