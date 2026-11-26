@@ -168,9 +168,13 @@ class ClientSelectionIntegrationTests(unittest.TestCase):
         (common_files / "dingofs_mount_usage_check.sh").write_text("#!/bin/sh\nexit 0\n")
         (common_files / "dingofs_mount_usage_check.sh").chmod(0o755)
         checker = self.root / "usage-check.sh"
-        mountpoint = self.fakebin / "mountpoint"
-        mountpoint.write_text("#!/bin/sh\nexit 0\n")
-        mountpoint.chmod(0o755)
+        findmnt = self.fakebin / "findmnt"
+        findmnt.write_text("#!" + sys.executable + "\n" + '''import json, sys
+from pathlib import Path
+name = Path(sys.argv[-1]).parent.name
+print(json.dumps({'filesystems': [{'fstype': 'fuse.dingofs', 'source': 'DingoFS:' + name}]}))
+''')
+        findmnt.chmod(0o755)
         candidate = self.root / "candidate-bin"
         candidate.write_text("v5.2-955d5b0\n")
 
@@ -301,8 +305,8 @@ class ClientSelectionIntegrationTests(unittest.TestCase):
             "m.exit_json(changed=False, status={'ActiveState': active})\n"
         )
         for name, body in {
-            "mountpoint": '#!/bin/sh\necho "$*" | grep -q public-fs\n',
-            "df": '#!/bin/sh\necho "DingoFS:dingospeed-public 100G 1G 99G 1% $2"\n',
+            "mountpoint": '#!/bin/sh\ntouch "$FUSE_PATH_PROBED"\nexit 1\n',
+            "df": '#!/bin/sh\ntouch "$FUSE_PATH_PROBED"\nexit 1\n',
             "findmnt": '#!/bin/sh\necho \'{"filesystems":[{"fstype":"fuse.dingofs","source":"DingoFS:dingospeed-public"}]}\'\n',
         }.items():
             p = self.fakebin / name
@@ -336,7 +340,9 @@ class ClientSelectionIntegrationTests(unittest.TestCase):
         }
         inv_path = self.root / "status-inv.yml"
         inv_path.write_text(yaml.safe_dump(inv))
-        env = dict(self._base_env(), PATH=str(self.fakebin) + ":" + os.environ["PATH"])
+        path_probe = self.root / "fuse-path-probed"
+        env = dict(self._base_env(), PATH=str(self.fakebin) + ":" + os.environ["PATH"],
+                   FUSE_PATH_PROBED=str(path_probe))
 
         # Filtering to dingospeed-public passes on gpu01 (ignoring inactive alayanew/manila) and skips gpu32
         ok = subprocess.run(
@@ -346,6 +352,8 @@ class ClientSelectionIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(ok.returncode, 0, ok.stdout + ok.stderr)
         self.assertIn("SKIP gpu32", ok.stdout)
+        self.assertIn("/mnt/public-fs is mounted from DingoFS:dingospeed-public.", ok.stdout)
+        self.assertFalse(path_probe.exists(), "status accessed the FUSE path")
 
         # Without dingo_client_only, enabled alayanew is checked (and fails because inactive)
         fail_active = subprocess.run(
@@ -441,8 +449,6 @@ class ClientSelectionIntegrationTests(unittest.TestCase):
             "m.exit_json(changed=False, status={'ActiveState': 'active'})\n"
         )
         for name, body in {
-            "mountpoint": "#!/bin/sh\nexit 0\n",
-            "df": "#!/bin/sh\necho ok\n",
             "findmnt": '#!/bin/sh\necho \'{"filesystems":[{"fstype":"fuse.dingofs","source":"DingoFS:shared"}]}\'\n',
         }.items():
             p = self.fakebin / name

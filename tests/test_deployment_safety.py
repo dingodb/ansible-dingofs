@@ -594,6 +594,32 @@ class DeployBatchTests(unittest.TestCase):
 
 
 class MountTests(unittest.TestCase):
+    def test_shared_mountpoint_uses_running_unit_and_rejects_ambiguous_owners(self):
+        source = (REPO / 'roles/common/files/dingofs_mount_usage_check.sh').read_text()
+        functions = source[source.index('mount_script_mount() {'):source.index('# --- Check 1:')]
+        with tempfile.TemporaryDirectory() as directory:
+            launcher = Path(directory) / 'dingofs-mount.sh'
+            launcher.write_text('g_mnt="/fixture/public"\n')
+            script = '''
+log() { echo "$*"; }
+systemctl() {
+    case "$1" in
+        list-unit-files) printf '%s\\n' 'parked.service enabled' 'current.service disabled' ;;
+        list-units) printf '%s\\n' "$SYSTEMD_ROWS" ;;
+        show) printf '{ path=%s ; }\\n' "$LAUNCHER" ;;
+    esac
+}
+''' + functions + '\ndetect_service /fixture/public\n'
+            cases = [('inactive dead', 0, 'current.service'),
+                     ('active running', 2, ''), ('deactivating stop-sigterm', 2, '')]
+            for state, code, owner in cases:
+                with self.subTest(state=state):
+                    rows = f'parked.service loaded {state} parked\ncurrent.service loaded active running current'
+                    result = subprocess.run(['/bin/bash'], input=script, text=True, capture_output=True,
+                                            env=dict(os.environ, LAUNCHER=str(launcher), SYSTEMD_ROWS=rows))
+                    self.assertEqual(result.returncode, code, result.stderr)
+                    self.assertEqual(result.stdout.strip(), owner)
+
     def run_cri(self, mode, strict=True, namespace='default'):
         source = (REPO / 'roles/common/files/dingofs_mount_usage_check.sh').read_text()
         function = source[source.index('container_users_busy() {'):source.index('# --- Main')]

@@ -476,6 +476,12 @@ ansible-playbook playbooks/client_99_status.yml
 
 All client playbooks connect with `remote_user: root`.
 
+`client_99_status.yml` checks the systemd service and the kernel mount table,
+including the mount's filesystem type and source. It does not query capacity or
+test I/O through the FUSE mount.
+Client deployment and binary upgrade also use the kernel mount table when
+waiting for the expected mount after a restart.
+
 ### Select specific client mounts (`enabled` + `dingo_client_only`)
 
 When a host configures multiple entries in `dingo_clients`, two independent
@@ -924,6 +930,13 @@ manual restart helpers and automatic remount scripts honor the same setting.
 Host process usage is still checked in both modes; an unavailable required check
 returns 2 and prevents changes. Upgrades retain a per-instance restart marker
 until the new mount has been verified.
+
+When multiple unit files declare a mountpoint, the checker identifies a unique
+running unit. Conflicting live matches and units transitioning at that path
+return UNKNOWN.
+When switching unit names, deployment prepares the replacement while the old
+unit is still serving the mount. It stops the old unit after the final usage
+check clears the switch.
 
 A container mapping `/` to `/host` is not evidence that an uncreated child mount
 is busy. The checker inspects its actual namespace at the corresponding child

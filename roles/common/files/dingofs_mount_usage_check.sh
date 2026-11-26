@@ -104,19 +104,22 @@ mount_script_mount() {
 }
 
 detect_service() {
-    local mp=$1 unit mount_path
-    if command -v systemctl >/dev/null 2>&1; then
-        while read -r unit; do
-            [ -n "$unit" ] || continue
-            mount_path=$(mount_script_mount "$unit") || continue
-            if [ "$mount_path" = "$mp" ]; then
-                printf '%s\n' "$unit"
-                return 0
-            fi
-        done < <(systemctl list-unit-files 'dingofs-mount-*.service' \
-                     --no-legend 2>/dev/null | awk '{print $1}')
-    fi
-    return 1
+    local mp=$1 units unit load state sub description mount_path owner=''
+    command -v systemctl >/dev/null 2>&1 || return 1
+    units=$(systemctl list-units 'dingofs-mount-*.service' --all --plain --full \
+                --no-legend --no-pager) || return 2
+    while read -r unit load state sub description; do
+        case "$state" in ''|inactive|failed) continue ;; esac
+        mount_path=$(mount_script_mount "$unit") || continue
+        [ "$mount_path" = "$mp" ] || continue
+        if [ "$state/$sub" != active/running ] || [ -n "$owner" ]; then
+            log "UNKNOWN: cannot select one running service for $mp ($unit is $state/$sub, previous match: ${owner:-none})." >&2
+            return 2
+        fi
+        owner=$unit
+    done <<< "$units"
+    [ -n "$owner" ] || return 1
+    printf '%s\n' "$owner"
 }
 
 # --- Check 1: host processes with open files --------------------------------
@@ -518,7 +521,12 @@ fi
 if [ -n "$SERVICE_OVERRIDE" ]; then
     SERVICE="$SERVICE_OVERRIDE"
 else
-    SERVICE=$(detect_service "$MOUNTPOINT" || true)
+    SERVICE=$(detect_service "$MOUNTPOINT") || {
+        if [ "$?" -ne 1 ]; then
+            log "UNKNOWN: cannot establish the running systemd service for $MOUNTPOINT."
+            exit 2
+        fi
+    }
 fi
 
 if [ -n "$SERVICE" ]; then

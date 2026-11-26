@@ -31,9 +31,13 @@ m.exit_json(changed=True)
             checker = root / 'check'
             checker.write_text('#!/bin/sh\nexit 0\n')
             checker.chmod(0o755)
-            mountpoint = fakebin / 'mountpoint'
-            mountpoint.write_text('#!/bin/sh\nexit 0\n')
-            mountpoint.chmod(0o755)
+            findmnt = fakebin / 'findmnt'
+            findmnt.write_text('#!' + sys.executable + '\n' + '''import json, sys
+from pathlib import Path
+name = Path(sys.argv[-1]).parent.name
+print(json.dumps({'filesystems': [{'fstype': 'fuse.dingofs', 'source': 'DingoFS:' + name}]}))
+''')
+            findmnt.chmod(0o755)
             candidate = root / 'candidate'
             candidate.write_text('new')
             clients = []
