@@ -56,7 +56,7 @@ else
     echo "Umounting existing mountpoint on $(hostname)..."
     metric_port=$(echo "$mnt_info" | awk -F '[:]' '{print $2}')
     echo "mountpoint ${g_mnt} metric_port is ${metric_port}"
-    ${g_dingo} fs umount "${g_mnt}"
+    ${g_dingo} fs umount "${g_mnt}" --mdsaddr="${g_mdsaddr}"
     if [ $? -ne 0 ]; then
         echo "umount failed, exit..."
         exit 1
