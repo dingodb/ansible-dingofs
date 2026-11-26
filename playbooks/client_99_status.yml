@@ -83,46 +83,19 @@
       loop_control:
         label: "{{ item.fsname }}"
 
-    - name: Check mount point
-      command: mountpoint -q {{ item.mount_point }}
-      register: mount_check
-      changed_when: false
-      failed_when: false
-      loop: "{{ _dingo_clients_selected }}"
-      loop_control:
-        label: "{{ item.mount_point }}"
-
-    - name: Display mount status
-      debug:
-        msg: "{{ inventory_hostname }}: {{ item.item.mount_point }} is {{ 'mounted' if item.rc == 0 else 'NOT mounted' }}"
-      loop: "{{ mount_check.results }}"
-      loop_control:
-        label: "{{ item.item.mount_point }}"
-
-    - name: Show mount details
-      shell: df -h {{ item.mount_point }} 2>/dev/null || echo 'Not mounted'
-      register: df_info
-      changed_when: false
-      loop: "{{ _dingo_clients_selected }}"
-      loop_control:
-        label: "{{ item.mount_point }}"
-
-    - name: Display mount details
-      debug:
-        msg: "{{ inventory_hostname }} [{{ item.item.fsname }}]: {{ item.stdout_lines }}"
-      loop: "{{ df_info.results }}"
-      loop_control:
-        label: "{{ item.item.mount_point }}"
-
-    - name: Require every client mount to be present
-      assert:
-        that: item.rc == 0
-        fail_msg: "{{ item.item.mount_point }} is not mounted"
-      loop: "{{ mount_check.results }}"
-
-    - name: Read filesystem identity for each mount
+    # Path and capacity probes can block in a stalled FUSE client. Read the
+    # kernel mount table without resolving the path through the filesystem.
+    - name: Read filesystem identity from the kernel mount table
       command:
-        argv: [findmnt, -J, -o, 'FSTYPE,SOURCE', --mountpoint, "{{ item.mount_point }}"]
+        argv:
+          - findmnt
+          - --kernel
+          - --nocanonicalize
+          - --json
+          - --output
+          - FSTYPE,SOURCE
+          - --mountpoint
+          - "{{ item.mount_point }}"
       loop: "{{ _dingo_clients_selected }}"
       register: _client_mount_types
       changed_when: false
@@ -130,7 +103,7 @@
 
     - name: Require the intended DingoFS filesystem at each mount
       vars:
-        _mounted: "{{ item.stdout | from_json }}"
+        _mounted: "{{ item.stdout | default('{\"filesystems\":[]}', true) | from_json }}"
       assert:
         that:
           - item.rc == 0
@@ -138,4 +111,5 @@
           - _mounted.filesystems[0].fstype is match('^fuse([.]|$)')
           - _mounted.filesystems[0].source == 'DingoFS:' ~ item.item.fsname
         fail_msg: "{{ item.item.mount_point }} does not contain the intended DingoFS filesystem."
+        success_msg: "{{ item.item.mount_point }} is mounted from DingoFS:{{ item.item.fsname }}."
       loop: "{{ _client_mount_types.results }}"

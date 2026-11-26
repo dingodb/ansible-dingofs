@@ -132,11 +132,17 @@
             client_report_changed_on_disk: "{{ _upgrade_copy.changed | bool and not ansible_check_mode }}"
             client_report_pending_restart: true
 
-        - name: Verify the restarted mount
+        - name: Verify the intended DingoFS mount after restart
           command:
-            argv: [mountpoint, -q, "{{ client_instance.mount_point }}"]
+            argv: [findmnt, --kernel, --nocanonicalize, --json, --output, 'FSTYPE,SOURCE', --mountpoint, "{{ client_instance.mount_point }}"]
+          vars:
+            _mounted: "{{ (_upgraded_mount.stdout | default('{\"filesystems\":[]}', true) | from_json).filesystems }}"
           register: _upgraded_mount
-          until: _upgraded_mount.rc == 0
+          until:
+            - _upgraded_mount.rc == 0
+            - _mounted | length == 1
+            - _mounted[0].fstype is match('^fuse([.]|$)')
+            - _mounted[0].source == 'DingoFS:' ~ client_instance.fsname
           retries: 10
           delay: 3
           changed_when: false

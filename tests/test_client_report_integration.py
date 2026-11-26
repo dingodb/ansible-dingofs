@@ -45,7 +45,11 @@ m.exit_json(changed=m.params['state'] == 'restarted', status={'ActiveState': 'ac
 ''')
         for name in ("bash", "cp"):
             (self.fakebin / name).symlink_to(shutil.which(name))
-        self.executable("mountpoint", "#!/bin/sh\nexit 0\n")
+        self.executable("findmnt", "#!" + sys.executable + "\n" + '''import json, sys
+from pathlib import Path
+name = Path(sys.argv[-1]).parent.name
+print(json.dumps({'filesystems': [{'fstype': 'fuse.dingofs', 'source': 'DingoFS:' + name}]}))
+''')
         self.executable("systemctl", "#!/bin/sh\necho active\nexit 0\n")
         self.executable("fuser", "#!/bin/sh\nexit 1\n")
         probe = self.root / "usage_probe.py"
@@ -255,7 +259,10 @@ sys.exit(code)
         self.assertEqual((Path(diff_unit["base_dir"]) / "bin/dingo-client").read_text(), "old client binary\n")
         self.assertEqual(self.service_events(), [])
 
-        # Run 2 (still busy): retry does not report disk change, preserves .bak and .restart-required, no restart.
+        # Alpha stays busy. Beta starts idle but gets a reader during staging.
+        beta_base = Path(diff_unit["base_dir"])
+        (beta_base / 'usage-count').unlink()
+        (beta_base / 'usage-plan.json').write_text(json.dumps([0, 1]))
         shutil.rmtree(self.reports)
         result, report = self.run_play(tasks, extra=extra)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -264,9 +271,12 @@ sys.exit(code)
         self.assertIs(records["alpha"]["changed_on_disk"], False)
         self.assertIs(records["alpha"]["pending_restart"], True)
         self.assertEqual((Path(same_unit["base_dir"]) / "bin/dingo-client.bak").read_text(), "old client binary\n")
+        self.assertEqual(records["beta"]["status"], "restart_deferred_busy")
+        self.assertTrue((beta_base / '.restart-required').exists())
         self.assertEqual(self.service_events(), [])
 
-        # Run 3 (alpha becomes idle): restarts alpha once, clears .restart-required, beta remains untouched.
+        # Both become idle. Stop beta's old unit immediately before starting the replacement.
+        (beta_base / 'usage-plan.json').write_text(json.dumps([0]))
         shutil.rmtree(self.reports)
         (Path(same_unit["base_dir"]) / "usage-plan.json").write_text(json.dumps([0]))
         (Path(same_unit["base_dir"]) / "usage-count").unlink(missing_ok=True)
@@ -278,8 +288,14 @@ sys.exit(code)
         self.assertIs(records["alpha"]["changed_on_disk"], False)
         self.assertIs(records["alpha"]["pending_restart"], False)
         self.assertFalse((Path(same_unit["base_dir"]) / ".restart-required").exists())
-        self.assertEqual(self.service_restarts(), [same_unit["service_name"]])
-        self.assertEqual(records["beta"]["status"], "skipped_busy_before_change")
+        self.assertEqual(records["beta"]["status"], "completed")
+        self.assertFalse((beta_base / '.restart-required').exists())
+        transitions = [(event['state'], event['name']) for event in self.service_events()
+                       if event['state'] in ('stopped', 'restarted')]
+        self.assertEqual(transitions, [('restarted', same_unit['service_name']),
+                                       ('stopped', 'dingofs-mount-beta-old'),
+                                       ('restarted', diff_unit['service_name'])])
+
     def test_unknown_upgrade_usage_is_an_error_not_a_busy_skip(self):
         client = self.client("node-a", "alpha", (2,))
         result, report = self.run_play(self.upgrade_tasks())
@@ -368,9 +384,22 @@ sys.exit(code)
         marker.write_text("restart required\n")
         variables = self.deployment_tail_variables(client)
         variables.update(_client_bin={"changed": False})
+        probe_count = Path(client["base_dir"]) / "mount-probe-count"
+        self.executable("findmnt", "#!" + sys.executable + "\n" + '''import json, sys
+from pathlib import Path
+mount = Path(sys.argv[-1])
+counter = mount.parent / 'mount-probe-count'
+attempt = int(counter.read_text()) if counter.exists() else 0
+counter.write_text(str(attempt + 1))
+if attempt == 0:
+    sys.exit(1)
+name = 'wrong-filesystem' if attempt == 1 else mount.parent.name
+print(json.dumps({'filesystems': [{'fstype': 'fuse.dingofs', 'source': 'DingoFS:' + name}]}))
+''')
         result, report = self.run_play(self.configure_tail(), extra=variables)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.service_restarts(), [client["service_name"]])
+        self.assertEqual(probe_count.read_text(), "3")
         self.assertFalse(marker.exists())
         self.assertIs(report["records"][0]["pending_restart"], False)
         self.assertIs(report["records"][0]["changed_on_disk"], False)

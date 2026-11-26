@@ -10,22 +10,6 @@
     client_report_status: started
     client_report_reason: configuring_instance
 
-# --- Retire the previous unit when its name changed ---
-# The check maps the mountpoint back to the unit that owns it (unit names do
-# not always match the mount path). When the unit being deployed has a
-# different name — e.g. v5.1 `dingofs-mount-manila` vs v5.2
-# `dingofs-mount-manila-v5.2` — stop and disable the old one first. When the
-# name is unchanged, the normal restart logic further down handles it.
-- name: "Stop and disable previous dingo-client service for {{ dingo_client_fsname }}"
-  systemd:
-    name: "{{ _mount_check_service }}"
-    state: stopped
-    enabled: false
-  when:
-    - not (_mount_busy_precheck | default(false) | bool)
-    - (_mount_check_service | default('')) | length > 0
-    - (_mount_check_service | default('') | regex_replace('[.]service$', '')) != (dingo_client_service_name | regex_replace('[.]service$', ''))
-
 # --- Create directories ---
 - name: "Create dingo-client base directory for {{ dingo_client_fsname }}"
   file:
@@ -73,12 +57,12 @@
   check_mode: true
   register: _client_binary_preview
 
-- name: Preserve a restart obligation before changing the client binary
+- name: Preserve a restart obligation before replacing the binary or switching units
   copy:
     content: "restart required\n"
     dest: "{{ dingo_client_base_dir }}/.restart-required"
     mode: "0600"
-  when: _client_binary_preview.changed
+  when: _client_binary_preview.changed or (_mount_unit_changed | default(false) | bool)
 
 # cp -p with `creates`, not mv: preserves rollback copy across retries,
 # leaves no missing-binary window for Restart=always, and keeps /proc/<pid>/exe
@@ -691,6 +675,18 @@
     - _restart_needed | bool
     - not (_client_restart_deferred | bool)
 
+# Keep the previous mount serving traffic until the replacement is ready and
+# the final usage check has cleared the switch.
+- name: "Stop and disable previous dingo-client service for {{ dingo_client_fsname }}"
+  systemd:
+    name: "{{ _mount_check_service }}"
+    state: stopped
+    enabled: false
+  when:
+    - _mount_unit_changed | default(false) | bool
+    - _restart_needed | bool
+    - not (_client_restart_deferred | bool)
+
 - name: "Restart dingo-client service for {{ dingo_client_fsname }}"
   systemd:
     name: "{{ dingo_client_service_name }}"
@@ -747,14 +743,22 @@
     - not (_client_restart_deferred | bool)
     - not (_mount_busy_precheck | default(false) | bool) or (_client_restart_result.changed | default(false) | bool)
 
-# --- Verify ---
-- name: "Wait for mount point to be active for {{ dingo_client_fsname }}"
-  command: mountpoint -q {{ dingo_client_mount_point }}
+# Verify mount identity from the kernel table. Probing the path with mountpoint
+# can wait indefinitely for a FUSE request and prevent retrying.
+- name: "Wait for the intended DingoFS mount for {{ dingo_client_fsname }}"
+  command:
+    argv: [findmnt, --kernel, --nocanonicalize, --json, --output, 'FSTYPE,SOURCE', --mountpoint, "{{ dingo_client_mount_point }}"]
+  vars:
+    _mounted: "{{ (mount_check.stdout | default('{\"filesystems\":[]}', true) | from_json).filesystems }}"
   register: mount_check
   retries: 40
   delay: 3
   changed_when: false
-  until: mount_check.rc == 0
+  until:
+    - mount_check.rc == 0
+    - _mounted | length == 1
+    - _mounted[0].fstype is match('^fuse([.]|$)')
+    - _mounted[0].source == 'DingoFS:' ~ dingo_client_fsname
   when:
     - not (_client_restart_deferred | bool)
     - not (_mount_busy_precheck | default(false) | bool) or (_client_restart_result.changed | default(false) | bool)
