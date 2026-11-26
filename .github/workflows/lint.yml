@@ -131,11 +131,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3]
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
     env:
       ANSIBLE_STDOUT_CALLBACK: ansible.builtin.default
       TEST_SHARD: ${{ matrix.shard }}
-      TEST_SHARDS: '4'
+      TEST_SHARDS: ${{ strategy.job-total }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -148,6 +148,7 @@ jobs:
       - name: Run regression shard
         run: |
           python3 - <<'PY'
+          import hashlib
           import os
           import sys
           import unittest
@@ -159,13 +160,16 @@ jobs:
                   else:
                       yield item
 
-          # Stable discovery order distributes individual test cases, rather
-          # than putting one large integration-test module on a single runner.
+          # Assign individual test IDs to shards so adding a test does not
+          # shift the assignment of all tests discovered after it.
           loader = unittest.TestLoader()
           all_cases = list(cases(loader.discover('tests')))
           shard = int(os.environ['TEST_SHARD'])
           count = int(os.environ['TEST_SHARDS'])
-          selected = all_cases[shard::count]
+          selected = [
+              case for case in all_cases
+              if int.from_bytes(hashlib.sha256(case.id().encode()).digest()[:4], 'big') % count == shard
+          ]
           if not all_cases or not selected:
               raise SystemExit('Regression discovery produced an empty shard')
           print(f'Shard {shard + 1}/{count}: {len(selected)} of {len(all_cases)} tests', flush=True)
