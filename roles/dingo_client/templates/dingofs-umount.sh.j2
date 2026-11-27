@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+#
+# Graceful stop for the DingoFS FUSE mount. systemd runs this as ExecStop
+# before it signals the client, so the client can flush dirty data and
+# deregister the mountpoint through the dingo CLI.
+
+g_dingo="{{ dingo_client_base_dir }}/bin/dingo"
+g_mnt="{{ dingo_client_mount_point }}"
+g_mdsaddr="{{ dingo_client_mds_addrs }}"
+
+# Nothing to detach: the service never mounted, or the mount is already gone.
+# Exit 0 so systemd does not report the stop as failed.
+if ! mountpoint -q "${g_mnt}" 2>/dev/null; then
+    echo "${g_mnt} is not mounted, nothing to unmount."
+    exit 0
+fi
+
+echo "Unmounting ${g_mnt}..."
+if ! "${g_dingo}" fs umount "${g_mnt}" --mdsaddr="${g_mdsaddr}"; then
+    echo "Cannot unmount ${g_mnt} through the dingo CLI." >&2
+    exit 1
+fi

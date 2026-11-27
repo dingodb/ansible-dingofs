@@ -559,6 +559,15 @@
     mode: "0755"
   register: _mount_sh
 
+# Deployed before the unit: ExecStop calls this path, so it must exist by the
+# time the service is (re)started. Its content is read at stop time, so a
+# change here does not require restarting the running client.
+- name: "Deploy dingofs-umount.sh for {{ dingo_client_fsname }}"
+  template:
+    src: dingofs-umount.sh.j2
+    dest: "{{ dingo_client_base_dir }}/dingofs-umount.sh"
+    mode: "0755"
+
 # --- Deploy systemd service ---
 - name: "Deploy dingo-client systemd service for {{ dingo_client_fsname }}"
   template:
