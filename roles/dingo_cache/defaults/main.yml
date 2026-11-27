@@ -101,6 +101,10 @@ dingo_cache_cpuset: ""
 dingo_cache_cpuset_numa_node: ""
 # Alert threshold while IB locality is required; otherwise a fallback trigger.
 dingo_cache_ib_node_mem_max_pct: 80
+# Check free memory before Cache activation with required IB locality.
+# The optional free-memory floor is in MiB across all shards.
+dingo_cache_numa_mem_gate: true
+dingo_cache_numa_min_free_mb: 0
 # CPUs busier than this % (mpstat 1s sample, skipped when sysstat is absent)
 # are excluded from auto-detection.
 dingo_cache_cpuset_busy_pct: 30
