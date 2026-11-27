@@ -163,6 +163,12 @@ dingo_client_mount_check_enabled: true
 # Default: only cci* Kubernetes containers; host process checks still apply.
 # Opt in to all containers and other process mount namespaces with true.
 dingo_client_mount_check_strict: false
+# false (default) = treat STALE (disconnected FUSE) container mounts as BUSY
+#                   (still tagged [STALE ...] in logs to distinguish from [LIVE ...]).
+# true            = pass --ignore-stale-mounts so a mount with zero host users
+#                   and only STALE container references is treated as IDLE;
+#                   any LIVE container reference still blocks as BUSY.
+dingo_client_ignore_stale_mounts: false
 dingo_client_mount_check_script: /root/dingofs/script/check/dingofs_mount_usage_check.sh
 
 # When a mountpoint is busy at precheck, stage updated binaries/config on disk

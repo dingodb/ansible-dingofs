@@ -346,6 +346,7 @@ dingo_client_rdma_port_num: 1
 # strict=false inspects containers in 'cci-*' namespaces; true inspects all.
 dingo_client_mount_check_enabled: true
 dingo_client_mount_check_strict: false  # cci* namespaces; true opts into all containers
+dingo_client_ignore_stale_mounts: false  # false keeps stale FUSE container mounts BUSY; true ignores STALE-only refs
 dingo_client_mount_check_script: /root/dingofs/script/check/dingofs_mount_usage_check.sh
 
 # --- 10.8 Logging ---
