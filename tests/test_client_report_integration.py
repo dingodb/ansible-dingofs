@@ -109,7 +109,8 @@ sys.exit(code)
             environment={"PATH": str(self.fakebin),
                          "CLIENT_REPORT_SERVICE_EVENTS": str(self.events)}, tasks=tasks)]))
         env = dict(os.environ, ANSIBLE_CONFIG=str(REPO / "ansible.cfg"),
-                   ANSIBLE_LIBRARY=str(self.library), ANSIBLE_STDOUT_CALLBACK="default",
+                   ANSIBLE_LIBRARY=os.pathsep.join((str(self.library), str(REPO / 'library'))),
+                   ANSIBLE_STDOUT_CALLBACK="default",
                    ANSIBLE_CALLBACK_PLUGINS=str(REPO / "callback_plugins"),
                    ANSIBLE_CALLBACKS_ENABLED="dingofs_client_report",
                    DINGO_CLIENT_REPORT_DIR=str(self.reports))
@@ -404,6 +405,38 @@ print(json.dumps({'filesystems': [{'fstype': 'fuse.dingofs', 'source': 'DingoFS:
         self.assertFalse(marker.exists())
         self.assertIs(report["records"][0]["pending_restart"], False)
         self.assertIs(report["records"][0]["changed_on_disk"], False)
+
+    def test_deploy_and_upgrade_reconcile_marker_without_restarting(self):
+        (self.library / "dingofs_client_runtime.py").write_text('''from pathlib import Path
+from ansible.module_utils.basic import AnsibleModule
+module = AnsibleModule(argument_spec=dict(unit=dict(), base_dir=dict(), mount_point=dict(),
+                                          fsname=dict(), reconcile=dict(type='bool')),
+                       supports_check_mode=True)
+marker = Path(module.params['base_dir']) / '.restart-required'
+reconciled = module.params['reconcile'] and marker.exists() and not module.check_mode
+if reconciled:
+    marker.unlink()
+module.exit_json(changed=reconciled, reconciled=reconciled)
+''')
+        client = self.client("node-a", "alpha", (1,))
+        base = Path(client["base_dir"])
+        binary = base / "bin/dingo-client"
+        binary.write_bytes(self.candidate.read_bytes())
+        binary.chmod(0o755)
+        marker = base / ".restart-required"
+        variables = self.deployment_tail_variables(client)
+        variables["_client_bin"] = {"changed": False}
+        for tasks, extra in [(self.configure_tail(), variables), (self.upgrade_tasks(), None)]:
+            marker.write_text("restart required\n")
+            result, report = self.run_play(tasks, extra=extra)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            row = report["records"][0]
+            self.assertEqual(row["status"], "completed")
+            self.assertEqual(row["reason"], "restart_marker_reconciled")
+            self.assertIs(row["pending_restart"], False)
+            self.assertFalse(marker.exists())
+            self.assertEqual(self.service_restarts(), [])
+            shutil.rmtree(self.reports)
 
     def test_independent_cli_update_does_not_restart_the_fuse_client(self):
         client = self.client("node-a", "alpha", (0,))

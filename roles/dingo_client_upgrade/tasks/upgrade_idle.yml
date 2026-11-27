@@ -65,8 +65,23 @@
     path: "{{ _base_dir }}/.restart-required"
   register: _upgrade_pending
 
+- name: Reconcile an already activated client upgrade
+  dingofs_client_runtime:
+    unit: "{{ _upgrade_unit }}"
+    base_dir: "{{ _base_dir }}"
+    mount_point: "{{ client_instance.mount_point }}"
+    fsname: "{{ client_instance.fsname }}"
+    reconcile: true
+  register: _upgrade_reconciliation
+  when:
+    - not ansible_check_mode
+    - _upgrade_pending.stat.exists
+    - not _upgrade_copy.changed
+
 - name: Apply the outstanding restart
-  when: _upgrade_pending.stat.exists
+  when:
+    - _upgrade_pending.stat.exists
+    - not (_upgrade_reconciliation.reconciled | default(false))
   block:
     - name: Record the last usage check before upgrade restart
       import_tasks: ../../common/tasks/client_report.yml
@@ -156,7 +171,17 @@
   import_tasks: ../../common/tasks/client_report.yml
   vars:
     client_report_stage: complete
-    client_report_status: "{{ 'dry_run' if ansible_check_mode else ('restart_deferred_busy' if _upgrade_pending.stat.exists and _upgrade_recheck.rc | default(-1) == 1 else 'completed') }}"
-    client_report_reason: "{{ 'check_mode' if ansible_check_mode else ('mount_in_use' if _upgrade_pending.stat.exists and _upgrade_recheck.rc | default(-1) == 1 else ('restarted' if _upgrade_pending.stat.exists else 'unchanged')) }}"
+    client_report_status: >-
+      {{ 'dry_run' if ansible_check_mode else
+         ('restart_deferred_busy' if _upgrade_pending.stat.exists
+          and not (_upgrade_reconciliation.reconciled | default(false))
+          and _upgrade_recheck.rc | default(-1) == 1 else 'completed') }}
+    client_report_reason: >-
+      {{ 'check_mode' if ansible_check_mode else
+         ('restart_marker_reconciled' if _upgrade_reconciliation.reconciled | default(false) else
+          ('mount_in_use' if _upgrade_pending.stat.exists and _upgrade_recheck.rc | default(-1) == 1
+           else ('restarted' if _upgrade_pending.stat.exists else 'unchanged'))) }}
     client_report_changed_on_disk: "{{ _upgrade_copy.changed | bool and not ansible_check_mode }}"
-    client_report_pending_restart: "{{ _upgrade_pending.stat.exists and _upgrade_recheck.rc | default(-1) != 0 }}"
+    client_report_pending_restart: >-
+      {{ _upgrade_pending.stat.exists and not (_upgrade_reconciliation.reconciled | default(false))
+         and _upgrade_recheck.rc | default(-1) != 0 }}
