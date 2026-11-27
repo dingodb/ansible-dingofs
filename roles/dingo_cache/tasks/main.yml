@@ -234,7 +234,7 @@
       (mem {{ (_cache_node_mem | default({})).get(_cache_ib_node | default(''), 'n/a') }}%),
       per-node mem {{ _cache_node_mem | default({}) }}, threshold {{ _cache_mem_thr }}% →
       preferred node {{ _cache_preferred_node }}
-      {{ '(required IB locality; memory is alert-only)' if _cache_require_ib | bool else ('(explicit override)' if (_cache_explicit_node | length > 0)
+      {{ '(required IB locality)' if _cache_require_ib | bool else ('(explicit override)' if (_cache_explicit_node | length > 0)
          else ('(IB node, memory OK)' if (_cache_preferred_node == _cache_ib_node and (_cache_ib_node | length > 0))
          else ('(IB node hot — OOM risk avoided)' if not (_cache_mem_all_hot | bool)
          else '(ALL NODES HOT — lowest-memory node picked)'))) }}

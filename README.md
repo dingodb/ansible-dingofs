@@ -811,6 +811,28 @@ alert threshold, not a reason to move CPUs to another NUMA node. Disabling
 `dingofs_numa_require_ib` restores memory-aware node selection and cross-node CPU
 fallback; RDMA-disabled hosts also retain that fallback behavior.
 
+`cache_05_deploy.yml` checks free memory by default before applying service
+changes or starting a stopped or stale Cache when both RDMA and required IB
+locality are enabled. The gate compares that node's `MemFree` with the v5.2
+startup budget for all shards, including the data and RDMA message pools. A positive
+`dingo_cache_numa_min_free_mb` sets a floor in MiB if it exceeds that budget.
+An unchanged, current Cache without a pending restart skips the gate.
+
+To preview the same calculation without applying a deployment, pass the node
+and intended Cache settings to the read-only module:
+
+```bash
+ansible -i "$SITE/hosts.py" cache_servers --limit NODE \
+  -m dingofs_cache_numa_memory \
+  -a 'numa_node=0 shards=8 buffer_pool_mb=512 rdma_max_connections=256'
+```
+
+The module reports free and estimated available memory on each node. Set
+`enforce=true` to validate the failure path for an insufficient budget.
+The deploy role uses enforcement before replacing its Cache files or
+changing its service. A deliberate per-host override can disable the gate
+with `dingo_cache_numa_mem_gate: false`.
+
 Use a limited `cache_05_deploy.yml` / `client_04_deploy.yml` rollout to apply this
 configuration. Changed startup scripts/cpusets can require service restarts;
 existing client busy-mount checks remain in effect. Binary-only upgrade

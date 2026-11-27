@@ -27,6 +27,27 @@
   check_mode: true
   register: _cache_templates_preview
 
+- name: Check NUMA memory before Cache activation
+  when:
+    - dingo_cache_numa_mem_gate | default(true) | bool
+    - _cache_require_ib | default(false) | bool
+  block:
+    - import_tasks: inspect_runtime.yml
+      when: not (_cache_binary_preview.changed or _cache_templates_preview.changed)
+
+    - name: Require enough free memory for the Cache RDMA pools
+      dingofs_cache_numa_memory:
+        numa_node: "{{ dingo_cache_numactl_node_effective }}"
+        shards: "{{ dingo_cache_shards | default(8) }}"
+        buffer_pool_mb: "{{ dingo_cache_buffer_pool_mb | default(1024) }}"
+        rdma_max_connections: "{{ dingo_cache_rdma_max_connections | default(256) }}"
+        min_free_mb: "{{ dingo_cache_numa_min_free_mb | default(0) }}"
+        enforce: true
+      when: >-
+        _cache_binary_preview.changed or _cache_templates_preview.changed
+        or _cache_restart_pending.stat.exists
+        or _cache_running_image.stdout != 'current'
+
 - name: Preserve a restart obligation before changing cache service files
   copy:
     content: "restart required\n"

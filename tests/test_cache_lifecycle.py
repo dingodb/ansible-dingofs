@@ -28,8 +28,9 @@ class CacheLifecycleTests(unittest.TestCase):
         self.config = self.base / 'dingo-cache.conf'
         self.config.write_text('--listen_ip=127.0.0.1\n--log_level=info\n')
         self.marker = self.base / '.restart-required'
-        self.fail = self.root / 'fail-restart'
+        self.restart_failure = self.root / 'fail-restart'
         self.events = self.root / 'events'
+        self.service_actions = self.root / 'service-actions'
         self.running = self.root / 'running/dingo-cache'
         self.running.parent.mkdir()
         self.running.write_text('old binary')
@@ -53,6 +54,9 @@ from pathlib import Path
 import os,shutil
 m=AnsibleModule(argument_spec=dict(name=dict(),state=dict(),enabled=dict(type='bool'),
                                 daemon_reload=dict(type='bool')),supports_check_mode=True)
+if not m.check_mode:
+    action = m.params['state'] or 'daemon reload'
+    with Path(os.environ['CACHE_SERVICE_ACTIONS']).open('a') as stream:stream.write(action + '\\n')
 if m.params['state']=='restarted' and not m.check_mode:
     with Path(os.environ['CACHE_EVENTS']).open('a') as stream:stream.write('restart\\n')
     if Path(os.environ['CACHE_FAIL']).exists():m.fail_json(msg='injected restart failure')
@@ -93,6 +97,23 @@ m.exit_json(changed=False)
         self.inspector = self.root / 'inspect_runtime.yml'
         self.inspector.write_text(inspector.replace('/proc/', str(self.root / 'proc') + '/'))
 
+    def configure_numa_memory_fixture(self):
+        self.node_root = self.root / 'sys/node'
+        self.set_free_memory(0, 2048)
+        self.set_free_memory(1, 32768)
+        module = 'dingofs_cache_numa_memory.py'
+        source = (REPO / 'library' / module).read_text()
+        (self.library / module).write_text(source.replace(
+            "Path('/sys/devices/system/node')", 'Path({!r})'.format(str(self.node_root))))
+        self.variables.update(_cache_require_ib=True,
+                              dingo_cache_numactl_node_effective=0, dingo_cache_buffer_pool_mb=512)
+
+    def set_free_memory(self, node, free_mib):
+        directory = self.node_root / 'node{}'.format(node)
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / 'meminfo').write_text('Node {0} MemTotal: 67108864 kB\nNode {0} MemFree: {1} kB\n'
+                                           .format(node, free_mib * 1024))
+
     def adapt(self, value):
         if isinstance(value, list):
             return [self.adapt(item) for item in value]
@@ -120,11 +141,13 @@ m.exit_json(changed=False)
         play.write_text(yaml.safe_dump([dict(hosts='localhost', gather_facts=False,
             vars=self.variables, tasks=self.adapt(tasks), handlers=handlers,
             environment={'PATH': str(self.fakebin) + ':' + os.environ['PATH'],
-                         'CACHE_EVENTS': str(self.events), 'CACHE_FAIL': str(self.fail),
+                         'CACHE_EVENTS': str(self.events), 'CACHE_FAIL': str(self.restart_failure),
+                         'CACHE_SERVICE_ACTIONS': str(self.service_actions),
                          'CACHE_INSTALLED': str(self.installed), 'CACHE_RUNNING': str(self.running)})]))
         return subprocess.run(['ansible-playbook', '-i', 'localhost,', str(play)] + (['--check'] if check else []),
             cwd=REPO, env=dict(os.environ, ANSIBLE_CONFIG=str(REPO / 'ansible.cfg'),
-                              ANSIBLE_LIBRARY=str(self.library)), capture_output=True, text=True, timeout=60)
+                              ANSIBLE_LIBRARY=os.pathsep.join((str(self.library), str(REPO / 'library')))),
+            capture_output=True, text=True, timeout=60)
 
     def restarts(self):
         return self.events.read_text().splitlines() if self.events.exists() else []
@@ -133,12 +156,12 @@ m.exit_json(changed=False)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def interrupted_binary_update(self, entry):
-        self.fail.touch()
+        self.restart_failure.touch()
         result = self.run_play(entry)
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.installed.read_text(), 'new binary')
         self.assertTrue(self.marker.exists())
-        self.fail.unlink()
+        self.restart_failure.unlink()
         for _ in range(2):
             self.assert_succeeded(self.run_play(entry))
             self.assertFalse(self.marker.exists())
@@ -157,13 +180,13 @@ m.exit_json(changed=False)
     def test_deploy_recovers_a_config_only_change_with_a_current_binary(self):
         self.candidate.write_text('old binary')
         self.variables['fixture_log_level'] = 'error'
-        self.fail.touch()
+        self.restart_failure.touch()
         result = self.run_play()
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn('--log_level=error', self.config.read_text())
         self.assertEqual(self.running.read_text(), self.installed.read_text())
         self.assertTrue(self.marker.exists())
-        self.fail.unlink()
+        self.restart_failure.unlink()
         for _ in range(2):
             self.assert_succeeded(self.run_play())
             self.assertFalse(self.marker.exists())
@@ -175,6 +198,50 @@ m.exit_json(changed=False)
         self.assertEqual(self.running.read_text(), 'old binary')
         self.assertFalse(self.marker.exists())
         self.assertEqual(self.restarts(), [])
+
+    def test_numa_gate_blocks_file_replacement_and_service_changes(self):
+        self.configure_numa_memory_fixture()
+        self.variables['fixture_log_level'] = 'error'
+        result = self.run_play()
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('Cache startup on NUMA 0 needs 12352 MiB free', result.stdout)
+        self.assertIn('NUMA 1 free 32768.00 MiB', result.stdout)
+        self.assertEqual(self.installed.read_text(), 'old binary')
+        self.assertIn('--log_level=info', self.config.read_text())
+        self.assertFalse(self.marker.exists())
+        self.assertFalse(self.service_actions.exists())
+
+    def test_numa_gate_rechecks_pending_restart_when_files_already_match(self):
+        self.configure_numa_memory_fixture()
+        self.candidate.write_text('old binary')
+        self.marker.touch()
+        result = self.run_play()
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('Cache startup on NUMA 0 needs 12352 MiB free', result.stdout)
+        self.assertTrue(self.marker.exists())
+        self.assertFalse(self.service_actions.exists())
+        self.set_free_memory(0, 12352)
+        self.assert_succeeded(self.run_play())
+        self.assertFalse(self.marker.exists())
+        self.assertEqual(self.restarts(), ['restart'])
+
+    def test_numa_gate_preserves_current_cache_and_allows_explicit_opt_out(self):
+        self.configure_numa_memory_fixture()
+        self.candidate.write_text('old binary')
+        self.assert_succeeded(self.run_play())
+        self.assertEqual(self.restarts(), [])
+        self.variables['dingo_cache_numa_mem_gate'] = False
+        self.candidate.write_text('new binary')
+        self.assert_succeeded(self.run_play())
+        self.assertEqual(self.running.read_text(), 'new binary')
+        self.assertEqual(self.restarts(), ['restart'])
+
+    def test_numa_gate_only_applies_with_required_ib_locality(self):
+        self.configure_numa_memory_fixture()
+        self.variables['_cache_require_ib'] = False
+        self.assert_succeeded(self.run_play())
+        self.assertEqual(self.running.read_text(), 'new binary')
+        self.assertEqual(self.restarts(), ['restart'])
 
 
 if __name__ == '__main__':
