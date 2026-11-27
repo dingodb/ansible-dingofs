@@ -606,11 +606,26 @@
     path: "{{ dingo_client_base_dir }}/.restart-required"
   register: _client_restart_pending
 
+- name: Reconcile an already activated client deployment
+  dingofs_client_runtime:
+    unit: "{{ dingo_client_service_name }}"
+    base_dir: "{{ dingo_client_base_dir }}"
+    mount_point: "{{ dingo_client_mount_point }}"
+    fsname: "{{ dingo_client_fsname }}"
+    reconcile: true
+  register: _client_reconciliation
+  when:
+    - not ansible_check_mode
+    - _client_restart_pending.stat.exists
+    - not (_mount_sh.changed or _mount_service.changed or _client_bin.changed)
+    - not (_mount_unit_changed | default(false) | bool)
+
 - name: "Set whether a restart is needed for {{ dingo_client_fsname }}"
   set_fact:
     _restart_needed: >-
       {{ _mount_sh.changed or _mount_service.changed
-         or _client_bin.changed or _client_restart_pending.stat.exists }}
+         or _client_bin.changed
+         or (_client_restart_pending.stat.exists and not (_client_reconciliation.reconciled | default(false))) }}
 
 - name: Record the last usage check before a required restart
   import_tasks: ../../common/tasks/client_report.yml
@@ -799,7 +814,8 @@
       {{ 'check_mode' if ansible_check_mode else
          (('mount_in_use' if _mount_in_use_state == 'busy' else 'mount_usage_not_verified')
           if (_restart_needed | bool and not (_client_restart_result.changed | default(false) | bool))
-          else ('restarted' if _client_restart_result.changed | default(false) | bool else 'unchanged')) }}
+          else ('restarted' if _client_restart_result.changed | default(false) | bool
+          else ('restart_marker_reconciled' if _client_reconciliation.reconciled | default(false) else 'unchanged'))) }}
     client_report_changed_on_disk: "{{ (_mount_sh.changed or _mount_service.changed or _client_bin.changed) and not ansible_check_mode }}"
     client_report_pending_restart: "{{ _restart_needed | bool and not (_client_restart_result.changed | default(false) | bool) }}"
 

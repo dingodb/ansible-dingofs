@@ -1,5 +1,4 @@
 """Run preflight and final health assertions without contacting remote hosts."""
-import json
 import os
 from pathlib import Path
 import shutil
@@ -144,17 +143,6 @@ printf '%s\\n' "$@" > "{}"
                         self.assertIn(expected_msg, result.stdout)
             finally:
                 os.environ['PATH'] = old_path
-
-    def test_client_health_requires_the_intended_fuse_filesystem(self):
-        task = yaml.safe_load((REPO / 'playbooks/client_99_status.yml').read_text())[0]['tasks'][-1]
-        for kind, source, success in [('fuse.dingofs', 'DingoFS:work', True),
-                                      ('fuse', 'DingoFS:work', True),
-                                      ('ext4', 'DingoFS:work', False),
-                                      ('fuse.dingofs', 'DingoFS:other', False)]:
-            value = {'rc': 0, 'stdout': json.dumps({'filesystems': [{'fstype': kind, 'source': source}]}),
-                     'item': {'mount_point': '/fixture', 'fsname': 'work'}}
-            result = self.run_tasks([task], {'_client_mount_types': {'results': [value]}})
-            self.assertEqual(result.returncode == 0, success, result.stdout + result.stderr)
 
 
 if __name__ == '__main__':

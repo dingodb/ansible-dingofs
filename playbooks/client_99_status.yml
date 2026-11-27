@@ -59,57 +59,46 @@
           {%- endif %}.
       when: not (_dingo_clients_has_targets | bool)
 
-    - name: Check dingo-client service status
-      systemd:
-        name: "{{ item.service_name | default('dingofs-mount-' ~ item.fsname ~ (dingo_client_version_suffix | default(''))) }}"
-      register: service_info
-      loop: "{{ _dingo_clients_selected }}"
-      loop_control:
-        label: "{{ item.fsname }}"
-
-    - name: Terminate if service is inactive
-      fail:
-        msg: "{{ inventory_hostname }}: {{ item.service_name | default('dingofs-mount-' ~ item.fsname ~ (dingo_client_version_suffix | default(''))) }} is {{ service_info.results[my_idx].status.ActiveState | default('unknown') }}"
-      when: (service_info.results[my_idx].status.ActiveState | default('unknown')) != 'active'
-      loop: "{{ _dingo_clients_selected }}"
-      loop_control:
-        label: "{{ item.fsname }}"
-        index_var: my_idx
-
-    - name: Display active service status
-      debug:
-        msg: "{{ inventory_hostname }}: {{ item.service_name | default('dingofs-mount-' ~ item.fsname ~ (dingo_client_version_suffix | default(''))) }} is active"
-      loop: "{{ _dingo_clients_selected }}"
-      loop_control:
-        label: "{{ item.fsname }}"
-
-    # Path and capacity probes can block in a stalled FUSE client. Read the
-    # kernel mount table without resolving the path through the filesystem.
-    - name: Read filesystem identity from the kernel mount table
-      command:
-        argv:
-          - findmnt
-          - --kernel
-          - --nocanonicalize
-          - --json
-          - --output
-          - FSTYPE,SOURCE
-          - --mountpoint
-          - "{{ item.mount_point }}"
-      loop: "{{ _dingo_clients_selected }}"
-      register: _client_mount_types
-      changed_when: false
-      failed_when: false
-
-    - name: Require the intended DingoFS filesystem at each mount
+    - name: Inspect client service, running binary and restart marker
       vars:
-        _mounted: "{{ item.stdout | default('{\"filesystems\":[]}', true) | from_json }}"
+        _suffix: "{{ dingo_client_version_suffix | default('') }}"
+      dingofs_client_runtime:
+        unit: "{{ item.service_name | default('dingofs-mount-' ~ item.fsname ~ _suffix) }}"
+        base_dir: "{{ item.base_dir | default('/root/dingofs/dingo-client/' ~ item.fsname ~ _suffix) }}"
+        mount_point: "{{ item.mount_point }}"
+        fsname: "{{ item.fsname }}"
+        report_version: true
+        usage_script: >-
+          {{ (dingo_client_mount_check_script | default('/root/dingofs/script/check/dingofs_mount_usage_check.sh'))
+             if dingo_client_status_check_usage | default(false) | bool else omit }}
+        usage_strict: "{{ dingo_client_mount_check_strict | default(false) | bool }}"
+      register: _client_runtime
+      loop: "{{ _dingo_clients_selected }}"
+      loop_control:
+        label: "{{ item.mount_point }}"
+
+    - name: Show Client runtime status
+      debug:
+        msg: >-
+          {{ inventory_hostname }} {{ item.item.mount_point }}
+          service={{ item.active_state }} mount={{ item.mount_state }}
+          pid={{ item.pid | default('unknown', true) }} version={{ item.running_version }}
+          binary={{ item.binary_match }} config={{ item.config_match }}
+          restart_marker={{ item.restart_marker }} reconciliation={{ item.reconciliation }}
+          usage={{ item.mount_usage }}
+      loop: "{{ _client_runtime.results }}"
+      loop_control:
+        label: "{{ item.item.mount_point }}"
+
+    - name: Require active service and intended DingoFS mount
       assert:
         that:
-          - item.rc == 0
-          - _mounted.filesystems | length == 1
-          - _mounted.filesystems[0].fstype is match('^fuse([.]|$)')
-          - _mounted.filesystems[0].source == 'DingoFS:' ~ item.item.fsname
-        fail_msg: "{{ item.item.mount_point }} does not contain the intended DingoFS filesystem."
+          - item.active_state == 'active'
+          - item.mount_state == 'mounted'
+        fail_msg: >-
+          {{ item.item.fsname }} at {{ item.item.mount_point }} has service={{ item.active_state }}
+          and mount={{ item.mount_state }}. Inspect the runtime status above.
         success_msg: "{{ item.item.mount_point }} is mounted from DingoFS:{{ item.item.fsname }}."
-      loop: "{{ _client_mount_types.results }}"
+      loop: "{{ _client_runtime.results }}"
+      loop_control:
+        label: "{{ item.item.mount_point }}"

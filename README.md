@@ -523,6 +523,24 @@ Rules enforced before changing any host:
 - `client_08_uninstall.yml` allows `dingo_client_only` to match `enabled: false`
   entries so you can disable an entry in inventory first and then uninstall it.
 
+### Check client runtime state
+
+`client_99_status.yml` prints one row per selected instance with the service and
+mount state, running version, binary and configuration comparison, and restart
+marker. It uses the kernel mount table for mount identity. Pass
+`-e dingo_client_status_check_usage=true` to also run the installed usage
+checker with the site's `dingo_client_mount_check_strict` setting.
+
+`restart_marker=present reconciliation=clearable` means the marker and loaded
+configuration predate the current service launch, the service owns the
+intended client, and its running binary and mount match the installed
+instance. The status playbook only reports this evidence. Deploy and
+binary-only upgrade can clear that marker without a restart once their target
+files are in place. Their JSON reports use `reason: restart_marker_reconciled`.
+New or unverified changes still use the normal usage gate. An instance skipped
+before configuration because `dingo_client_stage_when_busy=false` retains its
+files and marker.
+
 ### Discover mounts without knowing filesystem names
 
 `client_98_discover.yml` scans the selected nodes without reading `dingo_clients`,
@@ -636,11 +654,9 @@ could be identified. Reports contain structured summaries, not full checker
 output, container inspection data or inventory credentials. Writing reports
 does not change the existing mount checks, force flags or failure behavior.
 
-For `changed_on_disk: true` and `pending_restart: true`, wait for the mount to
-be idle before completing the restart. An unchanged repeat of the ordinary
-deployment does not necessarily retry a previously deferred restart; use the
-upgrade entry point's checks or arrange a controlled manual restart. The report
-is an execution snapshot and does not itself schedule or perform a restart.
+For `changed_on_disk: true` and `pending_restart: true`, rerun the relevant
+deploy or upgrade after the mount becomes idle. The report records the
+operation's result for that run.
 
 ## Meta Server Deployment Phases
 
