@@ -632,9 +632,13 @@
       Failing fast here prevents dingo-cache from silently falling back to writing on the system disk.
 
 # --- Select uniform-spec cache disks (dynamic, per-host) ---
-# Policy: (1) exclude disks smaller than dingo_cache_min_disk_gb (default 1000 GB) from caching,
-# (2) keep only the LARGEST same-spec group (disks within 1% of each other) so that a
-# single cache_size_mb = group_capacity × disk_usage_ratio applies to every selected disk.
+# Policy: (1) drop container-runtime mounts (kubelet volume-subpaths etc.) and
+# collapse each filesystem to one canonical mountpoint — discovery matches by
+# source device, so one LV bind-mounted N times must not count as N disks,
+# (2) exclude disks smaller than dingo_cache_min_disk_gb (default 1000 GB) from
+# caching, (3) keep only the LARGEST same-spec group (disks within 1% of each
+# other) so that a single cache_size_mb = group_capacity × disk_usage_ratio
+# applies to every selected disk.
 # A log prefix on a separate tree is still reserved for logs -- those mounts are
 # never used as cache disks -- but a log prefix nested inside the data prefix
 # stays a cache candidate under the normal size rule; the log dir itself
@@ -645,7 +649,7 @@
     python3 - <<'PYEOF'
     import json, os
 
-    mounts = """{{ discovered_mounts.stdout_lines | join('\n') }}""".split()
+    discovered = """{{ discovered_mounts.stdout_lines | join('\n') }}""".split()
     min_gb = {{ dingo_cache_min_disk_gb | int }}
     ratio = {{ dingo_cache_disk_usage_ratio | float }}
     data_subdir = "{{ dingo_cache_data_subdir }}"
@@ -653,9 +657,70 @@
     log_prefix = "{{ _dingo_cache_log_prefix }}"
     data_prefix = "{{ _dingo_cache_data_prefix }}"
     explicit_log_dir = "{{ hostvars[inventory_hostname].get('dingo_cache_log_dir', '') }}"
+    # tojson keeps the list intact; default([], true) also maps null to []. A
+    # scalar string would iterate per character (a lone "/" then excludes every
+    # absolute mount), so reject it loudly instead of mis-selecting disks.
+    # (A JSON string array is also a valid Python literal.)
+    exclude_prefixes = {{ dingo_cache_exclude_mount_prefixes | default([], true) | tojson }}
+    if not isinstance(exclude_prefixes, list):
+        raise SystemExit(
+            "dingo_cache_exclude_mount_prefixes must be a LIST of path prefixes, got %r"
+            % (exclude_prefixes,))
 
     def gib(b):
         return "%.2f GiB" % (b / (1024.0 ** 3))
+
+    def has_prefix(path, prefix):
+        # Plain string prefix, matching how these prefixes are used elsewhere
+        # in this role (awk index() == 1 discovery, _data_p* shell globs).
+        return bool(prefix) and path.startswith(prefix)
+
+    # Discovery matches mounts by SOURCE DEVICE, so one filesystem that is also
+    # bind-mounted elsewhere shows up once per mountpoint. The common case is
+    # kubelet pod volume-subpaths: /var/lib/kubelet/pods/<pod>/volume-subpaths/
+    # <volume>/... is the SAME filesystem as /mnt/diskN, not an extra disk.
+    # Count each filesystem (st_dev) once, keep its canonical mountpoint
+    # (prefer the data prefix), and never use container-runtime mounts.
+    ignored = []
+    by_fs = {}
+    for mp in discovered:
+        if any(has_prefix(mp, prefix) for prefix in exclude_prefixes):
+            ignored.append("%s (excluded runtime mount)" % mp)
+            continue
+        by_fs.setdefault(os.stat(mp).st_dev, []).append(mp)
+
+    def primary_mounts():
+        # Mountpoints that are the real mount of the filesystem (root "/").
+        # A bind/subPath mount (kubelet volume-subpaths, ad-hoc binds) has a
+        # non-/ root, so it can never outrank the actual /mnt/diskN mount.
+        primary = set()
+        try:
+            with open("/proc/self/mountinfo") as stream:
+                for line in stream:
+                    # id parent maj:min root mountpoint opts [optional...] - fstype source super_opts
+                    fields = line.split()
+                    if len(fields) >= 5 and fields[3] == "/":
+                        primary.add(fields[4])
+        except OSError:
+            pass
+        return primary
+
+    primary = primary_mounts()
+
+    def mount_rank(mp):
+        return (0 if has_prefix(mp, data_prefix) else 1,
+                0 if mp in primary else 1,
+                0 if has_prefix(mp, log_prefix) else 1,
+                mp.count("/"), mp)
+
+    mounts = []
+    for mps in by_fs.values():
+        chosen = min(mps, key=mount_rank)
+        mounts.append(chosen)
+        for mp in mps:
+            if mp != chosen:
+                ignored.append("%s (same filesystem as %s)" % (mp, chosen))
+    mounts = sorted(mounts)
 
     disks = []
     for mp in mounts:
@@ -732,6 +797,7 @@
         "count": len(group),
         "size_mb": size_mb,
         "skipped": ["%s (%s)" % (d[0], gib(d[1])) for d in skipped],
+        "ignored": ignored,
         "log_dir": log_dir,
         "log_warn": log_warn,
     }
@@ -783,6 +849,7 @@
       ({{ _cache_sel.count }} disk(s) × {{ dingo_cache_weight_per_disk }} per disk)
       iodepth={{ dingo_cache_iodepth }} per disk
       excluded from cache: {{ _cache_sel.skipped | join('; ') if _cache_sel.skipped | length > 0 else 'none' }}
+      ignored duplicate/runtime mounts: {{ _cache_sel.ignored | join('; ') if _cache_sel.ignored | length > 0 else 'none' }}
       log_dir={{ dingo_cache_log_dir }}
   when: disk_selection is succeeded
 
