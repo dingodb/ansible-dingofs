@@ -16,6 +16,7 @@ dingo_client_upgrade_script_path: /tmp/dingofs_restart_check.sh
 
 dingo_client_mount_check_script: /tmp/dingofs_mount_usage_check.sh
 dingo_client_mount_check_strict: false
+dingo_client_ignore_stale_mounts: false
 
 # When a mountpoint is busy at precheck, stage the updated binary on disk
 # (atomic replacement + .bak + .restart-required) and defer ONLY the systemd

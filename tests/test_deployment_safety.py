@@ -663,6 +663,22 @@ systemctl() {
             with self.subTest(mode=mode):
                 self.assertEqual(self.run_cri(mode).returncode, 2)
 
+    def test_fuser_error_does_not_become_idle(self):
+        source = (REPO / 'roles/common/files/dingofs_mount_usage_check.sh').read_text()
+        function = source[source.index('host_processes_busy() {'):source.index('# --- Check 2:')]
+        script = '''
+log() { echo "$*"; }
+fuser() {
+    if [ -n "$FUSER_ERROR" ]; then echo "$FUSER_ERROR" >&2; fi
+    return "$FUSER_STATUS"
+}
+''' + function + '\nhost_processes_busy /fixture/public\n'
+        for status, error, expected in [('1', '', 1), ('1', 'Cannot stat', 2), ('2', '', 2)]:
+            with self.subTest(status=status, error=error):
+                result = subprocess.run(['/bin/bash'], input=script, text=True, capture_output=True,
+                                        env=dict(os.environ, FUSER_STATUS=status, FUSER_ERROR=error))
+                self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
+
 
 class MountReferenceTests(unittest.TestCase):
     def setUp(self):
@@ -712,6 +728,266 @@ class MountReferenceTests(unittest.TestCase):
         for source in ['', 'proc', 'tmpfs']:
             self.assertEqual(self.code['container_references'](self.detail(source), '/mnt/new', None), [])
 
+    def test_mounted_device_reads_mountinfo_without_stat(self):
+        with tempfile.TemporaryDirectory() as directory:
+            mi = Path(directory) / 'mountinfo'
+            mi.write_text(
+                '22 1 8:1 / / rw - ext4 /dev/sda1 rw\n'
+                '100 22 0:45 / /mnt/public-fs rw - fuse.dingofs DingoFS:dingospeed-public rw\n'
+                '2208 22 0:424 / /mnt/public-fs rw shared:1601 - fuse.dingofs DingoFS:dingospeed-public rw\n'
+            )
+            def mapped(value):
+                return mi if str(value) == '/proc/self/mountinfo' else Path(value)
+            with patch.dict(self.code, Path=mapped), \
+                    patch.object(os, 'stat', side_effect=AssertionError('stat must not be called')):
+                self.assertEqual(self.code['mounted_device']('/mnt/public-fs'), '0:424')
+                self.assertIsNone(self.code['mounted_device']('/mnt/unmounted'))
+
+    def test_live_vs_stale_direct_container_mounts_and_ignore_stale(self):
+        host_rows = [{
+            'device': '0:424', 'root': '/', 'path': '/mnt/public-fs',
+            'optional': ['shared:1601'], 'fstype': 'fuse.dingofs',
+            'source': 'DingoFS:dingospeed-public',
+        }]
+        stale_rows = [{
+            'device': '0:45', 'root': '/', 'path': '/root/public',
+            'optional': [], 'fstype': 'fuse.dingofs',
+            'source': 'DingoFS:dingospeed-public',
+        }]
+        live_rows = [{
+            'device': '0:424', 'root': '/', 'path': '/root/public',
+            'optional': [], 'fstype': 'fuse.dingofs',
+            'source': 'DingoFS:dingospeed-public',
+        }]
+        shared_rows = [{
+            'device': '0:99', 'root': '/', 'path': '/root/public',
+            'optional': ['master:1601'], 'fstype': 'fuse.dingofs',
+            'source': 'DingoFS:dingospeed-public',
+        }]
+        detail = self.detail('/mnt/public-fs', '/root/public', pid=2413414)
+        with patch.dict(self.code, mountinfo=lambda _: stale_rows, confirms_disconnect=lambda *_: True):
+            refs = self.code['container_references'](
+                detail, '/mnt/public-fs', '0:424', target_peers={'1601'}, host_rows=host_rows)
+            self.assertEqual(len(refs), 1)
+            self.assertIn('[STALE dev=0:45 != host 0:424, ENOTCONN]', refs[0])
+            self.assertEqual(self.code['container_references'](
+                detail, '/mnt/public-fs', '0:424', target_peers={'1601'},
+                host_rows=host_rows, ignore_stale=True), [])
+        with patch.dict(self.code, mountinfo=lambda _: live_rows):
+            refs = self.code['container_references'](
+                detail, '/mnt/public-fs', '0:424', target_peers={'1601'},
+                host_rows=host_rows, ignore_stale=True)
+            self.assertEqual(len(refs), 1)
+            self.assertIn('[LIVE dev=0:424]', refs[0])
+        with patch.dict(self.code, mountinfo=lambda _: shared_rows):
+            refs = self.code['container_references'](
+                detail, '/mnt/public-fs', '0:424', target_peers={'1601'},
+                host_rows=host_rows, ignore_stale=True)
+            self.assertEqual(len(refs), 1)
+            self.assertIn('[LIVE dev=0:99 shared-propagation]', refs[0])
+
+    def test_stale_direct_mount_does_not_mask_live_alias_in_same_container(self):
+        host_rows = [{
+            'device': '0:424', 'root': '/', 'path': '/mnt/public-fs',
+            'optional': ['shared:1601'], 'fstype': 'fuse.dingofs',
+            'source': 'DingoFS:dingospeed-public',
+        }]
+        mixed_rows = [
+            {'device': '0:45', 'root': '/', 'path': '/root/public',
+             'optional': [], 'fstype': 'fuse.dingofs', 'source': 'DingoFS:dingospeed-public'},
+            {'device': '0:424', 'root': '/', 'path': '/mnt/alias',
+             'optional': [], 'fstype': 'fuse.dingofs'},
+        ]
+        detail = self.detail('/mnt/public-fs', '/root/public', pid=2413414)
+        with patch.dict(self.code, mountinfo=lambda _: mixed_rows, confirms_disconnect=lambda *_: True):
+            refs = self.code['container_references'](
+                detail, '/mnt/public-fs', '0:424', target_peers={'1601'},
+                host_rows=host_rows, ignore_stale=True)
+            self.assertEqual(len(refs), 1)
+            self.assertIn('[LIVE dev=0:424]', refs[0])
+            self.assertIn('/mnt/alias', refs[0])
+
+    def test_cri_ignore_stale_mounts_policy_and_fail_closed_cases(self):
+        host_rows = [{
+            'device': '0:424', 'root': '/', 'path': '/mnt/public-fs',
+            'optional': ['shared:1601'], 'fstype': 'fuse.dingofs',
+            'source': 'DingoFS:dingospeed-public',
+        }]
+        pods = {'items': [
+            {'id': 'p-stale', 'metadata': {'namespace': 'cci-a', 'name': 'pod-stale'}},
+            {'id': 'p-live', 'metadata': {'namespace': 'cci-b', 'name': 'pod-live'}},
+        ]}
+        details = {
+            'c-stale': {'info': {'pid': 101}, 'status': {'mounts': [
+                {'hostPath': '/mnt/public-fs', 'containerPath': '/root/public'}]}},
+            'c-live': {'info': {'pid': 202}, 'status': {'mounts': [
+                {'hostPath': '/mnt/public-fs', 'containerPath': '/root/public'}]}},
+            'c-nopid': {'info': {}, 'status': {'mounts': [
+                {'hostPath': '/mnt/public-fs', 'containerPath': '/root/public'}]}},
+        }
+        mount_by_pid = {
+            '/proc/101/mountinfo': [{'device': '0:45', 'path': '/root/public', 'optional': [],
+                                     'fstype': 'fuse.dingofs', 'source': 'DingoFS:dingospeed-public'}],
+            '/proc/202/mountinfo': [{'device': '0:424', 'path': '/root/public', 'optional': [], 'fstype': 'fuse.dingofs'}],
+        }
+        def make_cri(container_ids):
+            def fake_cri(*args):
+                if args[0] == 'pods':
+                    return pods
+                if args[0] == 'ps':
+                    return {'containers': [
+                        {'id': cid, 'podSandboxId': 'p-live' if cid == 'c-live' else 'p-stale'}
+                        for cid in container_ids
+                    ]}
+                if args[0] == 'inspect':
+                    return details[args[-1]]
+                raise AssertionError(args)
+            return fake_cri
+
+        logs = []
+        base = dict(host_mountinfo=lambda: host_rows, mounted_device=lambda _: '0:424',
+                    mountinfo=lambda p: mount_by_pid[str(p)], log=logs.append)
+        # STALE only: BUSY by default, IDLE with ignore_stale=True
+        with patch.dict(self.code, cri=make_cri(['c-stale']), **base), \
+                patch.object(subprocess, 'run', return_value=subprocess.CompletedProcess([], errno.ENOTCONN)) as probe:
+            logs.clear()
+            self.assertEqual(self.code['check_cri']('/mnt/public-fs', False, False), 1)
+            self.assertTrue(any('[STALE dev=0:45 != host 0:424, ENOTCONN]' in m for m in logs))
+            logs.clear()
+            self.assertEqual(self.code['check_cri']('/mnt/public-fs', False, True), 0)
+            self.assertTrue(any('STALE ONLY' in m for m in logs))
+            for returncode in (0, 1):
+                with self.subTest(probe_returncode=returncode):
+                    logs.clear()
+                    probe.return_value = subprocess.CompletedProcess([], returncode)
+                    self.assertEqual(self.code['check_cri']('/mnt/public-fs', False, True), 1)
+                    self.assertTrue(any('disconnect unconfirmed' in m for m in logs))
+            probe.side_effect = subprocess.TimeoutExpired('metadata probe', 2)
+            self.assertEqual(self.code['check_cri']('/mnt/public-fs', False, True), 1)
+        # Mixed LIVE + STALE: BUSY even with ignore_stale=True
+        with patch.dict(self.code, cri=make_cri(['c-stale', 'c-live']), **base), \
+                patch.object(subprocess, 'run', return_value=subprocess.CompletedProcess([], errno.ENOTCONN)):
+            logs.clear()
+            self.assertEqual(self.code['check_cri']('/mnt/public-fs', False, True), 1)
+            self.assertTrue(any('[LIVE dev=0:424]' in m for m in logs))
+            self.assertTrue(any('[STALE dev=0:45 != host 0:424, ENOTCONN]' in m for m in logs))
+        # Unmounted host path: direct reference stays BUSY even with ignore_stale=True
+        with patch.dict(self.code, cri=make_cri(['c-stale']),
+                        host_mountinfo=lambda: [], mounted_device=lambda _: None, log=logs.append):
+            self.assertEqual(self.code['check_cri']('/mnt/public-fs', False, True), 1)
+        # Missing container PID when host is mounted -> UNKNOWN (ValueError)
+        with patch.dict(self.code, cri=make_cri(['c-nopid']), **base):
+            with self.assertRaises(ValueError):
+                self.code['check_cri']('/mnt/public-fs', False, False)
+            with self.assertRaises(ValueError):
+                self.code['check_cri']('/mnt/public-fs', False, True)
+        # Unreadable mountinfo -> UNKNOWN (PermissionError)
+        with patch.dict(self.code, cri=make_cri(['c-stale']),
+                        host_mountinfo=lambda: host_rows, mounted_device=lambda _: '0:424',
+                        mountinfo=lambda _: (_ for _ in ()).throw(PermissionError('denied')),
+                        log=logs.append):
+            with self.assertRaises(PermissionError):
+                self.code['check_cri']('/mnt/public-fs', False, True)
+
+    def test_mount_replaced_during_probe_remains_blocking(self):
+        host = {'device': '0:424', 'path': '/mnt/public-fs', 'fstype': 'fuse.dingofs',
+                'source': 'DingoFS:dingospeed-public'}
+        previous = dict(host, id='7886', device='0:45', path='/root/public')
+        replacement = dict(previous, id='7887')
+        detail = self.detail('/mnt/public-fs', '/root/public', pid=123)
+        snapshots = iter(([previous], [replacement]))
+        with patch.dict(self.code, mountinfo=lambda _: next(snapshots)), \
+                patch.object(subprocess, 'run', return_value=subprocess.CompletedProcess([], errno.ENOTCONN)):
+            refs = self.code['container_references'](
+                detail, '/mnt/public-fs', '0:424', host_rows=[host], ignore_stale=True)
+            self.assertIn('disconnect unconfirmed', refs[0])
+
+    def test_ancestor_bind_distinguishes_live_and_stale(self):
+        host_rows = [{
+            'device': '0:424', 'root': '/', 'path': '/mnt/public-fs',
+            'optional': ['shared:1601'], 'fstype': 'fuse.dingofs', 'source': 'DingoFS:dingospeed-public',
+        }]
+        stale_rows = [{'device': '0:45', 'path': '/host/mnt/public-fs', 'optional': [],
+                       'fstype': 'fuse.dingofs', 'source': 'DingoFS:dingospeed-public'}]
+        live_rows = [{'device': '0:424', 'path': '/host/mnt/public-fs', 'optional': ['master:1601'], 'fstype': 'fuse.dingofs'}]
+        with patch.dict(self.code, mountinfo=lambda _: stale_rows, confirms_disconnect=lambda *_: True):
+            refs = self.code['container_references'](
+                self.detail('/', '/host', pid=123), '/mnt/public-fs', '0:424',
+                target_peers={'1601'}, host_rows=host_rows)
+            self.assertEqual(len(refs), 1)
+            self.assertIn('[STALE dev=0:45 != host 0:424, ENOTCONN]', refs[0])
+            self.assertEqual(self.code['container_references'](
+                self.detail('/', '/host', pid=123), '/mnt/public-fs', '0:424',
+                target_peers={'1601'}, host_rows=host_rows, ignore_stale=True), [])
+        with patch.dict(self.code, mountinfo=lambda _: live_rows):
+            refs = self.code['container_references'](
+                self.detail('/', '/host', pid=123), '/mnt/public-fs', '0:424',
+                target_peers={'1601'}, host_rows=host_rows, ignore_stale=True)
+            self.assertEqual(len(refs), 1)
+            self.assertIn('[LIVE dev=0:424]', refs[0])
+
+    def test_ctr_and_plain_namespaces_ignore_stale_mounts(self):
+        host_rows = [{
+            'device': '0:424', 'root': '/', 'path': '/mnt/public-fs',
+            'optional': ['shared:1601'], 'fstype': 'fuse.dingofs', 'source': 'DingoFS:dingospeed-public',
+        }]
+        def fake_ctr(*args):
+            if args == ('namespaces', 'list', '-q'):
+                return 'k8s.io\n'
+            if args[-2:] == ('tasks', 'list'):
+                return 'TASK PID STATUS\nctr-stale 101 RUNNING\n'
+            if args[-3:] == ('containers', 'info', 'ctr-stale'):
+                return json.dumps({
+                    'Labels': {'io.kubernetes.pod.namespace': 'cci-a', 'io.kubernetes.pod.name': 'pod-stale'},
+                    'Spec': {'mounts': [{'source': '/mnt/public-fs', 'destination': '/root/public'}]},
+                })
+            raise AssertionError(args)
+        stale_rows = [{'device': '0:45', 'path': '/root/public', 'optional': [],
+                       'fstype': 'fuse.dingofs', 'source': 'DingoFS:dingospeed-public'}]
+        with patch.dict(self.code, ctr=fake_ctr, host_mountinfo=lambda: host_rows,
+                        mounted_device=lambda _: '0:424', mountinfo=lambda _: stale_rows,
+                        confirms_disconnect=lambda *_: True, log=lambda _: None):
+            self.assertEqual(self.code['check_ctr']('/mnt/public-fs', False, False), 1)
+            self.assertEqual(self.code['check_ctr']('/mnt/public-fs', False, True), 0)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'proc/self/ns').mkdir(parents=True)
+            (root / 'proc/self/ns/mnt').symlink_to('mnt:[host]')
+            (root / 'proc/1/ns').mkdir(parents=True)
+            (root / 'proc/1/ns/mnt').symlink_to('mnt:[host]')
+            proc_dir = root / 'proc/321'
+            (proc_dir / 'ns').mkdir(parents=True)
+            (proc_dir / 'ns/mnt').symlink_to('mnt:[other]')
+            (proc_dir / 'mountinfo').write_text(
+                '7886 7878 0:45 / /mnt/public-fs ro,relatime - fuse.dingofs DingoFS:dingospeed-public rw\n'
+            )
+            def mapped(value):
+                value = str(value)
+                return root / value.lstrip('/') if value.startswith('/proc') else Path(value)
+            readlink = os.readlink
+            with patch.dict(self.code, Path=mapped, host_mountinfo=lambda: host_rows,
+                            mounted_device=lambda _: '0:424', confirms_disconnect=lambda *_: True,
+                            log=lambda _: None), \
+                    patch.object(os, 'readlink', side_effect=lambda p: readlink(mapped(p))):
+                self.assertEqual(self.code['check_plain_namespaces']('/mnt/public-fs', False), 1)
+                self.assertEqual(self.code['check_plain_namespaces']('/mnt/public-fs', True), 0)
+
+    def test_cli_help_and_ignore_stale_mounts_argument_parsing(self):
+        script = REPO / 'roles/common/files/dingofs_mount_usage_check.sh'
+        help_res = subprocess.run(['/bin/bash', str(script), '--help'], capture_output=True, text=True)
+        self.assertEqual(help_res.returncode, 0, help_res.stderr)
+        self.assertIn('--ignore-stale-mounts', help_res.stdout)
+        # Verify --ignore-stale-mounts is accepted by the option parser (fails at root check, not unknown option).
+        source = script.read_text()
+        header = source[:source.index('# --- Detect the systemd unit')]
+        parse_check = subprocess.run(
+            ['/bin/bash', '-c', header + '\nprintf "%s:%s:%s\\n" "$MOUNTPOINT" "$STRICT" "$IGNORE_STALE"\n',
+             'checker', '/mnt/public-fs', '--dry-run', '--ignore-stale-mounts'],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(parse_check.returncode, 0, parse_check.stderr)
+        self.assertEqual(parse_check.stdout.strip(), '/mnt/public-fs:false:true')
 
 if __name__ == '__main__':
     unittest.main()

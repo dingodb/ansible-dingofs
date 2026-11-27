@@ -62,7 +62,7 @@ for mountpoint in "${!MOUNTS[@]}"; do
     continue
   fi
 
-  if bash "{{ dingo_client_mount_check_script }}" "$mountpoint" --dry-run{{ ' --strict' if dingo_client_mount_check_strict | default(false) | bool else '' }}; then
+  if bash "{{ dingo_client_mount_check_script }}" "$mountpoint" --dry-run{{ ' --strict' if dingo_client_mount_check_strict | default(false) | bool else '' }}{{ ' --ignore-stale-mounts' if dingo_client_ignore_stale_mounts | default(false) | bool else '' }}; then
     :
   else
     check_rc=$?

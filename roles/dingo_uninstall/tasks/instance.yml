@@ -28,7 +28,7 @@
 
 - name: Check client usage without modifying the mount
   script:
-    cmd: "{{ role_path }}/../common/files/dingofs_mount_usage_check.sh {{ _u_mount | quote }} --dry-run{{ ' --strict' if dingo_client_mount_check_strict | bool else '' }}"
+    cmd: "{{ role_path }}/../common/files/dingofs_mount_usage_check.sh {{ _u_mount | quote }} --dry-run{{ ' --strict' if dingo_client_mount_check_strict | bool else '' }}{{ ' --ignore-stale-mounts' if dingo_client_ignore_stale_mounts | default(false) | bool else '' }}"
     executable: /bin/bash
   check_mode: false
   changed_when: false

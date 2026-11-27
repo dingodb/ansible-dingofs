@@ -58,7 +58,8 @@ print(json.dumps({'filesystems': [{'fstype': 'fuse.dingofs', 'source': 'DingoFS:
                      'tasks': tasks}]
             play_path = root / 'play.yml'
             play_path.write_text(yaml.safe_dump(play))
-            env = dict(os.environ, ANSIBLE_CONFIG=str(REPO / 'ansible.cfg'), ANSIBLE_LIBRARY=str(library))
+            env = dict(os.environ, ANSIBLE_CONFIG=str(REPO / 'ansible.cfg'),
+                       ANSIBLE_LIBRARY=os.pathsep.join((str(library), str(REPO / 'library'))))
             for attempt in range(2):
                 result = subprocess.run(['ansible-playbook', '-i', 'localhost,', str(play_path)],
                                         cwd=REPO, env=env, capture_output=True, text=True, timeout=60)
@@ -116,6 +117,77 @@ print(json.dumps({'filesystems': [{'fstype': 'fuse.dingofs', 'source': 'DingoFS:
                              ['dingofs-mount-a', 'dingofs-mount-b', 'dingofs-mount-a', 'dingofs-mount-b',
                               'dingofs-mount-b', 'dingofs-mount-a'])
             self.assertFalse((root / 'a/.restart-required').exists())
+    def test_upgrade_forwards_ignore_stale_mounts_flag_only_when_enabled(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            library = root / 'library'
+            library.mkdir()
+            events = root / 'events'
+            (library / 'systemd.py').write_text('''from ansible.module_utils.basic import AnsibleModule
+import os
+m = AnsibleModule(argument_spec=dict(name=dict(), state=dict()))
+with open(os.environ['UPGRADE_EVENTS'], 'a') as f:
+    f.write(m.params['name'] + '\\n')
+m.exit_json(changed=True)
+''')
+            fakebin = root / 'fakebin'
+            fakebin.mkdir()
+            checker = root / 'check'
+            calls = root / 'checker_calls'
+            # Simulate a mount with only STALE container refs: BUSY unless --ignore-stale-mounts is passed.
+            checker.write_text(
+                '#!/bin/sh\n'
+                f'printf "%s\\n" "$*" >> "{calls}"\n'
+                'for arg in "$@"; do\n'
+                '  [ "$arg" = "--ignore-stale-mounts" ] && exit 0\n'
+                'done\n'
+                'exit 1\n'
+            )
+            checker.chmod(0o755)
+            findmnt = fakebin / 'findmnt'
+            findmnt.write_text('#!' + sys.executable + '\n' + '''import json
+print(json.dumps({'filesystems': [{'fstype': 'fuse.dingofs', 'source': 'DingoFS:pub'}]}))
+''')
+            findmnt.chmod(0o755)
+            candidate = root / 'candidate'
+            candidate.write_text('new')
+            base = root / 'pub'
+            (base / 'bin').mkdir(parents=True)
+            (base / 'bin/dingo-client').write_text('old')
+            client = dict(fsname='pub', base_dir=str(base), mount_point=str(base / 'mount'))
+            variables = dict(ansible_connection='local', ansible_become=False,
+                             ansible_python_interpreter=sys.executable,
+                             dingo_client_upgrade_bin_src=str(candidate),
+                             dingo_client_mount_check_script=str(checker),
+                             dingo_client_upgrade_dry_run=False,
+                             dingo_client_stage_when_busy=False)
+            play = [{'hosts': 'localhost', 'gather_facts': False, 'vars': variables,
+                     'environment': {'PATH': str(fakebin) + ':' + os.environ['PATH'], 'UPGRADE_EVENTS': str(events)},
+                     'tasks': [{'include_tasks': str(REPO / 'roles/dingo_client_upgrade/tasks/upgrade_instance.yml'),
+                                'vars': {'client_instance': client}}]}]
+            play_path = root / 'play.yml'
+            play_path.write_text(yaml.safe_dump(play))
+            env = dict(os.environ, ANSIBLE_CONFIG=str(REPO / 'ansible.cfg'),
+                       ANSIBLE_LIBRARY=os.pathsep.join((str(library), str(REPO / 'library'))))
+            # Default (dingo_client_ignore_stale_mounts=false): checker gets no flag and skips.
+            res_default = subprocess.run(['ansible-playbook', '-i', 'localhost,', str(play_path)],
+                                         cwd=REPO, env=env, capture_output=True, text=True, timeout=60)
+            self.assertEqual(res_default.returncode, 0, res_default.stdout + res_default.stderr)
+            self.assertFalse(events.exists())
+            self.assertEqual((base / 'bin/dingo-client').read_text(), 'old')
+            self.assertNotIn('--ignore-stale-mounts', calls.read_text())
+            # Opt-in (dingo_client_ignore_stale_mounts=true): both precheck and recheck pass the flag.
+            calls.unlink()
+            res_optin = subprocess.run(
+                ['ansible-playbook', '-i', 'localhost,', str(play_path), '-e', 'dingo_client_ignore_stale_mounts=true'],
+                cwd=REPO, env=env, capture_output=True, text=True, timeout=60)
+            self.assertEqual(res_optin.returncode, 0, res_optin.stdout + res_optin.stderr)
+            self.assertEqual(events.read_text().splitlines(), ['dingofs-mount-pub'])
+            self.assertEqual((base / 'bin/dingo-client').read_text(), 'new')
+            recorded = calls.read_text().splitlines()
+            self.assertEqual(len(recorded), 2)
+            self.assertTrue(all('--ignore-stale-mounts' in line for line in recorded))
+
 @unittest.skipUnless(shutil.which('ansible-playbook'), 'requires Ansible')
 class StartupTests(unittest.TestCase):
     def test_busy_or_failed_unmount_prevents_replacement(self):
@@ -156,6 +228,13 @@ class StartupTests(unittest.TestCase):
             result = subprocess.run(['/bin/bash', str(output)], env=env, capture_output=True)
             self.assertEqual(result.returncode, 1)
             self.assertEqual(events.read_text().strip(), str(root))
+            # Unattended mount script stays conservative even if dingo_client_ignore_stale_mounts is set.
+            res_mount_optin = subprocess.run(
+                ['ansible-playbook', '-i', 'localhost,', str(play_path), '-e', 'dingo_client_ignore_stale_mounts=true'],
+                cwd=REPO, capture_output=True, text=True,
+                env=dict(os.environ, ANSIBLE_CONFIG=str(REPO / 'ansible.cfg')))
+            self.assertEqual(res_mount_optin.returncode, 0, res_mount_optin.stdout + res_mount_optin.stderr)
+            self.assertNotIn('--ignore-stale-mounts', output.read_text())
 
 
 if __name__ == '__main__':
