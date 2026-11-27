@@ -198,13 +198,14 @@ sys.exit(code)
         shutil.copy(REPO / "roles/common/tasks/client_report.yml", common_tasks / "client_report.yml")
         templates_dir = self.root / "roles/dingo_client/templates"
         templates_dir.mkdir(parents=True)
-        for tpl in ("dingofs-mount.sh.j2", "dingofs-mount.service.j2"):
+        for tpl in ("dingofs-mount.sh.j2", "dingofs-umount.sh.j2", "dingofs-mount.service.j2"):
             shutil.copy(REPO / "roles/dingo_client/templates" / tpl, templates_dir / tpl)
         shutil.copy(DEPLOY, staged_role / "instance.yml")
         (staged_role / "instance_configure.yml").write_text(
             CONFIGURE.read_text()
             .replace("/etc/systemd/system/", str(systemd_dir) + "/")
             .replace("src: dingofs-mount.sh.j2", "src: " + str(templates_dir / "dingofs-mount.sh.j2"))
+            .replace("src: dingofs-umount.sh.j2", "src: " + str(templates_dir / "dingofs-umount.sh.j2"))
             .replace("src: dingofs-mount.service.j2", "src: " + str(templates_dir / "dingofs-mount.service.j2"))
         )
         cli_src = self.root / "dingo-cli"

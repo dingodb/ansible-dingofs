@@ -16,6 +16,11 @@ ExecStartPre={{ IB_CHECK_SCRIPT | default('/root/dingofs/script/check/check-ib-r
 TimeoutStartSec={{ (IB_WAIT_TIMEOUT | default(60) | int) + 60 }}
 {% endif %}
 ExecStart={{ dingo_client_base_dir }}/dingofs-mount.sh
+# Detach through the dingo CLI so the client flushes and deregisters before
+# systemd signals the process. The leading '-' keeps a failed unmount (e.g.
+# MDS unreachable) from blocking a restart -- systemd terminates the client
+# immediately afterwards anyway.
+ExecStop=-{{ dingo_client_base_dir }}/dingofs-umount.sh
 Restart=always
 RestartSec=30
 LimitNOFILE=1000000
