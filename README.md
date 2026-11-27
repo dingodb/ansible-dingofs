@@ -68,6 +68,7 @@ ansible-dingofs/
 │   ├── client_05_label.yml      # Client: node labels
 │   ├── client_06_dingocli.yml   # Client: ~/.dingo/dingo.yaml + dingo binary
 │   ├── client_07_upgrade.yml    # Client: upgrade binaries, restart mounts
+│   ├── client_09_repair_stale_mounts.yml  # Client: inspect or recover disconnected Pod bind mounts
 │   ├── client_98_discover.yml   # Client: discover actual mounts without fs config
 │   ├── client_99_status.yml     # Client: health check
 │   │                            # --- cross-cutting / standalone ---
@@ -615,6 +616,38 @@ clients found in other namespaces are marked `mount_namespace: other`, without
 attributing their mountpoints to the host. Container-private mounts and per-user
 systemd managers are outside this scan's scope. Inventory filtering and `--limit`
 still determine which nodes are inspected.
+
+### Recover disconnected Pod bind mounts
+
+`client_09_repair_stale_mounts.yml` inspects private bind mounts of a healthy
+host DingoFS filesystem. It finds direct CRI `hostPath` references and their
+subdirectories with canonical source paths. Run it on Linux using root,
+Python 3, and `crictl`. The default namespace scope is `cci*`.
+Set `dingo_client_repair_all_namespaces: true` to include other namespaces.
+
+```bash
+ansible-playbook -i "$SITE/hosts.py" playbooks/client_09_repair_stale_mounts.yml \
+  --limit NODE -e dingo_client_only=dingospeed-public
+```
+
+The default report distinguishes `LIVE`, `STALE` plus `repairable` or `skipped`,
+and `UNKNOWN`. A stale reference must return `ENOTCONN` on a bounded probe.
+The report lists processes holding cwd, descriptors or mappings on an old mount.
+The playbook accepts `--check` for a preview even when apply was requested.
+
+To repair an approved Pod, pass `-e dingo_client_repair_apply=true` and
+`-e dingo_client_repair_pod=NAMESPACE/NAME` in the same scoped command. Applying
+a repair requires Linux 5.12+ on x86_64 or aarch64. The tool rechecks the Pod and
+host mount, replaces the disconnected private bind, preserves read-only mode,
+and verifies mount identity and directory access. It rejects uncertain identity,
+shared mounts, child mounts, and retained handles. A failed attach attempts to
+restore the disconnected mount and reports the outcome.
+
+The deploy role installs `dingofs_repair_stale_mounts.py` beside the mount
+usage checker. For a direct check, run it on the node with
+`--mount-point /mnt/public-fs --fsname dingospeed-public`, optionally `--json`.
+Use `--apply --pod NAMESPACE/NAME` for the approved repair. This entry point
+recovers disconnected Pod paths. FUSE fd handover is tracked in #96.
 
 ### Client restart and skip reports
 
