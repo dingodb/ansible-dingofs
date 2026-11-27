@@ -3,6 +3,11 @@
 # Role: dingo_cache - Deploy dingo-cache service
 # ============================================================
 
+# Existing-only updates select the exact binary and unit before role setup.
+- import_tasks: existing_only.yml
+  when: dingo_cache_existing_only | default(false) | bool
+  tags: [cache_rollout_preflight]
+
 # --- Version guard: branch = version, fail before writing anything ---
 # (see roles/version_guard; the v5.2 conf below is not readable by v5.1 binaries)
 - import_role:

@@ -767,11 +767,39 @@ in the intended MDS cache group after the run, then continue in small batches.
 The same `cache_05_deploy.yml` entry point also updates the binary when its
 content changes; an unchanged, current service is not restarted. Interrupted
 binary/configuration updates retain a restart marker and converge on a rerun.
-`cache_06_upgrade.yml` is an optional legacy binary-only entry point, not a
-required upgrade phase. It additionally keeps a .bak and defaults to serial: 1,
-but does not apply new settings.
+`cache_06_upgrade.yml` is the optional binary-only entry point. It retains a
+`.bak` and processes one host at a time by default.
 When replacing a local template hotfix with this version, preserve any other
 local changes and carry the intended values into site variables.
+
+### Cache rollout batches
+
+`cache_05_deploy.yml` defaults to a single `100%` batch. Set
+`dingo_cache_deploy_batch` to a host count, a percentage, or a progressive
+list. `cache_06_upgrade.yml` supports the same values through
+`dingo_cache_upgrade_batch` and falls back to the corresponding deploy
+setting at each precedence level. Both resolve overrides from `-e`, then
+`DINGO_CACHE_DEPLOY_SERIAL` / `DINGO_CACHE_UPGRADE_SERIAL`, then the first
+inventory's `group_vars/all.yml`. Keep inventory settings literal. `serial`
+uses the hosts selected by `--limit`. The existing-only check can skip
+hosts within a batch. `forks` controls simultaneous task execution.
+
+Set `dingo_cache_existing_only=true` on either entry point to require a
+usable target executable and a loaded unit of the specified version. The
+guard also admits inactive units so interrupted deployments can converge.
+Each batch prints its candidates before applying changes. To preview the
+batch layout and installation checks, run:
+
+```bash
+ansible-playbook -i "$SITE/hosts.py" playbooks/cache_05_deploy.yml \
+  --limit 'NODE1,NODE2,NODE3' --check --tags cache_rollout_preflight \
+  -e dingo_cache_existing_only=true \
+  -e '{"dingo_cache_deploy_batch": [1, "100%"]}'
+```
+
+The `cache_rollout_preflight` tag selects only the batch and installation
+checks. Use a known installed host for a single-host rollout when it must
+complete before the larger batch starts.
 
 ## IB NUMA locality
 
@@ -873,7 +901,7 @@ Not referenced by any `*_site.yml`; they only run when invoked explicitly.
 | `config_podman_rootless.yml` | `client_servers` | Standalone entry point for the `podman_rootless` role: enables systemd linger for the service user, writes `storage.conf`, sets `XDG_RUNTIME_DIR`. The meta path does not need it -- `04_dingo_cli.yml` runs the same role for `meta_servers`. |
 | `config_cron_cleanup.yml` | `all` | Deploys `cleanup_and_compression.sh` plus a daily cron job. Defaults to cleaning `dingo_cache_log_dir`; override `cron_cleanup_directories` for other layouts. The script requires at least one directory argument, so an empty list will not work. |
 | `cache_02b_remap.yml` | `cache_servers` | Renumbers cache mounts by disk size (smallest -> `/mnt/disk1`). Check-only unless `-e remap_apply=true`. |
-| `cache_06_upgrade.yml` | `cache_servers` | Optional legacy binary-only update with .bak and serial: 1. Normal updates use cache_05_deploy.yml. |
+| `cache_06_upgrade.yml` | `cache_servers` | Optional binary-only update with `.bak`. Defaults to one host per batch. |
 | `client_05_label.yml` | `client_servers` | Applies node labels. |
 | `client_06_dingocli.yml` | `client_servers:cache_servers:!meta_servers:!admin` | Distributes the staged worker CLI, updates `~/.dingo/bin/dingo` by SHA1 comparison, and writes `~/.dingo/dingo.yaml`. Download is opt-in. Explicit admin targets use the manual server CLI in a cluster-specific binary directory. |
 | `client_07_upgrade.yml` | `client_servers` | Optional binary-only update of existing mounts. Normal binary/config updates and new mounts use client_04_deploy.yml. |
@@ -1094,8 +1122,7 @@ ansible-playbook playbooks/client_07_upgrade.yml -e dingo_client_upgrade_batch=2
 the playbooks warn when they are defined. The batch size is capped by `forks` in
 `ansible.cfg` (set to 20 here; Ansible's default is 5). Busy client mountpoints
 are still deferred per instance at any batch size, so raising the batch does not
-restart a mount in use. Cache deployment remains fully parallel and is best
-scoped with `--limit`; its upgrade playbook also keeps `serial: 1`.
+restart a mount in use.
 
 Cache deployment, optional binary-only updates and client deployment persist
 `.restart-required` before changing service files. An interrupted or busy restart retains this marker for the next

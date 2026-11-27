@@ -1,0 +1,42 @@
+---
+- name: Inspect the target Cache executable
+  stat:
+    path: "{{ dingo_cache_base_dir }}/{{ dingo_cache_bin_name }}"
+    follow: true
+    get_checksum: false
+    get_mime: false
+    get_attributes: false
+  register: _cache_existing_binary
+
+- name: Check whether the target executable is usable
+  set_fact:
+    _cache_has_executable: >-
+      {{ (_cache_existing_binary.stat.isreg | default(false))
+         and (_cache_existing_binary.stat.executable | default(false))
+         and (_cache_existing_binary.stat.size | default(0) > 0) }}
+
+- name: Inspect the target Cache unit without changing service state
+  command:
+    argv: [systemctl, show, --property=LoadState, --value, --, "{{ dingo_cache_service_name }}.service"]
+  register: _cache_existing_unit
+  changed_when: false
+  check_mode: false
+  failed_when: _cache_existing_unit.rc != 0 and _cache_existing_unit.stdout | trim != 'not-found'
+  when: _cache_has_executable | bool
+
+- name: Determine whether the target Cache is already installed
+  set_fact:
+    _cache_existing_installation: >-
+      {{ (_cache_has_executable | bool) and (_cache_existing_unit.stdout | default('') | trim) == 'loaded' }}
+
+- name: Report Cache installation eligibility
+  debug:
+    msg: >-
+      {{ 'EXISTING' if _cache_existing_installation | bool else 'SKIP' }} {{ inventory_hostname }}
+      binary={{ 'present' if _cache_has_executable | bool else 'missing_or_unusable' }}
+      unit={{ _cache_existing_unit.stdout | default('not_checked') | trim }}
+      ({{ dingo_cache_service_name }})
+
+- name: Skip this host when the target Cache is absent
+  meta: end_host
+  when: not (_cache_existing_installation | bool)

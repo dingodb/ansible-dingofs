@@ -16,10 +16,15 @@
   remote_user: root
   become: false
   gather_facts: false
-  # One host at a time. Restarting a cache node disconnects its clients, and
-  # without serial the whole tier restarts in the same instant -- every client
-  # loses its cache group at once.
-  serial: 1
+  vars_files:
+    - ../roles/dingo_cache/vars/rollout.yml
+  serial: "{{ _cache_upgrade_batch | dingo_cache_batch_sizes }}"
+  pre_tasks:
+    - import_tasks: ../roles/dingo_cache/tasks/rollout_batch.yml
+      tags: [cache_rollout_preflight]
+    - import_tasks: ../roles/dingo_cache/tasks/existing_only.yml
+      when: dingo_cache_existing_only | default(false) | bool
+      tags: [cache_rollout_preflight]
   tasks:
     - import_tasks: ../roles/dingo_cache/tasks/preflight_binary.yml
 
