@@ -740,11 +740,8 @@
       {%- if (_mount_recheck_script.stdout_lines | default([])) | length > 0 %}
       ({{ _mount_recheck_script.stdout_lines | select('search', 'IN USE|BUSY|pod=|pid=|container=|namespace=') | list | join(' | ') }})
       {%- endif -%}.
-      The config/binary IS already updated on disk (.restart-required preserved),
-      but the running process is still the old one. Once the mountpoint is idle,
-      restart it by hand (`systemctl restart {{ dingo_client_service_name }}`),
-      or re-run playbooks/client_04_deploy.yml / playbooks/client_07_upgrade.yml
-      (which checks each mountpoint), or force it with -e dingo_client_force_restart=true.
+      The configuration and binary are on disk with .restart-required preserved.
+      Once the mountpoint is idle, re-run playbooks/client_04_deploy.yml to activate them.
   when: _client_restart_deferred | bool
 
 - name: Record the start of client service verification

@@ -1,0 +1,52 @@
+---
+- name: Check whether this node has deferred restart enrollment
+  stat:
+    path: /etc/dingofs/client-pending-restarts.json
+    get_checksum: false
+    get_mime: false
+    get_attributes: false
+  register: _pending_restart_config
+  when: not ansible_check_mode
+
+- name: Protect enrolled instances while changing client files and service state
+  vars:
+    _pending_restart_command: ['/usr/bin/python3', '/usr/local/libexec/dingofs/dingofs_pending_restart.py']
+    _pending_restart_identity: "{{ ['--instance', _pending_restart_instance | to_json] }}"
+    _pending_restart_token: "{{ (_pending_restart_begin.stdout | default('{}', true) | from_json).transaction | default('', true) }}"
+  block:
+    - name: Claim the instance before making changes
+      command:
+        argv: "{{ _pending_restart_command + ['begin'] + _pending_restart_identity }}"
+      register: _pending_restart_begin
+      changed_when: false
+      when: _pending_restart_config.stat.exists | default(false)
+
+    - name: Apply the selected client operation
+      include_tasks: "{{ _pending_restart_tasks }}"
+
+    - name: Publish the completed on-disk generation if a restart remains pending
+      command:
+        argv: >-
+          {{ _pending_restart_command + ['finish'] + _pending_restart_identity
+             + ['--transaction', _pending_restart_token]
+             + (['--full-deploy'] if _pending_restart_full_deploy | default(false) | bool else []) }}
+      register: _pending_restart_finish
+      changed_when: false
+      when:
+        - _pending_restart_register_generation | default(true) | bool
+        - _pending_restart_token | length > 0
+
+    - name: Show the deferred restart registration result
+      debug:
+        msg: "{{ _pending_restart_finish.stdout | from_json }}"
+      when:
+        - _pending_restart_register_generation | default(true) | bool
+        - _pending_restart_token | length > 0
+  always:
+    - name: Invalidate an interrupted generation owned by this operation
+      command:
+        argv: "{{ _pending_restart_command + ['abort'] + _pending_restart_identity + ['--transaction', _pending_restart_token] }}"
+      changed_when: false
+      when:
+        - _pending_restart_begin.rc | default(1) == 0
+        - _pending_restart_token | length > 0

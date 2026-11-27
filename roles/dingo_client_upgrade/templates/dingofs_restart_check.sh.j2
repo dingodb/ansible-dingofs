@@ -3,24 +3,27 @@
 # dingofs_restart_check.sh
 # Managed by Ansible - do not edit manually
 #
-# For each DingoFS mountpoint, check whether any process is currently
-# using it (via `fuser -m`). If the mountpoint is idle, restart the
-# corresponding systemd service. If it's busy, skip it and log why.
-#
-# Requires: psmisc (fuser), systemd (systemctl)
+# Complete pending restarts for idle DingoFS mounts. Enrolled instances go
+# through the same worker and lock as the systemd timer.
 
 set -euo pipefail
 
 # --- Configuration: mountpoint -> systemd service mapping -----------------
 declare -A MOUNTS=(
 {% for client in (_dingo_clients_enabled | default((dingo_clients | dingo_client_select(version_suffix=dingo_client_version_suffix | default(''))).enabled)) %}
-  ["{{ client.mount_point }}"]="{{ client.service_name | default('dingofs-mount-' ~ client.fsname ~ (dingo_client_version_suffix | default(''))) }}.service"
+  [{{ client.mount_point | quote }}]={{ (client.service_name | default('dingofs-mount-' ~ client.fsname ~ (dingo_client_version_suffix | default('')))) | quote }}
 {% endfor %}
 )
 
 declare -A BASE_DIRS=(
 {% for client in (_dingo_clients_enabled | default((dingo_clients | dingo_client_select(version_suffix=dingo_client_version_suffix | default(''))).enabled)) %}
-  ["{{ client.mount_point }}"]="{{ client.base_dir | default('/root/dingofs/dingo-client/' ~ client.fsname ~ (dingo_client_version_suffix | default(''))) }}"
+  [{{ client.mount_point | quote }}]={{ (client.base_dir | default('/root/dingofs/dingo-client/' ~ client.fsname ~ (dingo_client_version_suffix | default('')))) | quote }}
+{% endfor %}
+)
+
+declare -A FILESYSTEMS=(
+{% for client in (_dingo_clients_enabled | default((dingo_clients | dingo_client_select(version_suffix=dingo_client_version_suffix | default(''))).enabled)) %}
+  [{{ client.mount_point | quote }}]={{ client.fsname | quote }}
 {% endfor %}
 )
 
@@ -38,31 +41,53 @@ if [[ $EUID -ne 0 ]]; then
   exit 1
 fi
 
-if ! command -v fuser >/dev/null 2>&1; then
-  log "ERROR: fuser not found. Install it with: sudo apt update && sudo apt install -y psmisc"
-  exit 1
+config=/etc/dingofs/client-pending-restarts.json
+managed_mounts=''
+if [[ -e "$config" ]]; then
+  managed_mounts=$(/usr/bin/python3 -c '
+import json, sys
+with open(sys.argv[1]) as config:
+    print(*(entry["mount_point"] for entry in json.load(config)), sep="\n")
+' "$config")
 fi
+
+expected_mount() {
+  local mount_row
+  mount_row=$(findmnt --kernel --nocanonicalize -rn -o FSTYPE,SOURCE --mountpoint "$1") || return 1
+  [[ "$mount_row" != *$'\n'* ]] &&
+    [[ "$mount_row" == "fuse DingoFS:$2" || "$mount_row" == fuse.*" DingoFS:$2" ]]
+}
 
 any_skipped=false
 failures=0
 
 for mountpoint in "${!MOUNTS[@]}"; do
   service="${MOUNTS[$mountpoint]}"
+  if [[ "$service" != *.service ]]; then service+=.service; fi
+  base_dir="${BASE_DIRS[$mountpoint]}"
+  fsname="${FILESYSTEMS[$mountpoint]}"
+  marker="$base_dir/.restart-required"
+  if [[ ! -f "$marker" ]]; then continue; fi
+
+  if [[ $'\n'$managed_mounts$'\n' == *$'\n'"$mountpoint"$'\n'* ]]; then
+    instance=$(/usr/bin/python3 -c 'import json, sys; print(json.dumps(dict(zip(("unit", "base_dir", "mount_point", "fsname"), sys.argv[1:]))))' \
+      "$service" "$base_dir" "$mountpoint" "$fsname")
+    action=apply
+    if $DRY_RUN; then action=observe; fi
+    /usr/bin/python3 /usr/local/libexec/dingofs/dingofs_pending_restart.py "$action" --instance "$instance" || failures=$((failures + 1))
+    continue
+  fi
 
   log "----------------------------------------"
   log "Checking mountpoint: $mountpoint  (service: $service)"
 
-  if [[ ! -d "$mountpoint" ]]; then
-    log "  WARN: mountpoint path does not exist, skipping."
+  if ! expected_mount "$mountpoint" "$fsname"; then
+    log "  WARN: expected DingoFS:$fsname is not mounted, retaining $marker."
+    any_skipped=true
     continue
   fi
 
-  if ! mountpoint -q "$mountpoint"; then
-    log "  WARN: $mountpoint is not currently mounted, skipping."
-    continue
-  fi
-
-  if bash "{{ dingo_client_mount_check_script }}" "$mountpoint" --dry-run{{ ' --strict' if dingo_client_mount_check_strict | default(false) | bool else '' }}{{ ' --ignore-stale-mounts' if dingo_client_ignore_stale_mounts | default(false) | bool else '' }}; then
+  if bash {{ dingo_client_mount_check_script | quote }} "$mountpoint" --dry-run --service "$service"{{ ' --strict' if dingo_client_mount_check_strict | default(false) | bool else '' }}{{ ' --ignore-stale-mounts' if dingo_client_ignore_stale_mounts | default(false) | bool else '' }}; then
     :
   else
     check_rc=$?
@@ -81,17 +106,21 @@ for mountpoint in "${!MOUNTS[@]}"; do
     log "  DRY-RUN: would restart $service now."
   else
     log "  Restarting $service ..."
-    if systemctl restart "$service"; then
-      rm -f "${BASE_DIRS[$mountpoint]}/.restart-required"
-      log "  OK: $service restarted successfully."
+    verified=false
+    if systemctl restart -- "$service"; then
+      for ((attempt=0; attempt<10; attempt++)); do
+        if systemctl is-active --quiet "$service" && expected_mount "$mountpoint" "$fsname"; then
+          verified=true
+          break
+        fi
+        sleep 3
+      done
+    fi
+    if $verified; then
+      rm -f -- "$marker"
+      log "  OK: $service restarted and the expected mount returned."
     else
-      log "  ERROR: failed to restart $service."
-      # Counted, not just logged. The restart sits in an `if`, which `set -e`
-      # deliberately does not apply to, so without this the script reached the
-      # final log line, exited 0, and Ansible reported a green upgrade while
-      # the old binary was still running.
-      # (Assignment form on purpose: ((failures++)) returns 1 on the first
-      # increment and would abort the script under set -e.)
+      log "  ERROR: restart verification failed for $service. Retaining $marker."
       failures=$((failures + 1))
     fi
   fi
@@ -103,7 +132,7 @@ if [ "$failures" -gt 0 ]; then
   exit 1
 fi
 if $any_skipped; then
-  log "Done. One or more mountpoints were busy and skipped."
+  log "Done. One or more pending mounts were skipped."
 else
   log "Done. All mountpoints processed."
 fi

@@ -79,7 +79,14 @@
     - not (dingo_client_upgrade_dry_run | bool)
 
 - name: Upgrade or stage this client instance
-  include_tasks: upgrade_idle.yml
+  include_tasks: ../../common/tasks/client_restart_transaction.yml
+  vars:
+    _pending_restart_tasks: ../../dingo_client_upgrade/tasks/upgrade_idle.yml
+    _pending_restart_instance:
+      unit: "{{ _upgrade_unit }}"
+      base_dir: "{{ _base_dir }}"
+      mount_point: "{{ client_instance.mount_point }}"
+      fsname: "{{ client_instance.fsname }}"
   when:
     - not (dingo_client_upgrade_dry_run | bool)
     - >-

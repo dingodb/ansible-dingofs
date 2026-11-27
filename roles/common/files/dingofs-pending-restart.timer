@@ -1,0 +1,11 @@
+[Unit]
+Description=Check for idle DingoFS clients with a pending restart
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=5min
+RandomizedDelaySec=2min
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target

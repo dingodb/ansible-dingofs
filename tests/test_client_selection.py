@@ -163,6 +163,7 @@ class ClientSelectionIntegrationTests(unittest.TestCase):
         common_tasks = roles / "common/tasks"
         common_tasks.mkdir(parents=True)
         shutil.copy(REPO / "roles/common/tasks/client_report.yml", common_tasks / "client_report.yml")
+        shutil.copy(REPO / "roles/common/tasks/client_restart_transaction.yml", common_tasks)
         common_files = roles / "common/files"
         common_files.mkdir(parents=True)
         (common_files / "dingofs_mount_usage_check.sh").write_text("#!/bin/sh\nexit 0\n")
@@ -535,6 +536,9 @@ print(json.dumps({'filesystems': [{'fstype': 'fuse.dingofs', 'source': 'DingoFS:
         remove_yml.write_text(remove_yml.read_text().replace("pathlib.Path('/proc')", "pathlib.Path(" + repr(str(proc_dir)) + ")"))
         checker = roles / "common/files/dingofs_mount_usage_check.sh"
         checker.parent.mkdir(parents=True)
+        common_tasks = roles / "common/tasks"
+        common_tasks.mkdir()
+        shutil.copy(REPO / "roles/common/tasks/client_restart_transaction.yml", common_tasks)
         checker.write_text("#!/bin/sh\nexit 0\n")
         checker.chmod(0o755)
 

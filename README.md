@@ -542,6 +542,41 @@ New or unverified changes still use the normal usage gate. An instance skipped
 before configuration because `dingo_client_stage_when_busy=false` retains its
 files and marker.
 
+### Complete a deferred restart when the mount becomes idle
+
+`client_10_pending_restarts.yml` observes the installed allowlist by default,
+including under `--check`. Enable the timer on an isolated maintenance host
+and name the enabled mounts explicitly.
+
+```bash
+ansible-playbook -i "$SITE/hosts.py" playbooks/client_10_pending_restarts.yml \
+  --limit TEST-HOST -e dingo_client_only=/mnt/test-fs \
+  -e dingo_client_pending_restart_action=enable
+```
+
+Upgrade or deploy the selected instance through `client_04_deploy.yml` or
+`client_07_upgrade.yml` from this checkout. Once the files are fully written,
+these plays register a pending generation if a restart remains outstanding.
+The timer observes the exact registered unit and mount using the strict usage
+policy. Its worker and the manual restart helper share the Ansible writer
+guard. An old `.restart-required` alone is reported for review. A complete
+same-instance deploy can register it after validating the on-disk files.
+
+Query the worker without changing state using the playbook's default action,
+or by running `/usr/bin/python3 /usr/local/libexec/dingofs/dingofs_pending_restart.py observe`
+on the enrolled node. Each timer invocation attempts at most one restart.
+See `journalctl -u dingofs-pending-restart.service` for probe durations and
+outcomes. `BUSY` and unknown results keep the obligation. A failed restart or
+mount verification also keeps it and blocks another automatic attempt.
+
+Use `-e dingo_client_pending_restart_action=disable` with the same host limit
+to stop future timer runs. Give the running worker time to finish before
+changing enrollment. Use this checkout for all operations on an enrolled
+mount. For an interrupted writer, confirm its play is finished before using
+the worker's `abort` action with the recorded transaction token. The lock
+coordinates DingoFS tooling. Prevent new workload attachment during the idle
+check and restart where service continuity is required.
+
 ### Discover mounts without knowing filesystem names
 
 `client_98_discover.yml` scans the selected nodes without reading `dingo_clients`,
@@ -954,6 +989,7 @@ Not referenced by any `*_site.yml`; they only run when invoked explicitly.
 | `client_05_label.yml` | `client_servers` | Applies node labels. |
 | `client_06_dingocli.yml` | `client_servers:cache_servers:!meta_servers:!admin` | Distributes the staged worker CLI, updates `~/.dingo/bin/dingo` by SHA1 comparison, and writes `~/.dingo/dingo.yaml`. Download is opt-in. Explicit admin targets use the manual server CLI in a cluster-specific binary directory. |
 | `client_07_upgrade.yml` | `client_servers` | Optional binary-only update of existing mounts. Normal binary/config updates and new mounts use client_04_deploy.yml. |
+| `client_10_pending_restarts.yml` | `client_servers` | Observe the explicit allowlist or enable/disable its deferred restart timer. Defaults to observation. |
 
 Override the target with `-e target_hosts=<group>`.
 

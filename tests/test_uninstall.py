@@ -229,6 +229,9 @@ m.exit_json(changed=not m.check_mode)
         new_unit.write_text('ExecStart='+str(new_base/'dingofs-mount.sh')+'\n')
         (new_base/'dingofs-mount.sh').write_text('g_mnt="'+str(new_mount)+'"\ng_fsname="same-name"\ng_log="'+str(new_log)+'"\ng_mdsaddr="127.0.0.1:7000"\n')
         checker=roles/'common/files/dingofs_mount_usage_check.sh';checker.parent.mkdir(parents=True)
+        common_tasks = roles / 'common/tasks'
+        common_tasks.mkdir()
+        shutil.copy(REPO / 'roles/common/tasks/client_restart_transaction.yml', common_tasks)
         checker.write_text('#!/bin/sh\nexit 1\n');checker.chmod(0o755)
         variables.update(dingo_uninstall_kind='client',dingo_client_mds_addrs='127.0.0.1:7000',
                          dingo_clients=[dict(fsname='same-name',mount_point=str(new_mount),

@@ -1,0 +1,9 @@
+[Unit]
+Description=Complete verified pending DingoFS client restarts
+After=network-online.target
+
+[Service]
+Type=oneshot
+UMask=0077
+ExecStart=/usr/bin/python3 /usr/local/libexec/dingofs/dingofs_pending_restart.py apply
+TimeoutStartSec=10min

@@ -54,7 +54,16 @@
   when: _uninstall_plan.unregister
 
 - name: Apply this uninstall after all read-only checks pass
-  include_tasks: remove.yml
+  include_tasks:
+    file: "{{ '../../common/tasks/client_restart_transaction.yml' if dingo_uninstall_kind == 'client' else 'remove.yml' }}"
+  vars:
+    _pending_restart_tasks: ../../dingo_uninstall/tasks/remove.yml
+    _pending_restart_register_generation: false
+    _pending_restart_instance:
+      unit: "{{ _u_service }}"
+      base_dir: "{{ _u_base }}"
+      mount_point: "{{ _u_mount }}"
+      fsname: "{{ _u_fsname }}"
   when:
     - not ansible_check_mode
     - not _uninstall_plan.noop

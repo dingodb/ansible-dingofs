@@ -117,8 +117,8 @@
           ({{ _upgrade_recheck.stdout_lines | select('search', 'IN USE|BUSY|pod=|pid=|container=|namespace=') | list | join(' | ') }})
           {%- endif -%}.
           The new binary IS already updated on disk (.restart-required preserved);
-          once idle, restart via `systemctl restart {{ _upgrade_unit }}`,
-          {{ dingo_client_upgrade_script_path | default('/tmp/dingofs_restart_check.sh') }}, or re-run playbooks/client_07_upgrade.yml.
+          Once idle, use {{ dingo_client_upgrade_script_path | default('/tmp/dingofs_restart_check.sh') }}
+          or re-run playbooks/client_07_upgrade.yml.
       when: _upgrade_recheck.rc | default(-1) == 1
 
     - name: Restart and verify only a client that remains idle
