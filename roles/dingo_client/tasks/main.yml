@@ -287,6 +287,15 @@
     - _dingo_clients_has_targets | default(true) | bool
     - dingo_client_mount_check_enabled | default(true) | bool
 
+- name: Deploy container mount repair script (client hosts)
+  copy:
+    src: "{{ role_path }}/../common/files/dingofs_repair_stale_mounts.py"
+    dest: "{{ dingo_client_mount_check_script | dirname }}/dingofs_repair_stale_mounts.py"
+    mode: "0755"
+  when:
+    - _dingo_clients_has_targets | default(true) | bool
+    - dingo_client_mount_check_enabled | default(true) | bool
+
 # --- CPU pinning host setup (v5.2+, once per host, before the instance loop) ---
 # The detect script and the claim seed are host-scoped: every mount on the host
 # (alayanew, manila, ...) draws from the same free-CPU pool, so seeding happens

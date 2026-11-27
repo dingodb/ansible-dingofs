@@ -1,0 +1,67 @@
+---
+- name: Inspect or repair disconnected DingoFS container mounts
+  hosts: client_servers
+  remote_user: root
+  become: false
+  gather_facts: false
+  vars:
+    _repair_apply: "{{ (dingo_client_repair_apply | default(false) | bool) and not ansible_check_mode }}"
+    _repair_pod: "{{ dingo_client_repair_pod | default('') }}"
+  tasks:
+    - name: Validate and select client repair targets
+      vars:
+        _play_clients: "{{ dingo_clients if (dingo_clients is defined and 'dingo_clients' not in hostvars[inventory_hostname]) else none }}"
+        _default_client: >-
+          {{ {'fsname': dingo_client_fsname, 'mount_point': dingo_client_mount_point}
+             if (dingo_client_fsname is defined and dingo_client_mount_point is defined) else none }}
+        _host_clients: "{{ dingo_clients if dingo_clients is defined else ([_default_client] if _default_client is not none else []) }}"
+        _suffix: "{{ dingo_client_version_suffix | default('') }}"
+      set_fact:
+        _repair_play_plan: >-
+          {{ ansible_play_hosts_all | dingo_client_validate_play(
+               hostvars, only=dingo_client_only | default(''), include_disabled=false,
+               play_clients=_play_clients, default_client=_default_client, default_version_suffix=_suffix) }}
+        _repair_selection: >-
+          {{ _host_clients | dingo_client_select(only=dingo_client_only | default(''),
+               version_suffix=_suffix, include_disabled=false) }}
+
+    - name: Require valid selectors and an explicit Pod for repair
+      assert:
+        that:
+          - _repair_play_plan.valid | bool
+          - not (_repair_apply | bool) or (_repair_pod | length > 0)
+        fail_msg: "{{ _repair_play_plan.error or 'Set dingo_client_repair_pod=namespace/name to apply a repair.' }}"
+
+    - name: Inspect selected container mounts and apply requested repairs
+      command:
+        argv: >-
+          {{ ['python3', '-', '--json', '--mount-point', item.mount_point, '--fsname', item.fsname]
+             + (['--pod', _repair_pod] if _repair_pod else [])
+             + (['--all-namespaces'] if dingo_client_repair_all_namespaces | default(false) | bool else [])
+             + (['--apply'] if _repair_apply | bool else []) }}
+        stdin: "{{ lookup('file', playbook_dir ~ '/../roles/common/files/dingofs_repair_stale_mounts.py', rstrip=false) }}"
+      loop: "{{ _repair_selection.selected }}"
+      loop_control:
+        label: "{{ item.mount_point }}"
+      check_mode: false
+      register: _repair_outcomes
+      changed_when: >-
+        _repair_apply | bool and (_repair_outcomes.stdout | default('') | trim | length > 0)
+        and ((_repair_outcomes.stdout | from_json).changed | bool)
+      failed_when: false
+
+    - name: Show mount repair report
+      debug:
+        msg: "{{ (item.stdout | from_json) if (item.stdout | default('') | trim | length > 0) else (item.stderr | default(item.msg)) }}"
+      loop: "{{ _repair_outcomes.results }}"
+      loop_control:
+        label: "{{ item.item.mount_point }}"
+
+    - name: Require completed mount inspection or repair
+      assert:
+        that: item.rc == 0
+        fail_msg: "{{ inventory_hostname }} {{ item.item.mount_point }} has an incomplete inspection or repair. See the report above."
+        quiet: true
+      loop: "{{ _repair_outcomes.results }}"
+      loop_control:
+        label: "{{ item.item.mount_point }}"
