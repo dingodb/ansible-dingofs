@@ -197,6 +197,7 @@ sys.exit(code)
         common_tasks = self.root / "roles/common/tasks"
         common_tasks.mkdir(parents=True)
         shutil.copy(REPO / "roles/common/tasks/client_report.yml", common_tasks / "client_report.yml")
+        shutil.copy(REPO / "roles/common/tasks/client_restart_transaction.yml", common_tasks)
         templates_dir = self.root / "roles/dingo_client/templates"
         templates_dir.mkdir(parents=True)
         for tpl in ("dingofs-mount.sh.j2", "dingofs-umount.sh.j2", "dingofs-mount.service.j2"):

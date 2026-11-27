@@ -135,5 +135,13 @@
     - not (_mount_skip_before_change | bool)
 
 - name: "Configure {{ dingo_client_fsname }}"
-  include_tasks: instance_configure.yml
+  include_tasks: ../../common/tasks/client_restart_transaction.yml
+  vars:
+    _pending_restart_tasks: ../../dingo_client/tasks/instance_configure.yml
+    _pending_restart_full_deploy: true
+    _pending_restart_instance:
+      unit: "{{ dingo_client_service_name }}"
+      base_dir: "{{ dingo_client_base_dir }}"
+      mount_point: "{{ dingo_client_mount_point }}"
+      fsname: "{{ dingo_client_fsname }}"
   when: not (_mount_skip_before_change | bool)

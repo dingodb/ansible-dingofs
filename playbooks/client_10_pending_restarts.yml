@@ -1,0 +1,150 @@
+---
+- name: Observe or manage the deferred DingoFS client restart timer
+  hosts: client_servers
+  remote_user: root
+  become: false
+  gather_facts: false
+  vars:
+    _pending_action: "{{ 'observe' if ansible_check_mode else (dingo_client_pending_restart_action | default('observe')) }}"
+    _pending_config: /etc/dingofs/client-pending-restarts.json
+    _pending_lib: /usr/local/libexec/dingofs
+    _pending_worker: "{{ _pending_lib }}/dingofs_pending_restart.py"
+  tasks:
+    - name: Check action and require an explicit host limit for changes
+      assert:
+        that:
+          - _pending_action in ['observe', 'enable', 'disable']
+          - _pending_action == 'observe' or ansible_limit | default('') | length > 0
+        fail_msg: "Select observe, enable, or disable. Enable and disable require --limit."
+
+    - name: Check for an installed deferred restart allowlist
+      stat:
+        path: "{{ _pending_config }}"
+        get_checksum: false
+        get_mime: false
+        get_attributes: false
+      register: _pending_config_stat
+
+    - name: Observe the existing allowlist without changing files or restarting services
+      when: _pending_action == 'observe'
+      block:
+        - name: Report when this node has no deferred restart allowlist
+          debug:
+            msg: "{{ inventory_hostname }} has no installed deferred restart allowlist."
+          when: not _pending_config_stat.stat.exists
+
+        - name: Measure the current allowlisted candidates
+          command:
+            argv: ['/usr/bin/python3', '{{ _pending_worker }}', 'observe']
+          check_mode: false
+          changed_when: false
+          register: _pending_observation
+          when: _pending_config_stat.stat.exists
+
+        - name: Report current deferred restart candidates and check times
+          debug:
+            msg: "{{ _pending_observation.stdout | from_json }}"
+          when: _pending_config_stat.stat.exists
+
+    - name: Disable future timer runs on an enrolled node
+      systemd:
+        name: dingofs-pending-restart.timer
+        state: stopped
+        enabled: false
+      when:
+        - _pending_action == 'disable'
+        - _pending_config_stat.stat.exists
+
+    - name: Enroll explicitly selected client mounts
+      when: _pending_action == 'enable'
+      vars:
+        _pending_suffix: "{{ dingo_client_version_suffix | default('') }}"
+        _pending_selection: >-
+          {{ (dingo_clients | default([])) | dingo_client_select(
+               only=dingo_client_only | default(''), version_suffix=_pending_suffix, include_disabled=false) }}
+      block:
+        - name: Require an explicit existing client selector on this host
+          assert:
+            that:
+              - _pending_selection.selectors | length > 0
+              - _pending_selection.selectors | difference(_pending_selection.matched_selectors) | length == 0
+            fail_msg: "Set dingo_client_only to an enabled instance on every limited host."
+
+        - name: Initialize the allowlist from this run's selection
+          set_fact:
+            _pending_instances: []
+
+        - name: Record the exact unit, base directory, mount and filesystem to enroll
+          set_fact:
+            _pending_instances: >-
+              {{ _pending_instances + [{'unit': item.service_name | default('dingofs-mount-' ~ item.fsname ~ _pending_suffix),
+                   'base_dir': item.base_dir | default('/root/dingofs/dingo-client/' ~ item.fsname ~ _pending_suffix),
+                   'mount_point': item.mount_point, 'fsname': item.fsname}] }}
+          loop: "{{ _pending_selection.selected }}"
+          loop_control:
+            label: "{{ item.mount_point }}"
+
+        - name: Require distinct mount points and units in the allowlist
+          assert:
+            that:
+              - _pending_instances | map(attribute='mount_point') | unique | length == _pending_instances | length
+              - _pending_instances | map(attribute='unit') | unique | length == _pending_instances | length
+
+        - name: Read any existing allowlist before enabling
+          slurp:
+            src: "{{ _pending_config }}"
+          register: _pending_installed_allowlist
+          when: _pending_config_stat.stat.exists
+
+        - name: Keep the enrolled identity stable across runs
+          assert:
+            that: (_pending_installed_allowlist.content | b64decode | from_json) == _pending_instances
+            fail_msg: >-
+              The existing deferred restart allowlist differs. Disable the timer and wait for its worker
+              and any active Client play to finish before removing {{ _pending_config }} and enrolling new targets.
+          when: _pending_config_stat.stat.exists
+
+        - name: Create the root-owned worker directory
+          file:
+            path: "{{ _pending_lib }}"
+            state: directory
+            owner: root
+            group: root
+            mode: '0755'
+
+        - name: Ensure the allowlist directory exists
+          file:
+            path: "{{ _pending_config | dirname }}"
+            state: directory
+
+        - name: Install the worker and the same probes used by the client playbooks
+          copy:
+            src: "{{ playbook_dir }}/../{{ item.src }}"
+            dest: "{{ _pending_lib }}/{{ item.src | basename }}"
+            mode: '{{ item.mode }}'
+          loop:
+            - {src: roles/common/files/dingofs_pending_restart.py, mode: '0644'}
+            - {src: library/dingofs_client_runtime.py, mode: '0644'}
+            - {src: roles/common/files/dingofs_mount_usage_check.sh, mode: '0755'}
+          loop_control:
+            label: '{{ item.src | basename }}'
+
+        - name: Install the service and timer units
+          copy:
+            src: "{{ playbook_dir }}/../roles/common/files/{{ item }}"
+            dest: "/etc/systemd/system/{{ item }}"
+            mode: '0644'
+          loop: [dingofs-pending-restart.service, dingofs-pending-restart.timer]
+
+        - name: Publish the explicit allowlist
+          copy:
+            content: "{{ _pending_instances | to_nice_json }}\n"
+            dest: "{{ _pending_config }}"
+            mode: '0600'
+
+        - name: Start the opt-in timer
+          systemd:
+            name: dingofs-pending-restart.timer
+            daemon_reload: true
+            state: started
+            enabled: true
