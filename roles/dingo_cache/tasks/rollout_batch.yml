@@ -1,0 +1,14 @@
+---
+- name: Warn about Cache serial variables in inventory
+  debug:
+    msg: >-
+      Inventory variables dingo_cache_deploy_serial and dingo_cache_upgrade_serial are ignored.
+      Set dingo_cache_deploy_batch or dingo_cache_upgrade_batch in group_vars/all.yml or with -e.
+      For environment overrides, use DINGO_CACHE_DEPLOY_SERIAL or DINGO_CACHE_UPGRADE_SERIAL.
+  when: dingo_cache_deploy_serial is defined or dingo_cache_upgrade_serial is defined
+  run_once: true
+
+- name: Report Cache rollout batch candidates
+  debug:
+    msg: "Cache batch size={{ ansible_play_batch | length }} hosts={{ ansible_play_batch | join(',') }}"
+  run_once: true

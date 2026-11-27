@@ -1,0 +1,21 @@
+---
+# Ansible resolves play-level serial before it attaches inventory vars to hosts.
+# Read the first inventory's group_vars/all.yml directly, as the Client plays do.
+_cache_batch_source: "{{ ansible_inventory_sources | default([]) | first | default('') }}"
+_cache_batch_file: >-
+  {{ ((lookup('file', _cache_batch_source ~ '/group_vars/all.yml', errors='ignore') | default('', true))
+      or (lookup('file', _cache_batch_source | dirname ~ '/group_vars/all.yml', errors='ignore') | default('', true)))
+     if _cache_batch_source else '' }}
+_cache_batch_inventory: "{{ _cache_batch_file | default('{}', true) | from_yaml | default({}, true) }}"
+
+_cache_deploy_batch: >-
+  {{ dingo_cache_deploy_batch if dingo_cache_deploy_batch is defined else
+     (lookup('env', 'DINGO_CACHE_DEPLOY_SERIAL') | trim
+      or _cache_batch_inventory.get('dingo_cache_deploy_batch', '100%')) }}
+_cache_upgrade_batch: >-
+  {{ dingo_cache_upgrade_batch if dingo_cache_upgrade_batch is defined else
+     dingo_cache_deploy_batch if dingo_cache_deploy_batch is defined else
+     (lookup('env', 'DINGO_CACHE_UPGRADE_SERIAL') | trim
+      or lookup('env', 'DINGO_CACHE_DEPLOY_SERIAL') | trim
+      or _cache_batch_inventory.get('dingo_cache_upgrade_batch',
+                                    _cache_batch_inventory.get('dingo_cache_deploy_batch', 1))) }}
