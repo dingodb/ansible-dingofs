@@ -45,6 +45,18 @@ lvm_vg_prefix: dingo_cache
 #   dingo_cache_log_prefix: "/mnt/aux"      # picks up the aux/log mount
 dingo_cache_data_prefix: ""
 dingo_cache_log_prefix: ""
+# Mountpoints under these trees are container-runtime bookkeeping, not cache
+# disks. kubelet mounts pod volume-subpaths as bind mounts of the SAME
+# filesystem as /mnt/diskN; discovery matches by source device, so without this
+# list each pod subpath would be counted as an extra disk (and get a cache dir).
+# The selector also de-duplicates every mount by filesystem id (st_dev) and
+# keeps the canonical mountpoint (preferring dingo_cache_data_prefix).
+dingo_cache_exclude_mount_prefixes:
+  - /var/lib/kubelet/
+  - /var/lib/containers/
+  - /run/containers/
+  - /var/lib/docker/
+  - /run/k3s/
 # DEPRECATED fallback: when the split prefixes above are empty, each falls
 # back to this single prefix (original behaviour). Prefer setting
 # dingo_cache_data_prefix / dingo_cache_log_prefix directly.
